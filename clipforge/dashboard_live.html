@@ -1,0 +1,2805 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BTA — Studio</title>
+<!-- No external requests: no CDN fonts, no remote scripts, no analytics.
+     The premise of this tool is that nothing leaves the machine, and a
+     webfont is a request. Every glyph below is either a system font or an
+     inline SVG drawn here. -->
+<style>
+:root{
+  --bg:#0a0a0b; --bg2:#0e0e10; --rail:#0c0c0e;
+  --panel:#151517; --panel2:#1c1c1f; --panel3:#242428;
+  --line:#26262b; --line2:#33333a;
+  --ink:#f2f2f5; --dim:#9a9aa3; --faint:#6c6c76;
+  --score:#b4f22e; --scoreDim:#7fae1f;
+  --hot1:#ff7a3d; --hot2:#ff3d6e;
+  --ok:#3ddc9a; --warn:#ffb454; --bad:#ff6b6b; --bolt:#ffd60a;
+  --r:10px; --r2:14px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);overflow:hidden;
+  font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Inter,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:#2c2c33;border-radius:8px}
+::-webkit-scrollbar-track{background:transparent}
+svg{display:block;flex:0 0 auto}
+.hide{display:none!important}
+
+/* ============================================================ app shell */
+.app{display:grid;grid-template-columns:232px 1fr;height:100vh}
+aside.rail{background:var(--rail);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;padding:14px 10px;gap:2px;overflow:auto}
+.who{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:9px;cursor:pointer}
+.who:hover{background:var(--panel)}
+.avatar{width:30px;height:30px;border-radius:50%;flex:0 0 auto;
+  background:conic-gradient(from 210deg,#ff9a3d,#ff3d6e,#8b5cf6,#3ddc9a,#ff9a3d);
+  display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#0a0a0b}
+.who .nm{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.who .sub{font-size:11px;color:var(--faint);display:flex;align-items:center;gap:4px}
+.invite{all:unset;display:flex;align-items:center;justify-content:center;gap:7px;
+  border:1px solid var(--line2);border-radius:9px;padding:8px;font-size:12.5px;
+  color:var(--ink);cursor:pointer;margin:8px 2px 14px}
+.invite:hover{background:var(--panel)}
+.navsec{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);
+  padding:12px 10px 6px;font-weight:600}
+.nav{display:flex;flex-direction:column;gap:1px}
+.nav button{all:unset;display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;
+  color:var(--dim);cursor:pointer;font-size:13.5px}
+.nav button:hover{background:var(--panel);color:var(--ink)}
+.nav button.on{background:var(--panel2);color:var(--ink);font-weight:500}
+.nav button .pill{margin-left:auto}
+.pill{font-size:9.5px;font-weight:700;letter-spacing:.04em;padding:2px 6px;border-radius:5px;
+  background:var(--panel3);color:var(--dim);text-transform:uppercase}
+.pill.pro{background:#2a2416;color:#e8c15a}
+.pill.new{background:#132a1e;color:var(--ok)}
+.pill.beta{background:#1a2233;color:#7fa8ff}
+.railfoot{margin-top:auto;padding-top:14px;display:flex;flex-direction:column;gap:1px}
+.railfoot .dotline{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--faint);
+  padding:10px 10px 2px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+.dot.off{background:var(--bad)}
+
+.main{display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.topbar{height:52px;flex:0 0 auto;display:flex;align-items:center;gap:12px;
+  padding:0 18px;border-bottom:1px solid var(--line);background:var(--bg)}
+.topbar .grow{flex:1;min-width:0}
+.iconbtn{all:unset;display:flex;align-items:center;justify-content:center;gap:6px;
+  width:32px;height:32px;border-radius:8px;color:var(--dim);cursor:pointer;flex:0 0 auto}
+.iconbtn:hover{background:var(--panel2);color:var(--ink)}
+.iconbtn.wide{width:auto;padding:0 11px;font-size:13px}
+.iconbtn.on{background:var(--panel2);color:var(--ink)}
+.crumb{font-size:13.5px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.view{flex:1;overflow:auto;min-height:0}
+.pad{padding:22px 24px 80px}
+h1{font-size:24px;margin:0 0 6px;letter-spacing:-.4px;font-weight:650}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint);
+  margin:30px 0 12px;font-weight:650}
+.sub{color:var(--dim);font-size:13px;margin-bottom:20px;max-width:78ch;line-height:1.6}
+.empty{color:var(--faint);font-size:13px;padding:34px;text-align:center;
+  border:1px dashed var(--line2);border-radius:var(--r2)}
+
+/* ================================================================ home */
+.homewrap{position:relative;padding:44px 24px 80px;min-height:100%}
+.wordmark{position:absolute;left:0;right:0;top:22px;text-align:center;font-size:150px;
+  font-weight:800;letter-spacing:-7px;color:#111114;user-select:none;pointer-events:none;
+  line-height:1;z-index:0}
+.dropcard{position:relative;z-index:1;max-width:390px;margin:34px auto 0;background:#131315;
+  border:1px solid var(--line2);border-radius:var(--r2);padding:14px;
+  box-shadow:0 24px 70px rgba(0,0,0,.6)}
+.linkin{display:flex;align-items:center;gap:9px;background:var(--panel2);
+  border:1px solid var(--line);border-radius:9px;padding:11px 12px}
+.linkin input{all:unset;flex:1;font-size:13.5px;color:var(--ink);min-width:0}
+.linkin input::placeholder{color:var(--faint)}
+.droprow{display:flex;gap:18px;justify-content:center;padding:12px 0 14px}
+.droprow button{all:unset;display:flex;align-items:center;gap:7px;font-size:12.5px;
+  color:var(--dim);cursor:pointer}
+.droprow button:hover{color:var(--ink)}
+.bigbtn{all:unset;display:block;text-align:center;background:#fff;color:#0a0a0b;
+  border-radius:9px;padding:12px;font-weight:650;font-size:14px;cursor:pointer}
+.bigbtn:hover{background:#e9e9ec}
+.bigbtn[disabled]{opacity:.5;cursor:not-allowed}
+.samplelink{display:block;text-align:center;font-size:12.5px;color:var(--dim);
+  margin-top:12px;cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.samplelink:hover{color:var(--ink)}
+
+.tools{position:relative;z-index:1;display:flex;gap:6px;justify-content:center;
+  flex-wrap:wrap;margin:44px auto 0;max-width:1150px}
+.tool{all:unset;width:92px;display:flex;flex-direction:column;align-items:center;gap:9px;
+  padding:10px 4px;border-radius:11px;cursor:pointer;position:relative}
+.tool:hover{background:var(--panel)}
+.tool .ic{width:40px;height:40px;border-radius:11px;background:var(--panel2);
+  border:1px solid var(--line);display:flex;align-items:center;justify-content:center}
+.tool span{font-size:11px;color:var(--dim);text-align:center;line-height:1.35}
+.tool:hover span{color:var(--ink)}
+.tool .pill{position:absolute;top:0;right:2px}
+.tool.dis{opacity:.42}
+.tool.dis:hover{background:none}
+
+.projhead{display:flex;align-items:center;gap:16px;margin:44px 0 14px;position:relative;z-index:1}
+.tabs{display:flex;gap:16px}
+.tabs button{all:unset;font-size:13.5px;color:var(--dim);cursor:pointer;padding-bottom:6px;
+  border-bottom:2px solid transparent}
+.tabs button.on{color:var(--ink);border-bottom-color:var(--ink)}
+.projmeta{margin-left:auto;display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--faint)}
+.chipmini{display:flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:999px;padding:5px 10px;font-size:11.5px;color:var(--dim)}
+.projgrid{position:relative;z-index:1;display:grid;gap:16px;
+  grid-template-columns:repeat(auto-fill,minmax(216px,1fr))}
+.proj{cursor:pointer}
+.proj .shot{position:relative;aspect-ratio:16/10;border-radius:var(--r);overflow:hidden;
+  background:#000;border:1px solid var(--line)}
+.proj .shot video,.proj .shot img{width:100%;height:100%;object-fit:cover;display:block}
+.proj:hover .shot{border-color:var(--line2)}
+.proj .badges{position:absolute;top:8px;left:8px;right:8px;display:flex;gap:6px}
+.proj .badges .pill{background:rgba(10,10,11,.78);backdrop-filter:blur(6px)}
+.proj .foot{position:absolute;left:0;right:0;bottom:0;padding:7px 9px;font-size:11px;
+  color:#d6d6dc;background:linear-gradient(180deg,transparent,rgba(4,4,6,.9))}
+.proj b{display:block;font-size:13px;font-weight:550;margin-top:9px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.proj i{font-style:normal;font-size:11.5px;color:var(--faint)}
+
+/* ============================================================ generate */
+.hero{text-align:center;padding:34px 0 0;max-width:1000px;margin:0 auto}
+.hero h1{font-size:33px;letter-spacing:-1px;margin:0 0 9px;font-weight:700}
+.hero h1 em{font-style:normal;
+  background:linear-gradient(92deg,var(--hot1),var(--hot2));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.hero .lede{color:var(--dim);font-size:13.5px;margin-bottom:22px}
+.hero .lede b{color:var(--ink);font-weight:600}
+.composer{max-width:640px;margin:0 auto;background:var(--panel);border:1px solid var(--line2);
+  border-radius:var(--r2);padding:9px;text-align:left;display:flex;gap:9px;align-items:flex-start}
+.cchips{display:flex;gap:6px;flex:0 0 auto}
+.cchip{all:unset;width:52px;padding:8px 4px;border-radius:9px;background:var(--panel2);
+  border:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:5px;
+  cursor:pointer;text-align:center}
+.cchip:hover{border-color:var(--line2)}
+.cchip.on{border-color:#4a4a55;background:var(--panel3)}
+.cchip u{text-decoration:none;font-size:9.5px;color:var(--ink);font-weight:600}
+.cchip s{text-decoration:none;font-size:9px;color:var(--faint);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;max-width:46px;display:block}
+.cbody{flex:1;min-width:0;display:flex;flex-direction:column}
+.cbody textarea{all:unset;min-height:44px;font-size:13.5px;line-height:1.5;padding:6px 4px;
+  color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere}
+.cbody textarea::placeholder{color:var(--faint)}
+.crow{display:flex;align-items:center;gap:8px;padding-top:8px;flex-wrap:wrap}
+.minichip{all:unset;display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--dim);
+  border:1px solid var(--line);border-radius:7px;padding:5px 9px;cursor:pointer;background:var(--panel2)}
+.minichip:hover{color:var(--ink);border-color:var(--line2)}
+.minichip.on{color:var(--ink);border-color:#4a4a55}
+.gobtn{all:unset;margin-left:auto;width:30px;height:30px;border-radius:50%;flex:0 0 auto;
+  background:#fff;color:#0a0a0b;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.gobtn:hover{background:#e4e4e8}
+.gobtn[disabled]{opacity:.4;cursor:not-allowed}
+.modes{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:20px 0 0}
+.mode{all:unset;display:flex;align-items:center;gap:7px;border:1px solid var(--line);
+  background:var(--panel);border-radius:9px;padding:8px 13px;font-size:12.5px;color:var(--dim);cursor:pointer}
+.mode:hover{color:var(--ink);border-color:var(--line2)}
+.mode.on{color:var(--ink);border-color:#4a4a55;background:var(--panel2)}
+.estline{text-align:center;font-size:11.5px;color:var(--faint);margin-top:14px}
+
+.inspire{margin-top:46px}
+.inspire h3{text-align:center;font-size:19px;font-weight:650;margin:0 0 20px}
+.wall{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}
+.card9{position:relative;border-radius:var(--r);overflow:hidden;border:1px solid var(--line);
+  background:var(--panel);cursor:pointer}
+.card9 .art{aspect-ratio:9/14;display:flex;align-items:center;justify-content:center;
+  font-size:11px;color:#0a0a0b;font-weight:700;text-align:center;padding:14px;line-height:1.5}
+.card9 .lab{position:absolute;top:8px;left:8px;font-size:10px;padding:3px 7px;border-radius:5px;
+  background:rgba(10,10,11,.75);color:#e4e4ea;backdrop-filter:blur(6px)}
+.card9 .acts{position:absolute;left:0;right:0;bottom:0;display:flex;gap:6px;padding:8px;
+  opacity:0;transition:.14s;background:linear-gradient(180deg,transparent,rgba(4,4,6,.92))}
+.card9:hover .acts{opacity:1}
+.card9 .acts button{all:unset;flex:1;text-align:center;font-size:11px;padding:6px 0;
+  border-radius:7px;background:rgba(30,30,34,.94);border:1px solid var(--line2);cursor:pointer}
+.card9 .acts button:hover{background:var(--panel3)}
+
+/* =============================================================== clips */
+.gridhead{display:flex;align-items:baseline;gap:9px;margin-bottom:16px}
+.gridhead .t{font-size:13.5px;color:var(--ink)}
+.gridhead .n{font-size:13.5px;color:var(--faint)}
+.clipgrid{display:grid;gap:20px 14px;grid-template-columns:repeat(auto-fill,minmax(178px,1fr))}
+.clipgrid.list{grid-template-columns:1fr}
+.cl{position:relative}
+.cl .frame{position:relative;aspect-ratio:9/16;border-radius:var(--r);overflow:hidden;
+  background:#08080a;border:1px solid var(--line)}
+.cl .frame img,.cl .frame video{width:100%;height:100%;object-fit:cover;display:block}
+.cl:hover .frame{border-color:var(--line2)}
+.cl .dur{position:absolute;top:7px;right:7px;background:rgba(8,8,10,.8);border-radius:5px;
+  padding:2px 6px;font-size:10.5px;color:#e6e6ec;letter-spacing:.02em;backdrop-filter:blur(6px)}
+.cl .rate{position:absolute;top:7px;left:7px;display:flex;flex-direction:column;gap:5px;
+  opacity:0;transition:.14s}
+.cl:hover .rate{opacity:1}
+.cl .rate button{all:unset;width:24px;height:24px;border-radius:6px;background:rgba(8,8,10,.8);
+  display:flex;align-items:center;justify-content:center;color:#d4d4da;cursor:pointer;
+  backdrop-filter:blur(6px)}
+.cl .rate button:hover{background:rgba(40,40,46,.95);color:#fff}
+.cl .rate button.on{color:var(--score)}
+.cl .play{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  opacity:0;transition:.14s;cursor:pointer}
+.cl:hover .play{opacity:1}
+.cl .play i{width:42px;height:42px;border-radius:50%;background:rgba(255,255,255,.92);
+  display:flex;align-items:center;justify-content:center}
+.cl .meta{padding:9px 1px 0}
+.cl .scorerow{display:flex;align-items:center;gap:6px}
+.cl .sc{font-size:21px;font-weight:800;color:var(--score);letter-spacing:-.6px;line-height:1}
+.cl .sc.none{color:var(--faint);font-size:13px;font-weight:600}
+.cl .tools{margin-left:auto;display:flex;gap:2px;opacity:0;transition:.14s}
+.cl:hover .tools{opacity:1}
+.cl .tools button{all:unset;width:24px;height:24px;border-radius:6px;display:flex;
+  align-items:center;justify-content:center;color:var(--dim);cursor:pointer}
+.cl .tools button:hover{background:var(--panel2);color:var(--ink)}
+.cl .tools button.del:hover{color:var(--bad)}
+.cl .ttl{font-size:12.5px;line-height:1.45;margin-top:7px;color:var(--ink);cursor:pointer;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cl .tags{display:flex;gap:5px;margin-top:7px;flex-wrap:wrap}
+/* Touch: :hover never fires, so every hover-revealed control would be
+   unreachable on a phone. Show them permanently instead. */
+@media (hover:none){.cl .tools,.cl .rate{opacity:1}}
+
+/* =============================================================== modal */
+.mask{position:fixed;inset:0;background:rgba(6,6,8,.86);z-index:60;display:none;
+  align-items:center;justify-content:center;padding:26px;backdrop-filter:blur(3px)}
+.mask.on{display:flex}
+/* Four columns, matching the reference: score · preview · scene · actions.
+   Anything narrower than this cannot hold them side by side, so the layout
+   stacks rather than wrapping one column onto a second row. */
+.dlg{background:#111113;border:1px solid var(--line2);border-radius:var(--r2);
+  max-width:1060px;width:100%;max-height:90vh;padding:16px;display:grid;
+  grid-template-columns:142px 232px minmax(0,1fr) 172px;gap:16px;
+  box-shadow:0 30px 90px rgba(0,0,0,.7);position:relative;overflow:auto}
+.dlgnav{position:absolute;top:-46px;right:0;display:flex;gap:7px}
+.dlgnav button{all:unset;width:30px;height:30px;border-radius:8px;background:var(--panel2);
+  border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;
+  color:var(--dim);cursor:pointer}
+.dlgnav button:hover{color:var(--ink);background:var(--panel3)}
+.dlgleft{display:flex;flex-direction:column;gap:12px}
+.dlgrate{display:flex;gap:7px}
+.dlgrate button{all:unset;width:28px;height:28px;border-radius:7px;border:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;color:var(--dim);cursor:pointer}
+.dlgrate button:hover{color:var(--ink);border-color:var(--line2)}
+.dlgrate button.on{color:var(--score);border-color:var(--scoreDim)}
+.bigscore{display:flex;align-items:baseline;gap:2px}
+.bigscore b{font-size:30px;font-weight:800;color:var(--score);letter-spacing:-1px;line-height:1}
+.bigscore span{font-size:13px;color:var(--faint)}
+.grades{display:flex;flex-direction:column;gap:9px;margin-top:4px}
+.grade{display:flex;align-items:center;gap:11px;font-size:12.5px}
+.grade b{width:26px;color:var(--score);font-weight:700;font-size:13px}
+.grade span{color:var(--dim)}
+.grade em{margin-left:auto;font-style:normal;color:var(--faint);font-size:10.5px}
+.grade.heur b{color:var(--dim)}
+.dlgvid{position:relative;border-radius:var(--r);overflow:hidden;background:#000;
+  border:1px solid var(--line);aspect-ratio:9/16}
+.dlgvid video{width:100%;height:100%;object-fit:cover;display:block}
+.dlgvid .tag2{position:absolute;top:8px;left:8px;font-size:9.5px;letter-spacing:.05em;
+  text-transform:uppercase;background:rgba(8,8,10,.82);padding:3px 7px;border-radius:5px;
+  color:#c8c8d0;backdrop-filter:blur(6px)}
+.dlgvid .dur{position:absolute;top:8px;right:8px;background:rgba(8,8,10,.82);border-radius:5px;
+  padding:2px 6px;font-size:10.5px;color:#e6e6ec;backdrop-filter:blur(6px)}
+.dlgmid{min-width:0;display:flex;flex-direction:column}
+.dlgmid h3{margin:0 0 14px;font-size:14.5px;font-weight:600;line-height:1.45;
+  display:flex;gap:8px;align-items:flex-start}
+.dlgmid h3 u{text-decoration:none;color:var(--faint);flex:0 0 auto}
+.secrow{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+.secrow b{font-size:12.5px;font-weight:600}
+.chk{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:11.5px;
+  color:var(--dim);cursor:pointer}
+.chk input{accent-color:var(--score)}
+.scene{background:#0c0c0e;border:1px solid var(--line);border-radius:var(--r);padding:12px;
+  font-size:12.5px;line-height:1.7;color:var(--dim);overflow:auto;flex:1;min-height:180px;
+  max-height:44vh}
+.scene .ts{color:var(--faint);font-size:11.5px;margin-bottom:8px;display:block}
+.scene .chapline{color:var(--ink);margin:12px 0 4px;font-size:12px;font-weight:600}
+.scene .chapline u{text-decoration:none;color:var(--faint);font-weight:400;margin-right:7px}
+.dlgacts{display:flex;flex-direction:column;gap:6px;min-width:172px}
+.act{all:unset;display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:8px;
+  background:var(--panel2);border:1px solid var(--line);font-size:12.5px;cursor:pointer;
+  color:var(--ink);white-space:nowrap}
+.act:hover{background:var(--panel3);border-color:var(--line2)}
+.act.hot{background:#2a2410;border-color:#4a3f18;color:#f2e2a8}
+.act.hot:hover{background:#332c14}
+.act .rt{margin-left:auto;color:var(--faint)}
+.act.dis{opacity:.42;cursor:not-allowed}
+.act.dis:hover{background:var(--panel2);border-color:var(--line)}
+.submenu{position:absolute;background:#1a1a1e;border:1px solid var(--line2);border-radius:10px;
+  padding:5px;display:flex;flex-direction:column;gap:2px;z-index:70;min-width:172px;
+  box-shadow:0 16px 44px rgba(0,0,0,.6)}
+.submenu button{all:unset;display:flex;align-items:center;gap:9px;padding:8px 10px;
+  border-radius:7px;font-size:12.5px;cursor:pointer;color:var(--ink)}
+.submenu button:hover{background:var(--panel3)}
+.submenu button.dis{opacity:.42;cursor:not-allowed}
+.submenu button.dis:hover{background:none}
+@media(max-width:1120px){.dlg{grid-template-columns:132px minmax(0,1fr) 168px}
+  .dlgmid{grid-column:1/-1}}
+@media(max-width:820px){.dlg{grid-template-columns:1fr}
+  .dlgmid{grid-column:auto}.dlgacts{flex-direction:row;flex-wrap:wrap}
+  .dlgacts .act{flex:1 1 44%}}
+
+/* ============================================================== editor */
+/* The explicit single column is load-bearing. With only grid-template-rows
+   declared, the implicit column is `auto` = max-content, so the editor
+   grid sized itself to its widest child and handed .ework more width than
+   the window had — pushing the right tab strip off screen. */
+.editor{position:fixed;inset:0;background:var(--bg);z-index:90;display:none;
+  grid-template-columns:minmax(0,1fr);grid-template-rows:52px auto 1fr auto}
+.editor.on{display:grid}
+.ebar{display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line)}
+.ebar .ttl{font-size:13.5px;font-weight:550;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;max-width:44vw}
+.ebar .grow{flex:1}
+.wbtn{all:unset;background:var(--panel2);border:1px solid var(--line2);border-radius:8px;
+  padding:7px 13px;font-size:12.5px;cursor:pointer}
+.wbtn:hover{background:var(--panel3)}
+.wbtn.solid{background:#fff;color:#0a0a0b;border-color:#fff;font-weight:600}
+.wbtn.solid:hover{background:#e6e6ea}
+.credits{display:flex;align-items:center;gap:5px;font-size:12.5px;color:var(--bolt)}
+.notice{display:flex;align-items:center;justify-content:center;gap:12px;padding:9px;
+  background:var(--panel);border-bottom:1px solid var(--line);font-size:12.5px;color:var(--dim)}
+.notice .wbtn{padding:5px 11px;font-size:12px}
+
+/* minmax(0,…) not 1fr: a bare `1fr` floors at the column's min-content,
+   and the 9:16 preview's aspect-ratio gives it one. Without this the row
+   overflows and the tab strip sits off the right edge of the window. */
+.ework{display:grid;grid-template-columns:398px minmax(0,1fr) 300px 62px;
+  min-height:0;overflow:hidden}
+.ework.railshut{grid-template-columns:398px minmax(0,1fr) 0 62px}
+
+/* --- transcript panel */
+.tpanel{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.thead{display:flex;align-items:center;gap:8px;padding:11px 14px;flex:0 0 auto}
+.thead .grow{flex:1}
+.tscroll{overflow:auto;padding:4px 16px 30px;font-size:14.5px;line-height:2.05}
+.extend{all:unset;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line2);
+  border-radius:7px;padding:5px 10px;font-size:11.5px;color:var(--dim);cursor:pointer;
+  margin-bottom:10px}
+.extend:hover{color:var(--ink)}
+.chapter{background:var(--panel);border:1px solid var(--line);border-radius:7px;
+  padding:6px 9px;font-size:11px;line-height:1.55;color:var(--dim);margin:12px 0;
+  display:block;font-weight:400}
+.chapter u{text-decoration:none;color:var(--faint);margin-right:7px}
+.w{cursor:pointer;border-radius:4px;padding:1px 0;transition:background .1s}
+.w:hover{background:var(--panel3)}
+.w.on{background:#2b3a12;color:#e8ffc0}
+.w.key{color:var(--score);font-weight:600}
+.w.key2{color:var(--bolt);font-weight:600}
+.w.low{text-decoration:underline;text-decoration-style:dotted;
+  text-decoration-color:var(--faint);text-underline-offset:4px}
+.w.cut{opacity:.32;text-decoration:line-through}
+.gap{display:inline-flex;align-items:center;background:var(--panel3);border-radius:5px;
+  padding:0 5px;font-size:10.5px;color:var(--dim);margin:0 3px;vertical-align:middle;
+  line-height:1.7;cursor:pointer}
+.gap:hover{background:#33333c;color:var(--ink)}
+.gap.cut{background:#3a2020;color:#ffb0b0;text-decoration:line-through}
+
+/* --- stage / preview */
+/* min-width:0 matters: the 9:16 preview has an intrinsic width from its
+   aspect-ratio, and without this a grid `1fr` refuses to shrink below it,
+   overflowing the row and pushing the right tab strip off screen. */
+.stage{display:flex;flex-direction:column;align-items:center;min-height:0;
+  min-width:0;overflow:hidden;padding:11px 0 0}
+.stagebar{display:flex;gap:8px;align-items:center;flex:0 0 auto;padding-bottom:11px}
+.sbchip{all:unset;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);
+  cursor:pointer;padding:5px 9px;border-radius:7px}
+.sbchip:hover{background:var(--panel2);color:var(--ink)}
+.sbchip.on{background:var(--panel2);color:var(--ink)}
+.canvas{flex:1;min-height:0;min-width:0;display:flex;align-items:center;
+  justify-content:center;padding:0 14px 14px;width:100%}
+.frame916{position:relative;height:100%;aspect-ratio:9/16;background:#000;border-radius:6px;
+  overflow:hidden;max-width:100%}
+.frame916 video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:1}
+/* The blurred bed behind a Fit layout — the same trick the renderer uses,
+   so the preview shows what the export will look like. */
+.frame916 .bed{position:absolute;inset:0;z-index:0;filter:blur(34px) saturate(1.25);
+  transform:scale(1.25);opacity:.85}
+.crop{position:absolute;z-index:3;border:1.5px solid rgba(255,255,255,.92);pointer-events:none}
+.crop i{position:absolute;width:7px;height:7px;border-radius:50%;background:#fff;
+  box-shadow:0 0 0 1px rgba(0,0,0,.4)}
+.crop i:nth-child(1){left:-4px;top:-4px} .crop i:nth-child(2){right:-4px;top:-4px}
+.crop i:nth-child(3){left:-4px;bottom:-4px} .crop i:nth-child(4){right:-4px;bottom:-4px}
+.croptool{position:absolute;z-index:4;display:flex;gap:2px;background:#1c1c20;
+  border:1px solid var(--line2);border-radius:8px;padding:3px;transform:translate(-50%,-130%)}
+.croptool button{all:unset;width:26px;height:24px;border-radius:6px;display:flex;
+  align-items:center;justify-content:center;color:var(--dim);cursor:pointer}
+.croptool button:hover{background:var(--panel3);color:var(--ink)}
+
+/* --- right rail */
+.rpanel{border-left:1px solid var(--line);overflow:auto;min-height:0;background:var(--bg2)}
+.rpanel .ph{display:flex;align-items:center;gap:8px;padding:13px 14px 10px;font-size:13px;
+  font-weight:600;position:sticky;top:0;background:var(--bg2);z-index:2}
+.rpanel .pb{padding:0 12px 24px}
+.rtabs{border-left:1px solid var(--line);display:flex;flex-direction:column;gap:2px;
+  padding:8px 5px;overflow:auto;background:var(--bg)}
+.rtab{all:unset;display:flex;flex-direction:column;align-items:center;gap:4px;padding:9px 2px;
+  border-radius:9px;color:var(--faint);cursor:pointer;font-size:8.5px;text-align:center;line-height:1.25}
+.rtab:hover{background:var(--panel);color:var(--dim)}
+.rtab.on{background:var(--panel2);color:var(--ink)}
+
+.rrow{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;
+  font-size:12.5px;cursor:pointer;color:var(--ink)}
+.rrow:hover{background:var(--panel)}
+.rrow .grow{flex:1;min-width:0}
+.rrow .why{font-size:10.5px;color:var(--faint);line-height:1.4;margin-top:2px}
+.rrow.dis{opacity:.45;cursor:not-allowed}
+.rrow.dis:hover{background:none}
+.sw{width:34px;height:19px;border-radius:99px;background:#2e2e36;position:relative;
+  flex:0 0 auto;transition:.14s;cursor:pointer}
+.sw.on{background:var(--score)}
+.sw i{position:absolute;top:2.5px;left:2.5px;width:14px;height:14px;border-radius:50%;
+  background:#fff;transition:.14s}
+.sw.on i{left:17.5px;background:#0a0a0b}
+.rsep{height:1px;background:var(--line);margin:8px 4px}
+.rsub{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);
+  padding:12px 10px 6px;font-weight:650}
+.minitabs{display:flex;gap:5px;padding:0 10px 10px}
+.minitabs button{all:unset;font-size:12px;color:var(--dim);cursor:pointer;padding:5px 10px;
+  border-radius:7px}
+.minitabs button:hover{color:var(--ink);background:var(--panel)}
+.minitabs button.on{background:var(--panel2);color:var(--ink)}
+.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 10px}
+.preset{position:relative;height:74px;border-radius:9px;background:var(--panel);
+  border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+  cursor:pointer;overflow:hidden;padding:6px;text-align:center}
+.preset:hover{border-color:var(--line2)}
+.preset.on{border-color:var(--score);box-shadow:0 0 0 1px var(--score)}
+.preset .nm{position:absolute;bottom:-19px;left:0;right:0;font-size:10px;color:var(--dim);
+  text-align:center}
+.pcell{padding-bottom:22px}
+.pv{font-weight:900;font-size:12px;line-height:1.2;letter-spacing:-.2px}
+.pv .hl{color:var(--score)}
+.pv.karaoke{text-transform:uppercase;-webkit-text-stroke:.6px #000}
+.pv.quiet{font-weight:500;font-size:11px;text-transform:none;color:#e6e6ec}
+.pv.boxed{background:#000;padding:2px 6px;border-radius:3px;display:inline-block}
+.pv.neon{color:#c08bff;text-shadow:0 0 8px rgba(180,120,255,.8)}
+.dropzone{margin:0 10px;border:1px dashed var(--line2);border-radius:10px;padding:22px 12px;
+  text-align:center;font-size:12px;color:var(--dim);cursor:pointer}
+.dropzone:hover{border-color:#454550;color:var(--ink)}
+.tile2{display:flex;align-items:center;gap:10px;margin:0 10px 7px;padding:9px 10px;
+  border:1px solid var(--line);border-radius:9px;background:var(--panel);font-size:12.5px;
+  cursor:pointer}
+.tile2:hover{border-color:var(--line2)}
+.tile2 .th{width:34px;height:26px;border-radius:5px;flex:0 0 auto;
+  background:linear-gradient(135deg,#2a2a30,#17171b)}
+.tile2.dis{opacity:.45;cursor:not-allowed}
+.tile2.dis:hover{border-color:var(--line)}
+.tgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 10px}
+.tcard{border-radius:8px;overflow:hidden;border:1px solid var(--line);cursor:pointer;
+  background:var(--panel)}
+.tcard:hover{border-color:var(--line2)}
+.tcard .th{aspect-ratio:16/10;background:linear-gradient(135deg,#26262c,#141418)}
+.tcard .nm{font-size:10.5px;color:var(--dim);padding:5px 6px;text-align:center}
+.field{padding:0 10px 12px}
+.field label{display:block;font-size:11px;color:var(--dim);margin-bottom:6px}
+.field textarea,.field select,.field input[type=text]{width:100%;background:var(--panel);
+  border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:9px 10px;
+  font:inherit;font-size:12.5px;outline:none}
+.field textarea{min-height:78px;resize:vertical;line-height:1.55}
+.field input[type=range]{width:100%;accent-color:var(--score)}
+.rangerow{display:flex;justify-content:space-between;font-size:10px;color:var(--faint);margin-top:3px}
+.warnbox{margin:0 10px 12px;background:#2a1a10;border:1px solid #4a2f18;border-radius:8px;
+  padding:9px 10px;font-size:11px;color:#f0c89a;line-height:1.5}
+.warnbox b{color:#ffd9ac}
+/* A command the operator has to paste. It is one selectable unit so the
+   surrounding sentence cannot be copied along with it. */
+.cmd{display:flex;align-items:center;gap:8px;margin-top:10px;background:#08080a;
+  border:1px solid var(--line2);border-radius:8px;padding:8px 10px;cursor:pointer}
+.cmd:hover{border-color:#454550}
+.cmd code{flex:1;min-width:0;font:11.5px/1.5 ui-monospace,Consolas,monospace;
+  color:#cdd6e6;overflow-x:auto;white-space:nowrap}
+.cmd button{all:unset;color:var(--faint);display:flex;flex:0 0 auto;cursor:pointer}
+.cmd:hover button{color:var(--ink)}
+
+/* --- timeline */
+.tl{border-top:1px solid var(--line);background:var(--bg2);flex:0 0 auto}
+.tlbar{display:flex;align-items:center;gap:9px;padding:8px 14px}
+.tlbar .grow{flex:1}
+.tlbar .time{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
+.tlbody{padding:0 14px 12px;overflow-x:auto}
+.tlinner{position:relative;min-width:100%}
+.ruler{height:20px;position:relative;border-bottom:1px solid var(--line)}
+.ruler .tick{position:absolute;top:0;bottom:0;border-left:1px solid var(--line)}
+.ruler .tick u{position:absolute;left:5px;top:3px;font-size:10px;color:var(--faint);
+  text-decoration:none;font-variant-numeric:tabular-nums}
+.ruler .sub{position:absolute;top:12px;width:1px;height:5px;background:var(--line2)}
+.lanes{display:flex;align-items:stretch;gap:7px;margin-top:8px}
+.lanes .addbtn{all:unset;width:26px;flex:0 0 auto;border:1px solid var(--line);border-radius:7px;
+  display:flex;align-items:center;justify-content:center;color:var(--faint);cursor:pointer}
+.lanes .addbtn:hover{color:var(--ink);border-color:var(--line2)}
+.lanewrap{flex:1;min-width:0;position:relative}
+.vlane{height:52px;border-radius:6px;overflow:hidden;background:#111114;
+  background-repeat:repeat-x;background-size:auto 100%;position:relative;border:1px solid var(--line)}
+.fitmarks{position:absolute;inset:0;pointer-events:none;z-index:2}
+.fitmarks span{position:absolute;top:0;font-size:9px;color:#dfe6ce;
+  background:rgba(8,10,6,.62);padding:1px 4px;border-bottom-right-radius:4px;letter-spacing:.02em}
+.alane{height:34px;margin-top:5px;border-radius:6px;background:#111114;border:1px solid var(--line);
+  position:relative;overflow:hidden}
+.alane canvas{position:absolute;inset:0;width:100%;height:100%}
+.play head{}
+.playhead{position:absolute;top:0;bottom:0;width:1px;background:var(--score);z-index:5;
+  pointer-events:none}
+.playhead b{position:absolute;top:-4px;left:-4px;width:9px;height:9px;border-radius:2px;
+  background:var(--score);transform:rotate(45deg)}
+.tlhit{position:absolute;inset:0;z-index:4;cursor:pointer}
+
+/* ============================================================== shared */
+.toast{position:fixed;right:18px;bottom:18px;background:#17171b;border:1px solid var(--line2);
+  border-radius:11px;padding:12px 15px;z-index:200;max-width:390px;font-size:13px;
+  box-shadow:0 18px 50px rgba(0,0,0,.62);line-height:1.55}
+.toast b{color:var(--bad)}
+.tag{display:inline-flex;align-items:center;gap:4px;font-size:10px;letter-spacing:.04em;
+  padding:3px 7px;border-radius:5px;font-weight:600}
+.tag.ok{background:rgba(61,220,154,.13);color:var(--ok)}
+.tag.warn{background:rgba(255,180,84,.13);color:var(--warn)}
+.tag.bad{background:rgba(255,107,107,.13);color:var(--bad)}
+.tag.mut{background:var(--panel3);color:var(--dim)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r2);padding:16px}
+.grid{display:grid;gap:12px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.g3{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
+.row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+.dim{color:var(--dim)} .faint{color:var(--faint);font-size:11.5px}
+label.fl{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;
+  color:var(--faint);margin-bottom:6px;font-weight:650}
+input.fi,select.fi,textarea.fi{width:100%;background:var(--panel2);border:1px solid var(--line);
+  color:var(--ink);border-radius:8px;padding:10px 11px;font:inherit;font-size:13px;outline:none}
+input.fi:focus,select.fi:focus,textarea.fi:focus{border-color:#45454f}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.09em;
+  color:var(--faint);font-weight:650;padding:0 10px 8px}
+td{padding:9px 10px;border-top:1px solid var(--line)}
+pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;padding:11px;
+  font:11.5px/1.65 ui-monospace,Consolas,monospace;color:#b0b6c4;max-height:250px;
+  overflow:auto;white-space:pre-wrap;word-break:break-word}
+.bar{height:4px;background:var(--panel3);border-radius:99px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--score)}
+.meter{height:5px;background:var(--panel3);border-radius:99px;overflow:hidden}
+.meter i{display:block;height:100%;background:var(--score)}
+.meter i.heur{background:var(--faint)}
+
+@media(max-width:1200px){
+  .ework{grid-template-columns:320px minmax(0,1fr) 268px 58px}}
+@media(max-width:980px){
+  .app{grid-template-columns:1fr}
+  aside.rail{display:none}
+  .ework{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto}
+  .rtabs{flex-direction:row;overflow-x:auto}
+}
+</style>
+
+<!-- Icons are drawn once here and referenced with <use>, so the same glyph
+     costs one path no matter how many cards are on screen. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<g id="i-home"><path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-3v-5H7v5H4a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></g>
+<g id="i-grid"><rect x="3" y="3" width="6" height="6" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="11" width="6" height="6" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.5"/></g>
+<g id="i-folder"><path d="M3 6a1 1 0 0 1 1-1h3.5l1.5 2H16a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></g>
+<g id="i-cal"><rect x="3" y="4.5" width="14" height="12" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 8h14M7 3v3M13 3v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-chart"><path d="M4 16V9M10 16V4M16 16v-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></g>
+<g id="i-link"><path d="M8.5 11.5a3 3 0 0 0 4.2 0l2-2a3 3 0 0 0-4.2-4.2l-1 1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M11.5 8.5a3 3 0 0 0-4.2 0l-2 2a3 3 0 0 0 4.2 4.2l1-1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-crown"><path d="M3 14 4 6l4 3 2-4 2 4 4-3 1 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
+<g id="i-book"><path d="M4 4h5a2 2 0 0 1 2 2v10a2 2 0 0 0-2-2H4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M16 4h-5a2 2 0 0 0-2 2v10a2 2 0 0 1 2-2h5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
+<g id="i-help"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8.2 8a1.9 1.9 0 1 1 2.4 1.9c-.5.2-.7.6-.7 1.1v.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="10" cy="14" r=".9" fill="currentColor"/></g>
+<g id="i-db"><ellipse cx="10" cy="5.5" rx="6" ry="2.4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 5.5v9c0 1.3 2.7 2.4 6 2.4s6-1.1 6-2.4v-9" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 10c0 1.3 2.7 2.4 6 2.4s6-1.1 6-2.4" fill="none" stroke="currentColor" stroke-width="1.4"/></g>
+<g id="i-users"><circle cx="8" cy="7.5" r="2.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3.5 16c0-2.4 2-4 4.5-4s4.5 1.6 4.5 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M14 12.4c1.5.5 2.5 1.8 2.5 3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-plus"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></g>
+<g id="i-up"><path d="M10 16V5M5 10l5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g id="i-upload"><path d="M10 13V4M6.5 7.5 10 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 13v2a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-dl"><path d="M10 4v9M6.5 9.5 10 13l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-drive"><path d="M7.5 3.5 3 11.5h5l4.2-8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M3 11.5 5.4 16h9.2l-2.4-4.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
+<g id="i-scissor"><circle cx="6" cy="15" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="14" cy="15" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7.4 13.6 15 4M12.6 13.6 5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-cc"><rect x="2.5" y="4.5" width="15" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8.4 8.6a2.2 2.2 0 1 0 0 2.8M14.4 8.6a2.2 2.2 0 1 0 0 2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-spark"><path d="M10 3l1.6 4.4L16 9l-4.4 1.6L10 15l-1.6-4.4L4 9l4.4-1.6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
+<g id="i-wave"><path d="M3 10h1.6M6.4 6.5v7M9.2 4v12M12 7.5v5M14.8 9h1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-music"><path d="M8 14V5l7-1.5V13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="6.2" cy="14.2" r="1.9" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="13.2" cy="12.7" r="1.9" fill="none" stroke="currentColor" stroke-width="1.4"/></g>
+<g id="i-crop"><path d="M5 2v13h13M2 5h13v13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-img"><rect x="3" y="4.5" width="14" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="7.4" cy="8.4" r="1.2" fill="currentColor"/><path d="M3.6 14 8 10l3 2.6 2.6-2 2.8 2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
+<g id="i-film"><rect x="2.5" y="4.5" width="15" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.5 4.5v11M13.5 4.5v11" stroke="currentColor" stroke-width="1.2"/></g>
+<g id="i-trans"><path d="M3 10h5M12 10h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8 6.5 11.5 10 8 13.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
+<g id="i-text"><path d="M4 5h12M10 5v11M7.5 16h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-mic"><rect x="7.6" y="3" width="4.8" height="8.4" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 10a5 5 0 0 0 10 0M10 15v2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-mon"><rect x="2.5" y="4" width="15" height="10" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 17h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-undo"><path d="M7 7H4V4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.6 7.4a6 6 0 1 1-1 5.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-redo"><path d="M13 7h3V4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.4 7.4a6 6 0 1 0 1 5.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-back"><path d="M12 4 6 10l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g id="i-x"><path d="M5 5l10 10M15 5 5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></g>
+<g id="i-chev"><path d="M8 5l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g id="i-chevd"><path d="M5 8l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g id="i-arrup"><path d="M5 12l5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g id="i-arrdn"><path d="M5 8l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g id="i-heart"><path d="M10 16S3.5 12.2 3.5 7.9A3.4 3.4 0 0 1 10 6.4a3.4 3.4 0 0 1 6.5 1.5C16.5 12.2 10 16 10 16z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
+<g id="i-down2"><path d="M6.5 3.5h4.2a2 2 0 0 1 2 2V9h2.3a.6.6 0 0 1 .45 1L10 16l-5.45-6a.6.6 0 0 1 .45-1H6.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
+<g id="i-save"><path d="M5.5 3.5h9v13l-4.5-3.2-4.5 3.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
+<g id="i-trash"><path d="M4.5 5.5h11M8 5.5V4h4v1.5M6 5.5l.7 10.2a1 1 0 0 0 1 .8h4.6a1 1 0 0 0 1-.8L14 5.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g id="i-play"><path d="M7 4.6 15 10l-8 5.4z" fill="currentColor"/></g>
+<g id="i-pause"><rect x="6" y="4.5" width="3" height="11" rx="1" fill="currentColor"/><rect x="11" y="4.5" width="3" height="11" rx="1" fill="currentColor"/></g>
+<g id="i-prev"><path d="M14 4.6 7 10l7 5.4zM5.5 4.5v11" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-next"><path d="M6 4.6 13 10l-7 5.4zM14.5 4.5v11" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-search"><circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M13 13l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-filter"><path d="M3.5 5h13l-5 5.6V16l-3-1.6v-3.8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
+<g id="i-sort"><path d="M4 6h12M4 10h8M4 14h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-menu"><path d="M3.5 6h13M3.5 10h13M3.5 14h13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-bolt"><path d="M11 2 4.5 11H9l-.6 7L15.5 9H11z" fill="currentColor"/></g>
+<g id="i-copy"><rect x="6.5" y="6.5" width="10" height="10" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M13 6.5V5a1.5 1.5 0 0 0-1.5-1.5h-6A1.5 1.5 0 0 0 4 5v6.5A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.4"/></g>
+<g id="i-phone"><rect x="6.5" y="2.5" width="7" height="15" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/></g>
+<g id="i-xml"><path d="M7 6.5 3.5 10 7 13.5M13 6.5 16.5 10 13 13.5M11.4 4.5l-2.8 11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g id="i-expand"><path d="M4 7.5V4h3.5M16 12.5V16h-3.5M4 12.5V16h3.5M16 7.5V4h-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g id="i-split"><path d="M10 3v14" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2 2"/><path d="M4.5 6.5h3v7h-3zM12.5 6.5h3v7h-3z" fill="none" stroke="currentColor" stroke-width="1.4"/></g>
+<g id="i-mute"><path d="M4 8h2.5L10 5v10L6.5 12H4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M13 8l3.5 4M16.5 8 13 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-zoomin"><circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M9 7v4M7 9h4M13 13l3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-zoomout"><circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 9h4M13 13l3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-target"><circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="10" cy="10" r="2.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10 1.5v3M10 15.5v3M1.5 10h3M15.5 10h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-layout"><rect x="3" y="4" width="14" height="12" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3 7.6h14M3 12.4h14" stroke="currentColor" stroke-width="1.2"/></g>
+<g id="i-check"><path d="M4.5 10.5 8 14l7.5-8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g id="i-shield"><path d="M10 3 4.5 5.2v4.6c0 3.4 2.3 6.3 5.5 7.2 3.2-.9 5.5-3.8 5.5-7.2V5.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
+<g id="i-cpu"><rect x="5.5" y="5.5" width="9" height="9" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 2.5v3M12 2.5v3M8 14.5v3M12 14.5v3M2.5 8h3M2.5 12h3M14.5 8h3M14.5 12h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+<g id="i-globe"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3 10h14M10 3c1.9 2 2.9 4.4 2.9 7s-1 5-2.9 7c-1.9-2-2.9-4.4-2.9-7s1-5 2.9-7z" fill="none" stroke="currentColor" stroke-width="1.4"/></g>
+<g id="i-clock"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10 6v4.3l2.8 1.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></g>
+</defs></svg>
+
+<div class="app">
+<!-- ============================================================ sidebar -->
+<aside class="rail">
+  <div class="who" id="who">
+    <div class="avatar" id="avatarInitial">B</div>
+    <div style="min-width:0">
+      <div class="nm">BTA Studio</div>
+      <div class="sub" id="whoSub"><span class="dot"></span>local</div>
+    </div>
+    <svg width="14" height="14" style="margin-left:auto;color:var(--faint)"><use href="#i-chevd"/></svg>
+  </div>
+  <button class="invite" id="btnShare">
+    <svg width="14" height="14"><use href="#i-users"/></svg>Share on your network
+  </button>
+
+  <div class="navsec">Create</div>
+  <div class="nav">
+    <button class="on" data-v="home"><svg width="17" height="17"><use href="#i-home"/></svg>Home</button>
+    <button data-v="generate"><svg width="17" height="17"><use href="#i-spark"/></svg>Story video</button>
+    <button data-v="clips"><svg width="17" height="17"><use href="#i-grid"/></svg>Clips</button>
+    <button data-v="assets"><svg width="17" height="17"><use href="#i-folder"/></svg>Asset library</button>
+  </div>
+
+  <div class="navsec">Machine</div>
+  <div class="nav">
+    <button data-v="studio"><svg width="17" height="17"><use href="#i-cpu"/></svg>Studio</button>
+    <button data-v="activity"><svg width="17" height="17"><use href="#i-chart"/></svg>Activity
+      <span class="pill new hide" id="navRunning">0</span></button>
+    <button data-v="publish"><svg width="17" height="17"><use href="#i-cal"/></svg>Publishing</button>
+  </div>
+
+  <div class="railfoot">
+    <div class="nav">
+      <button data-v="studio"><svg width="17" height="17"><use href="#i-db"/></svg>Models</button>
+      <button data-v="help"><svg width="17" height="17"><use href="#i-book"/></svg>Learning center</button>
+      <button data-v="help"><svg width="17" height="17"><use href="#i-help"/></svg>Help center</button>
+    </div>
+    <div class="dotline" id="conn"><span class="dot"></span>connected</div>
+    <div class="dotline" style="padding-top:0">nothing leaves this machine</div>
+  </div>
+</aside>
+
+<div class="main">
+  <!-- top bar changes per view -->
+  <div class="topbar">
+    <button class="iconbtn" id="tbGrid" title="Grid / list"><svg width="17" height="17"><use href="#i-grid"/></svg></button>
+    <button class="iconbtn" id="tbMenu" title="Sections"><svg width="17" height="17"><use href="#i-menu"/></svg></button>
+    <div class="crumb grow" id="crumb">Home</div>
+    <button class="iconbtn wide" id="tbFilter"><svg width="15" height="15"><use href="#i-filter"/></svg>Filter</button>
+    <button class="iconbtn" id="tbSort" title="Sort"><svg width="17" height="17"><use href="#i-sort"/></svg></button>
+  </div>
+
+  <div class="view" id="view">
+
+  <!-- ============================================================ HOME -->
+  <section class="pane" id="v-home">
+    <div class="homewrap">
+      <div class="wordmark">BTA</div>
+
+      <div class="dropcard">
+        <div class="linkin">
+          <svg width="16" height="16" style="color:var(--faint)"><use href="#i-link"/></svg>
+          <input id="srcUrl" placeholder="Drop a video link or paste a file path">
+        </div>
+        <div class="droprow">
+          <button id="btnPickFile"><svg width="15" height="15"><use href="#i-upload"/></svg>Local file</button>
+          <button id="btnWatch"><svg width="15" height="15"><use href="#i-target"/></svg>Watch channels</button>
+        </div>
+        <button class="bigbtn" id="btnClip1">Get clips in 1 click</button>
+        <span class="samplelink" id="btnSample">Open the newest finished project</span>
+      </div>
+
+      <div class="tools" id="toolRow"></div>
+
+      <div class="projhead">
+        <div class="tabs">
+          <button class="on" data-pt="all">All projects <span id="cntAll">(0)</span></button>
+          <button data-pt="clips">Clips <span id="cntClips">(0)</span></button>
+          <button data-pt="gen">Generated <span id="cntGen">(0)</span></button>
+        </div>
+        <div class="projmeta">
+          <span class="chipmini" id="diskChip">— on disk</span>
+          <span class="chipmini"><span class="dot"></span>Auto-save</span>
+        </div>
+      </div>
+      <div class="projgrid" id="projGrid"></div>
+    </div>
+  </section>
+
+  <!-- ======================================================== GENERATE -->
+  <section class="pane hide" id="v-generate">
+    <div class="pad">
+      <div class="hero">
+        <h1>Create your <em>story video</em> today</h1>
+        <div class="lede">Every frame renders on <b>this machine</b>. No credits,
+          no watermark, nothing uploaded.</div>
+
+        <div class="composer">
+          <div class="cchips">
+            <button class="cchip" id="chStyle"><svg width="15" height="15"><use href="#i-spark"/></svg>
+              <u>Style</u><s id="chStyleV">Auto</s></button>
+            <button class="cchip" id="chAssets"><svg width="15" height="15"><use href="#i-img"/></svg>
+              <u>Assets</u><s>Optional</s></button>
+            <button class="cchip" id="chAudio"><svg width="15" height="15"><use href="#i-mic"/></svg>
+              <u>Audio</u><s id="chAudioV">Local</s></button>
+          </div>
+          <div class="cbody">
+            <textarea id="brief" rows="2" placeholder="Describe your video idea. Each sentence becomes a shot — write them as beats, not a paragraph."></textarea>
+            <div class="crow">
+              <button class="minichip" id="chBoard"><svg width="13" height="13"><use href="#i-layout"/></svg>Storyboard</button>
+              <button class="minichip" id="chAspect"><svg width="13" height="13"><use href="#i-phone"/></svg><span id="chAspectV">9:16</span></button>
+              <button class="minichip" id="chModel"><svg width="13" height="13"><use href="#i-spark"/></svg><span id="chModelV">AI model</span></button>
+              <button class="minichip" id="chShots"><svg width="13" height="13"><use href="#i-film"/></svg><span id="chShotsV">2 shots</span></button>
+              <button class="gobtn" id="btnGo" title="Generate"><svg width="15" height="15"><use href="#i-arrup"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="modes" id="modeRow">
+          <button class="mode on" data-m="script"><svg width="14" height="14"><use href="#i-text"/></svg>Script to Video</button>
+          <button class="mode" data-m="long"><svg width="14" height="14"><use href="#i-scissor"/></svg>Long to Shorts</button>
+          <button class="mode" data-m="board"><svg width="14" height="14"><use href="#i-layout"/></svg>Storyboard</button>
+          <button class="mode" data-m="motion"><svg width="14" height="14"><use href="#i-trans"/></svg>Motion Graphics</button>
+        </div>
+        <div class="estline" id="estLine"></div>
+        <div id="sbOut" style="text-align:left;max-width:640px;margin:20px auto 0"></div>
+      </div>
+
+      <div class="inspire">
+        <h3>Pick a look. Then make it yours.</h3>
+        <div class="wall" id="nicheWall"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================================================== CLIPS -->
+  <section class="pane hide" id="v-clips">
+    <div class="pad">
+      <div class="gridhead">
+        <span class="t" id="clipsTitle">Everything this machine has produced</span>
+        <span class="n" id="clipsCount">(0)</span>
+      </div>
+      <div class="clipgrid" id="clipGrid"></div>
+      <h2 id="rejHead" class="hide">Quarantined by QA</h2>
+      <div class="clipgrid" id="rejGrid"></div>
+    </div>
+  </section>
+
+  <!-- ========================================================== ASSETS -->
+  <section class="pane hide" id="v-assets">
+    <div class="pad">
+      <h1>Asset library</h1>
+      <div class="sub">Source video, generated pieces and rendered clips on this
+        machine. Everything here is a file you already have — the library is a
+        view of <code id="wsPath">workspace/</code>, not a second copy.</div>
+      <div class="stats grid g2" id="assetStats" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))"></div>
+      <h2>Generated pieces</h2>
+      <div class="grid g3" id="genGrid"></div>
+    </div>
+  </section>
+
+  <!-- ========================================================== STUDIO -->
+  <section class="pane hide" id="v-studio">
+    <div class="pad">
+      <h1>Studio</h1>
+      <div class="sub">Capabilities and models, probed live. A tile here is never
+        a promise — it reports what is actually installed on this machine, which
+        is why a control it gates can be greyed out rather than failing later.</div>
+      <h2>Capabilities</h2>
+      <div class="grid g3" id="capGrid"></div>
+      <h2>Generation models</h2>
+      <div class="grid g2" id="modelGrid"></div>
+      <h2>Cloud provider quota</h2>
+      <div class="card">
+        <table><thead><tr><th>Provider</th><th>Status</th><th>Used</th></tr></thead>
+          <tbody id="quotaBody"></tbody></table>
+        <div class="row" style="margin-top:12px">
+          <button class="wbtn" id="btnDoctor">Check prerequisites</button>
+          <button class="wbtn" id="btnResetQuota">Reset quota state</button>
+          <span class="faint">Use after enabling billing or swapping keys — not
+            every 429 reopens on its own.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================== ACTIVITY -->
+  <section class="pane hide" id="v-activity">
+    <div class="pad">
+      <h1>Activity</h1>
+      <div class="sub">Running work and recent pipeline stages, straight from the
+        state database.</div>
+      <div id="taskList"></div>
+      <h2>Recent stages</h2>
+      <div class="card"><table>
+        <thead><tr><th>Stage</th><th>Status</th><th>Job</th><th>Artifact</th></tr></thead>
+        <tbody id="stageBody"></tbody></table></div>
+    </div>
+  </section>
+
+  <!-- ======================================================= PUBLISHING -->
+  <section class="pane hide" id="v-publish">
+    <div class="pad">
+      <h1>Publishing</h1>
+      <div class="sub">This machine does not post anywhere, and there is no
+        account to connect. What the pipeline produces instead is an
+        <b>export pack</b> beside every clip: title, caption trimmed to each
+        platform's real limit, hashtags, chapters and a thumbnail — ready to
+        paste.</div>
+      <div class="card" style="border-color:#3a3020;background:#191408">
+        <div class="row" style="gap:11px;align-items:flex-start">
+          <svg width="18" height="18" style="color:var(--warn);margin-top:2px"><use href="#i-shield"/></svg>
+          <div>
+            <b style="font-size:13.5px">Why there is no Connect button</b>
+            <p class="faint" style="margin:6px 0 0;line-height:1.65;font-size:12px">
+              A scheduler here would need stored platform credentials and outbound
+              posting rights. Both break the one guarantee this tool makes. The
+              export pack gets you to the same place with a copy and a paste,
+              and the draft is auditable before it goes out.</p>
+          </div>
+        </div>
+      </div>
+      <h2>Connected accounts</h2>
+      <div class="grid g2" id="authGrid"></div>
+      <h2>Prepare a draft</h2>
+      <div class="card">
+        <div class="grid g2">
+          <div><label class="fl">Clip</label>
+            <select class="fi" id="pubClip"></select></div>
+          <div><label class="fl">Platform</label>
+            <select class="fi" id="pubPlatform"></select></div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button class="wbtn solid" id="pubGo">Prepare draft</button>
+          <span class="faint" id="pubHint"></span>
+        </div>
+      </div>
+      <h2>Export packs on disk</h2>
+      <div id="packList"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ HELP -->
+  <section class="pane hide" id="v-help">
+    <div class="pad">
+      <h1>Learning center</h1>
+      <div class="sub">The short version of how this pipeline decides what to cut.</div>
+      <div class="grid g2" id="helpGrid"></div>
+    </div>
+  </section>
+
+  </div><!-- /view -->
+</div><!-- /main -->
+</div><!-- /app -->
+
+<!-- ======================================================== clip detail -->
+<div class="mask" id="mask"><div class="dlg" id="dlg">
+  <div class="dlgnav">
+    <button id="dlgPrev" title="Previous clip"><svg width="15" height="15"><use href="#i-arrup"/></svg></button>
+    <button id="dlgNext" title="Next clip"><svg width="15" height="15"><use href="#i-arrdn"/></svg></button>
+    <button id="dlgClose" title="Close"><svg width="15" height="15"><use href="#i-x"/></svg></button>
+  </div>
+
+  <div class="dlgleft">
+    <div class="dlgrate">
+      <button id="dlgLike" title="Keep"><svg width="15" height="15"><use href="#i-heart"/></svg></button>
+      <button id="dlgHide" title="Hide"><svg width="15" height="15"><use href="#i-down2"/></svg></button>
+    </div>
+    <div>
+      <div class="bigscore"><b id="dlgScore">—</b><span>/100</span></div>
+      <div class="grades" id="dlgGrades"></div>
+    </div>
+    <div class="faint" id="dlgSrc" style="line-height:1.6"></div>
+  </div>
+
+  <div>
+    <div class="dlgvid">
+      <span class="tag2" id="dlgQual">preview</span>
+      <span class="dur" id="dlgDur">00:00</span>
+      <video id="dlgVideo" controls preload="metadata" playsinline></video>
+    </div>
+  </div>
+
+  <div class="dlgmid">
+    <h3><u id="dlgRank">#1</u><span id="dlgTitle">Clip</span></h3>
+    <div class="secrow">
+      <b>Scene analysis</b>
+      <label class="chk"><input type="checkbox" id="dlgTranscriptOnly">Transcript only</label>
+    </div>
+    <div class="scene" id="dlgScene"></div>
+  </div>
+
+  <div class="dlgacts" id="dlgActs"></div>
+</div></div>
+
+<!-- ============================================================= editor -->
+<div class="editor" id="editor">
+  <div class="ebar">
+    <button class="iconbtn" id="edBack"><svg width="17" height="17"><use href="#i-back"/></svg></button>
+    <span class="ttl" id="edTitle">Clip</span>
+    <div class="grow"></div>
+    <button class="iconbtn" id="edUndo" title="Undo"><svg width="17" height="17"><use href="#i-undo"/></svg></button>
+    <button class="iconbtn" id="edRedo" title="Redo"><svg width="17" height="17"><use href="#i-redo"/></svg></button>
+    <button class="iconbtn" id="edFull" title="Preview"><svg width="17" height="17"><use href="#i-mon"/></svg></button>
+    <button class="wbtn" id="edSave">Save changes</button>
+    <button class="wbtn solid" id="edExport">Export</button>
+    <span class="credits"><svg width="14" height="14"><use href="#i-bolt"/></svg><span id="edCredits">local</span></span>
+    <div class="avatar" style="width:26px;height:26px;font-size:10px">B</div>
+  </div>
+
+  <div class="notice" id="edNotice">
+    <span id="edNoticeText">Edits here are a plan, not a re-render.</span>
+    <button class="wbtn" id="edNoticeAct">Apply with the pipeline</button>
+  </div>
+
+  <div class="ework" id="ework">
+    <!-- transcript -->
+    <div class="tpanel">
+      <div class="thead">
+        <button class="wbtn" id="edCleanup" style="padding:6px 11px;font-size:12px">
+          <svg width="13" height="13" style="display:inline;vertical-align:-2px"><use href="#i-wave"/></svg>
+          Speech cleanup</button>
+        <div class="grow"></div>
+        <button class="iconbtn" id="edFind" title="Find in transcript"><svg width="16" height="16"><use href="#i-search"/></svg></button>
+        <button class="iconbtn" id="edTFilter" title="Highlighting"><svg width="16" height="16"><use href="#i-filter"/></svg></button>
+        <button class="iconbtn" id="edTDl" title="Download transcript"><svg width="16" height="16"><use href="#i-dl"/></svg></button>
+      </div>
+      <div class="tscroll" id="edTranscript"></div>
+    </div>
+
+    <!-- stage -->
+    <div class="stage">
+      <div class="stagebar">
+        <button class="sbchip" id="sbAspect"><svg width="14" height="14"><use href="#i-phone"/></svg><span>9:16</span></button>
+        <button class="sbchip" id="sbLayout"><svg width="14" height="14"><use href="#i-expand"/></svg><span>Layout: Fit</span></button>
+        <button class="sbchip" id="sbTracker"><svg width="14" height="14"><use href="#i-target"/></svg><span>Tracker: OFF</span></button>
+      </div>
+      <div class="canvas">
+        <div class="frame916" id="frame916">
+          <video id="edVideo" preload="metadata" playsinline></video>
+          <div class="crop hide" id="edCrop"><i></i><i></i><i></i><i></i></div>
+          <div class="croptool hide" id="edCropTool">
+            <button title="Crop"><svg width="15" height="15"><use href="#i-crop"/></svg></button>
+            <button title="Background"><svg width="15" height="15"><use href="#i-img"/></svg></button>
+            <button title="More"><svg width="15" height="15"><use href="#i-chevd"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- right panel -->
+    <div class="rpanel" id="rpanel"></div>
+
+    <!-- right tab strip -->
+    <div class="rtabs" id="rtabs"></div>
+  </div>
+
+  <!-- timeline -->
+  <div class="tl" id="timeline">
+    <div class="tlbar">
+      <button class="wbtn" id="tlToggle" style="padding:5px 10px;font-size:11.5px">Hide timeline</button>
+      <button class="iconbtn" id="tlSplit" title="Split at playhead"><svg width="16" height="16"><use href="#i-split"/></svg></button>
+      <button class="iconbtn" id="tlDel" title="Cut selection"><svg width="16" height="16"><use href="#i-trash"/></svg></button>
+      <button class="iconbtn" id="tlMute" title="Mute preview"><svg width="16" height="16"><use href="#i-mute"/></svg></button>
+      <div class="grow"></div>
+      <button class="iconbtn" id="tlPrev"><svg width="16" height="16"><use href="#i-prev"/></svg></button>
+      <button class="iconbtn" id="tlPlay"><svg width="17" height="17"><use href="#i-play"/></svg></button>
+      <button class="iconbtn" id="tlNext"><svg width="16" height="16"><use href="#i-next"/></svg></button>
+      <span class="time" id="tlTime">00:00.00 / 00:00.00</span>
+      <div class="grow"></div>
+      <button class="iconbtn" id="tlZoomOut"><svg width="16" height="16"><use href="#i-zoomout"/></svg></button>
+      <input type="range" id="tlZoom" min="1" max="6" step="0.1" value="1" style="width:110px;accent-color:var(--score)">
+      <button class="iconbtn" id="tlZoomIn"><svg width="16" height="16"><use href="#i-zoomin"/></svg></button>
+    </div>
+    <div class="tlbody" id="tlBody">
+      <div class="tlinner" id="tlInner">
+        <div class="ruler" id="tlRuler"></div>
+        <div class="lanes">
+          <button class="addbtn" id="tlAddL"><svg width="14" height="14"><use href="#i-plus"/></svg></button>
+          <div class="lanewrap">
+            <div class="vlane" id="tlVideo"><div class="fitmarks" id="tlFit"></div></div>
+            <div class="alane"><canvas id="tlWave"></canvas></div>
+            <div class="playhead" id="tlHead"><b></b></div>
+            <div class="tlhit" id="tlHit"></div>
+          </div>
+          <button class="addbtn" id="tlAddR"><svg width="14" height="14"><use href="#i-plus"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const esc=s=>String(s??'').replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
+const ic=(n,sz)=>`<svg width="${sz||16}" height="${sz||16}"><use href="#i-${n}"/></svg>`;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+/* ---------------------------------------------------------------- state */
+let NICHES=[],MODELS=[],CAPS=[],CLIPS=[],REJECTED=[],PIECES=[],TASKS=[];
+let SEL=null, VIEW='home', PROJTAB='all', busy=false, GRIDLIST=false;
+let SORT='new', FILTER='all';
+let DLG=null, DLGLIST=[];
+const LIKED=new Set(), HIDDEN=new Set();
+
+/* Editor state. `cutWords` / `cutGaps` are a PLAN — the browser cannot
+   re-encode, so removing a word here records an intent that the pipeline
+   would have to execute. The UI says so rather than implying the export
+   already reflects it. */
+const ED={open:false,clip:null,detail:null,tab:'enhance',layout:'Fit',
+  tracker:false,zoom:1,strip:null,peaks:null,playing:false,
+  cutWords:new Set(),cutGaps:new Set(),hist:[],undone:[],preset:'karaoke',
+  toggles:{emoji:true,keywords:true,transitions:true,speakers:false,
+           filler:false,pauses:false,speech:false},
+  highlight:{keywords:true,lowconf:true}};
+
+/* --------------------------------------------------------------- helpers */
+const api=async(u,o)=>{
+  const r=await fetch(u,o);
+  if(!r.ok){let d;try{d=(await r.json()).error}catch(e){d=r.statusText}
+    throw new Error(d||('HTTP '+r.status))}
+  return r.json();
+};
+const toast=(m,bad)=>{
+  const t=document.createElement('div');t.className='toast';
+  t.innerHTML=(bad?'<b>Failed</b><br>':'')+esc(m);
+  document.body.appendChild(t);setTimeout(()=>t.remove(),6500);
+};
+const mmss=s=>{s=Math.max(0,Number(s)||0);
+  return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(Math.floor(s%60)).padStart(2,'0')}`};
+const mmssms=s=>{s=Math.max(0,Number(s)||0);
+  return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(Math.floor(s%60)).padStart(2,'0')}.${String(Math.floor(s%1*100)).padStart(2,'0')}`};
+const mb=n=>(Number(n)||0).toFixed(1)+' MB';
+const gb=n=>n>=1024?(n/1024).toFixed(2)+' GB':(Number(n)||0).toFixed(0)+' MB';
+const post=(u,b)=>api(u,{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(b||{})});
+
+/* Every "apply" control in this UI ends here. The browser cannot cut or
+   re-encode; the pipeline can, and it takes each of these as a flag. So a
+   toggle does not describe a command — it runs it on the clip's own
+   source and the run shows up under Activity. */
+async function rerun(clip,opts,label){
+  if(!clip) return;
+  if(!clip.source_exists)
+    return toast(clip.source_path
+      ? `The source this clip came from is no longer on disk:\n${clip.source_path}`
+      : 'No source recorded for this clip, so it cannot be re-run.',1);
+  const body=Object.assign({filename:clip.filename,rejected:!!clip.rejected,
+    clips:1},opts||{});
+  try{
+    const r=await post('/api/clips/rerun',body);
+    toast(`${label||'Re-run'} started on ${(r.source||'').split(/[\\/]/).pop()}.`
+      +` Follow it under Activity — the new clip appears when QA passes.`);
+    go('activity'); refresh();
+  }catch(e){ toast(e.message,1) }
+}
+async function dubClip(clip,lang,subsOnly,keepOriginal){
+  try{
+    await post('/api/dub',{filename:clip.filename,rejected:!!clip.rejected,
+      lang,subtitles_only:!!subsOnly,keep_original:keepOriginal||0});
+    toast(`Dubbing to ${lang} started — follow it under Activity.`);
+    go('activity'); refresh();
+  }catch(e){ toast(e.message,1) }
+}
+/* Voiceover and upscale both write a SIDECAR beside the clip and leave the
+   original alone, so both say so — a control that silently replaces the
+   thing you are looking at is one nobody trusts twice. */
+async function voiceoverClip(clip,script,gainDb){
+  try{
+    await post('/api/voiceover',{filename:clip.filename,
+      rejected:!!clip.rejected,script,gain_db:Number(gainDb)||0});
+    toast('Voiceover started — follow it under Activity. It lands as a new '
+      +'clip beside this one; the original is untouched.');
+    go('activity'); refresh();
+  }catch(e){ toast(e.message,1) }
+}
+async function upscaleClip(clip,height){
+  try{
+    await post('/api/upscale',{filename:clip.filename,
+      rejected:!!clip.rejected,height:Number(height)||2560});
+    toast(`Upscaling to ${height}p started — follow it under Activity. This `
+      +'is resampling, not invented detail, and it lands as a new clip.');
+    go('activity'); refresh();
+  }catch(e){ toast(e.message,1) }
+}
+
+/* ------------------------------------------------------------ navigation */
+function go(v){
+  VIEW=v;
+  $$('.pane').forEach(p=>p.classList.add('hide'));
+  const pane=$('#v-'+v); if(pane) pane.classList.remove('hide');
+  $$('.rail .nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  const isClips=v==='clips';
+  $('#tbFilter').classList.toggle('hide',!isClips);
+  $('#tbSort').classList.toggle('hide',!isClips);
+  $('#tbGrid').classList.toggle('hide',!isClips);
+  $('#crumb').textContent={home:'Home',generate:'Story video',clips:'Clips',
+    assets:'Asset library',studio:'Studio',activity:'Activity',
+    publish:'Publishing',help:'Learning center'}[v]||v;
+  $('#view').scrollTop=0;
+}
+$$('.rail .nav button').forEach(b=>b.onclick=()=>go(b.dataset.v));
+$('#tbGrid').onclick=()=>{GRIDLIST=!GRIDLIST;
+  $('#clipGrid').classList.toggle('list',GRIDLIST);
+  $('#tbGrid').classList.toggle('on',GRIDLIST)};
+$('#tbMenu').onclick=()=>go(VIEW==='clips'?'home':'clips');
+$('#tbSort').onclick=()=>{
+  SORT=SORT==='new'?'score':(SORT==='score'?'dur':'new');
+  toast('Sorted by '+{new:'newest',score:'score',dur:'duration'}[SORT]+'.');
+  renderClips();
+};
+$('#tbFilter').onclick=()=>{
+  FILTER=FILTER==='all'?'passed':(FILTER==='passed'?'scored':'all');
+  toast('Showing '+{all:'everything',passed:'QA-passed only',
+    scored:'model-scored only'}[FILTER]+'.');
+  renderClips();
+};
+
+/* ================================================================= HOME */
+/* The tool row gates on real capabilities: a tile that this machine cannot
+   run is dimmed and says why, rather than opening a dead screen. */
+const TOOLS=[
+  {k:'long',   n:'Long to shorts', i:'scissor', cap:null,        go:()=>go('home')},
+  {k:'cc',     n:'AI captions',    i:'cc',      cap:null,        go:()=>{go('clips')}},
+  {k:'edit',   n:'Video editor',   i:'film',    cap:null,        go:()=>openNewest()},
+  {k:'script', n:'Script to video',i:'text',    cap:'genvideo',  go:()=>go('generate')},
+  {k:'reframe',n:'AI reframe',     i:'crop',    cap:'tracking',  go:()=>openNewest()},
+  {k:'speech', n:'Enhance speech', i:'wave',    cap:'speech',    go:()=>openNewest('enhance')},
+  {k:'broll',  n:'AI B-roll',      i:'img',     cap:'broll',     go:()=>openNewest('broll')},
+  {k:'vo',     n:'Voiceover hook', i:'mic',     cap:'voiceover', go:()=>openNewest('vo')},
+  {k:'up',     n:'Upscale',        i:'zoomin',  cap:'upscale',   go:()=>openNewest('up')},
+  {k:'pack',   n:'Export pack',    i:'save',    cap:'publish',   go:()=>go('publish')},
+  {k:'watch',  n:'Watch channels', i:'target',  cap:null,        go:()=>startWatch()},
+  {k:'studio', n:'Studio',         i:'cpu',     cap:null,        go:()=>go('studio')},
+];
+const capOf=k=>k?CAPS.find(c=>c.key===k):null;
+const capOk=k=>{if(!k)return true;const c=capOf(k);return !!(c&&c.available)};
+/* Name the engine that will actually speak. "Local model" would hide the
+   difference between a neural voice and flite, which is plainly audible —
+   the capability note already draws that distinction, so reuse it rather
+   than inventing a second source of truth in the UI. */
+const voEngine=()=>{
+  const c=capOf('voiceover')||{};
+  if(!c.available) return 'No local voice installed';
+  return /Kokoro/.test(c.note||'') ? 'Kokoro-82M (neural)'
+                                   : 'flite (plainly synthetic)';
+};
+
+function renderTools(){
+  $('#toolRow').innerHTML=TOOLS.map(t=>{
+    const ok=capOk(t.cap), c=capOf(t.cap);
+    const why=ok?'':esc((c&&(c.blocker||c.note))||'not available on this machine');
+    return `<button class="tool${ok?'':' dis'}" data-tool="${t.k}" title="${why}">
+      <span class="ic">${ic(t.i,19)}</span><span>${esc(t.n)}</span></button>`;
+  }).join('');
+  $$('[data-tool]').forEach(b=>b.onclick=()=>{
+    const t=TOOLS.find(x=>x.k===b.dataset.tool);
+    if(!capOk(t.cap)){
+      const c=capOf(t.cap);
+      return toast((c&&(c.blocker||c.note))||'Not available on this machine.'
+        +' See Studio for what is installed.',1);
+    }
+    t.go();
+  });
+}
+
+function projectCards(){
+  let items=[];
+  if(PROJTAB!=='gen') items=items.concat(CLIPS.map(c=>({kind:'clip',c})));
+  if(PROJTAB!=='clips') items=items.concat(PIECES.map(p=>({kind:'gen',p})));
+  items.sort((a,b)=>((b.c||b.p).created_at||0)-((a.c||a.p).created_at||0));
+  if(!items.length) return '<div class="empty">Nothing produced yet. Drop a link above.</div>';
+  return items.slice(0,24).map(it=>{
+    if(it.kind==='clip'){
+      const c=it.c, sc=c.score?Math.round(c.score.overall):null;
+      return `<div class="proj" data-open="${esc(c.filename)}">
+        <div class="shot">
+          ${c.thumb_url?`<img loading="lazy" src="${esc(c.thumb_url)}">`
+                       :`<video preload="metadata" src="${esc(c.url)}#t=1"></video>`}
+          <div class="badges">
+            <span class="pill">${c.rejected?'quarantined':'clip'}</span>
+            ${sc!==null?`<span class="pill" style="color:var(--score)">${sc}</span>`:''}
+          </div>
+          <div class="foot">${mmss(c.duration_s)} · ${esc(c.width||'?')}×${esc(c.height||'?')}</div>
+        </div>
+        <b>${esc(c.title||c.filename)}</b>
+        <i>${mb(c.size_mb)}${c.variant?' · '+esc(c.variant):''}</i></div>`;
+    }
+    const p=it.p;
+    return `<div class="proj" data-gen="${esc(p.slug)}">
+      <div class="shot"><video preload="metadata" src="${esc(p.url||p.sequence_url||'')}#t=0.5"></video>
+        <div class="badges"><span class="pill">generated</span></div>
+        <div class="foot">${p.shots||1} shot(s)</div></div>
+      <b>${esc(p.slug)}</b><i>${mb(p.size_mb)}</i></div>`;
+  }).join('');
+}
+function renderHome(){
+  $('#cntAll').textContent=`(${CLIPS.length+PIECES.length})`;
+  $('#cntClips').textContent=`(${CLIPS.length})`;
+  $('#cntGen').textContent=`(${PIECES.length})`;
+  const bytes=[...CLIPS,...REJECTED,...PIECES].reduce((a,x)=>a+(x.size_mb||0),0);
+  $('#diskChip').textContent=gb(bytes)+' on disk';
+  $('#projGrid').innerHTML=projectCards();
+  bindOpeners($('#projGrid'));
+}
+$$('.tabs button[data-pt]').forEach(b=>b.onclick=()=>{
+  PROJTAB=b.dataset.pt;
+  $$('.tabs button[data-pt]').forEach(x=>x.classList.toggle('on',x===b));
+  renderHome();
+});
+function bindOpeners(root){
+  root.querySelectorAll('[data-open]').forEach(el=>el.onclick=e=>{
+    e.stopPropagation();openDetail(el.dataset.open)});
+  root.querySelectorAll('[data-gen]').forEach(el=>el.onclick=()=>go('assets'));
+}
+function openNewest(tab){
+  const c=CLIPS[0];
+  if(!c) return toast('No clip to edit yet — run the pipeline first.',1);
+  openEditor(c.filename,tab);
+}
+
+$('#btnClip1').onclick=async()=>{
+  const src=$('#srcUrl').value.trim();
+  if(!src) return toast('Paste a video link or a file path first.',1);
+  const btn=$('#btnClip1'); btn.disabled=true; btn.textContent='Starting…';
+  try{
+    // A URL and a path are two different commands. `process` takes a LOCAL
+    // file and fails on a URL after the download step it never runs;
+    // `grab` downloads first, then clips. Route on what was actually typed.
+    const isUrl=/^https?:\/\//i.test(src);
+    if(isUrl) await post('/api/grab',{url:src,clips:3});
+    else await post('/api/process',{source:src,clips:3,niche:SEL||null,
+      jumpcut:null,enhance:null});
+    toast(isUrl?'Downloading, then clipping — follow it under Activity.'
+               :'Pipeline started — follow it under Activity.');
+    go('activity');
+  }catch(e){toast(e.message,1)}
+  finally{btn.disabled=false;btn.textContent='Get clips in 1 click';refresh()}
+};
+$('#btnPickFile').onclick=()=>pickUpload();
+$('#btnSample').onclick=()=>{const c=CLIPS[0];
+  c?openDetail(c.filename):toast('Nothing finished yet.',1)};
+$('#btnShare').onclick=()=>toast('Run `bta web --host 0.0.0.0 --port 8011` to '
+  +'reach this from your phone on the same Wi-Fi. Binding to 0.0.0.0 exposes '
+  +'the control API to your whole network.');
+async function startWatch(){
+  try{const r=await api('/api/watch/start',{method:'POST'});
+    toast(r.status==='already_running'?'Already watching.':'Watching channels.');
+    go('activity');refresh();
+  }catch(e){toast(e.message,1)}
+}
+$('#btnWatch').onclick=startWatch;
+
+/* ============================================================= GENERATE */
+function nicheSwatch(n){
+  if(/dark|mindset/i.test(n.name)) return 'background:linear-gradient(160deg,#141416,#3c3c40 46%,#0b0b0d)';
+  if(/viral|clip/i.test(n.name))   return 'background:linear-gradient(140deg,#ff8a3d,#ff3d7f 55%,#a06bff)';
+  if(/motion/i.test(n.name))       return 'background:linear-gradient(140deg,#3ddc9a,#2b8cff 60%,#8b5cf6)';
+  return 'background:linear-gradient(150deg,#243040,#5f7fe8 62%,#1a2030)';
+}
+function renderNiches(){
+  $('#nicheWall').innerHTML=NICHES.map(n=>`
+    <div class="card9${SEL===n.name?' on':''}" data-niche="${esc(n.name)}"
+         style="${SEL===n.name?'border-color:var(--score)':''}">
+      <div class="art" style="${nicheSwatch(n)}">${esc(n.label)}</div>
+      <span class="lab">${esc(n.aspect)} · ${n.shots} shots</span>
+      <div class="acts">
+        <button data-use="${esc(n.name)}">Use style</button>
+        <button data-peek="${esc(n.name)}">What it does</button>
+      </div>
+    </div>`).join('')||'<div class="empty">No niches defined.</div>';
+  $$('[data-use]').forEach(b=>b.onclick=e=>{e.stopPropagation();
+    // A new style brings its own shots/aspect, so a leftover override from
+    // the previous one would silently follow you across looks.
+    SEL=b.dataset.use;GENOVR.shots=null;GENOVR.aspect=null;
+    renderNiches();syncComposer();toast('Style: '+SEL)});
+  $$('[data-peek]').forEach(b=>b.onclick=e=>{e.stopPropagation();
+    const n=NICHES.find(x=>x.name===b.dataset.peek);
+    toast(`${n.label} — ${n.summary} · ${n.captions} captions${n.graded?' · graded':''}`)});
+  $$('[data-niche]').forEach(el=>el.onclick=()=>{
+    SEL=el.dataset.niche;renderNiches();syncComposer()});
+}
+/* Composer overrides. The style still supplies the defaults — shots and
+   pacing really are tuned together — but "tuned together" was being used
+   to justify a chip that only explained itself. An override is allowed,
+   shown as such, and cleared when you pick a different style. */
+const GENOVR={shots:null,aspect:null};
+const genShots=()=>{const n=NICHES.find(x=>x.name===SEL);
+  return GENOVR.shots||(n?n.shots:2)||2};
+const genAspect=()=>{const n=NICHES.find(x=>x.name===SEL);
+  return GENOVR.aspect||(n?n.aspect:'9:16')||'9:16'};
+
+function syncComposer(){
+  const n=NICHES.find(x=>x.name===SEL);
+  $('#chStyleV').textContent=n?n.label:'Auto';
+  $('#chAspectV').textContent=genAspect()+(GENOVR.aspect?' ·':'');
+  $('#chShotsV').textContent=genShots()+' shots'+(GENOVR.shots?' ·':'');
+  const usable=MODELS.filter(m=>m.usable);
+  $('#chModelV').textContent=usable.length?usable[0].label:'No model';
+  if(n){
+    const secs=Math.round(n.shots*(n.shot_seconds||5));
+    $('#estLine').textContent=`≈ ${secs}s of video · ${usable.length
+      ? 'model auto-selected by VRAM and shot size' : 'no usable model installed'}`;
+  }else $('#estLine').textContent='';
+}
+$('#chStyle').onclick=()=>{go('generate');
+  document.querySelector('.inspire').scrollIntoView({behavior:'smooth'})};
+$('#chShots').onclick=()=>{
+  const n=NICHES.find(x=>x.name===SEL);
+  const cur=genShots();
+  const raw=prompt(`How many shots?\n\n${n?n.label+' suggests '+n.shots:'No style selected'}`
+    +`\nLength comes from cutting, so more shots = a longer piece.\n`
+    +`1-64, or blank to go back to the style's own count.`,String(cur));
+  if(raw===null) return;
+  if(!raw.trim()){ GENOVR.shots=null; syncComposer();
+    return toast('Shot count back to the style default.') }
+  const v=Math.floor(Number(raw));
+  if(!Number.isFinite(v)||v<1||v>64)
+    return toast('Shots must be a whole number from 1 to 64.',1);
+  GENOVR.shots=v; syncComposer();
+  toast(`${v} shot(s) — overriding the style until you pick another.`);
+};
+$('#chAspect').onclick=()=>{
+  // Two real targets, so a toggle beats a prompt. `·` on the chip marks it
+  // as an override rather than the style's own value.
+  GENOVR.aspect = genAspect()==='9:16' ? '16:9' : '9:16';
+  const n=NICHES.find(x=>x.name===SEL);
+  if(n && GENOVR.aspect===n.aspect) GENOVR.aspect=null;  // back to default
+  syncComposer();
+  toast(`Aspect ${genAspect()}${GENOVR.aspect?' (overriding the style)':''}.`);
+};
+$('#chModel').onclick=()=>{go('studio');
+  toast('Models are selected automatically by VRAM headroom and shot size — '
+       +'here is what is installed.')};
+$('#chAssets').onclick=()=>toast('Bring your own footage by running the clipper '
+  +'on it instead: paste the path on Home.');
+$('#chAudio').onclick=()=>{
+  const c=capOf('voiceover');
+  toast(c&&c.available?'Voiceover runs locally — open a clip and use the '
+    +'Voiceover hook panel.':'No local voice model installed. See Studio.')};
+
+$('#btnGo').onclick=async()=>{
+  const brief=$('#brief').value.trim();
+  if(!brief) return toast('Write a brief first.',1);
+  if(!SEL) return toast('Pick a style first.',1);
+  const n=NICHES.find(x=>x.name===SEL)||{};
+  $('#btnGo').disabled=true;
+  try{
+    await api('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({brief,niche:SEL,preset:SEL,shots:genShots(),
+        aspect_ratio:genAspect(),clip:false})});
+    toast('Generation started — follow it under Activity.');go('activity');
+  }catch(e){toast(e.message,1)}
+  finally{$('#btnGo').disabled=false;refresh()}
+};
+async function storyboard(){
+  const brief=$('#brief').value.trim();
+  if(!brief) return toast('Write a brief first.',1);
+  if(!SEL) return toast('Pick a style first.',1);
+  const n=NICHES.find(x=>x.name===SEL)||{};
+  try{
+    const sb=await api('/api/storyboard',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({brief,preset:SEL,shots:genShots()})});
+    const rows=sb.shots||[];
+    $('#sbOut').innerHTML='<h2 style="margin:4px 0 10px">Storyboard</h2>'+
+      rows.map((s,i)=>`<div class="card" style="margin-bottom:8px">
+        <div class="row" style="justify-content:space-between">
+          <b style="font-size:13px">Shot ${i+1}</b>
+          <span class="faint">${esc(s.seconds||s.duration||'')}s</span></div>
+        <p class="dim" style="margin:7px 0 0;font-size:12.5px;line-height:1.6">
+          ${esc(s.beat||s.prompt||'')}</p></div>`).join('');
+  }catch(e){toast(e.message,1)}
+}
+$('#chBoard').onclick=storyboard;
+$$('#modeRow .mode').forEach(b=>b.onclick=()=>{
+  $$('#modeRow .mode').forEach(x=>x.classList.toggle('on',x===b));
+  const m=b.dataset.m;
+  if(m==='long') go('home');
+  else if(m==='board') storyboard();
+  else if(m==='motion'){
+    const mg=NICHES.find(n=>/motion/i.test(n.name+n.label));
+    if(mg){SEL=mg.name;renderNiches();syncComposer();toast('Style: '+mg.label)}
+    else toast('No motion-graphics style is defined.',1);
+  }
+});
+
+/* ================================================================ CLIPS */
+function sortClips(list){
+  const a=[...list];
+  if(SORT==='score') a.sort((x,y)=>((y.score||{}).overall||0)-((x.score||{}).overall||0));
+  else if(SORT==='dur') a.sort((x,y)=>(y.duration_s||0)-(x.duration_s||0));
+  else a.sort((x,y)=>(y.created_at||0)-(x.created_at||0));
+  return a;
+}
+function filterClips(list){
+  if(FILTER==='passed') return list.filter(c=>c.qa&&c.qa.passed);
+  if(FILTER==='scored') return list.filter(c=>c.score&&c.score.source==='vl');
+  return list;
+}
+function clipCard(c,rank){
+  const sc=c.score?Math.round(c.score.overall):null;
+  const heur=c.score&&c.score.source!=='vl';
+  const tags=[];
+  if(c.variant) tags.push(`<span class="tag mut">${esc(c.variant)}</span>`);
+  if(c.qa&&!c.qa.passed) tags.push(`<span class="tag bad">${c.qa.failed_count} fail</span>`);
+  else if(c.qa&&c.qa.warned_count) tags.push(`<span class="tag warn">${c.qa.warned_count} warn</span>`);
+  if(heur) tags.push('<span class="tag mut">heuristic</span>');
+  return `<div class="cl" data-fn="${esc(c.filename)}">
+    <div class="frame">
+      ${c.thumb_url?`<img loading="lazy" src="${esc(c.thumb_url)}" alt="">`
+                   :`<video preload="metadata" muted playsinline src="${esc(c.url)}#t=1"></video>`}
+      <span class="dur">00:00&nbsp;&nbsp;${mmss(c.duration_s)}</span>
+      <div class="rate">
+        <button data-like="${esc(c.filename)}" class="${LIKED.has(c.filename)?'on':''}"
+          title="Keep">${ic('heart',14)}</button>
+        <button data-hide="${esc(c.filename)}" title="Hide">${ic('down2',14)}</button>
+      </div>
+      <div class="play" data-open="${esc(c.filename)}"><i>${ic('play',18)}</i></div>
+    </div>
+    <div class="meta">
+      <div class="scorerow">
+        ${sc!==null?`<span class="sc">${sc}</span>`
+                   :`<span class="sc none">not scored</span>`}
+        <span class="tools">
+          <button data-pack="${esc(c.filename)}" title="Export pack">${ic('save',15)}</button>
+          <button data-dl="${esc(c.url)}" title="Download">${ic('dl',15)}</button>
+          <button data-edit="${esc(c.filename)}" title="Edit clip">${ic('scissor',15)}</button>
+          <button class="del" data-del="${esc(c.filename)}" title="Trash">${ic('trash',15)}</button>
+        </span>
+      </div>
+      <div class="ttl" data-open="${esc(c.filename)}">${esc(c.title||c.filename)}</div>
+      ${tags.length?`<div class="tags">${tags.join('')}</div>`:''}
+    </div></div>`;
+}
+function renderClips(){
+  const shown=sortClips(filterClips(CLIPS)).filter(c=>!HIDDEN.has(c.filename));
+  DLGLIST=shown;
+  $('#clipsCount').textContent=`(${shown.length})`;
+  $('#clipsTitle').textContent = FILTER==='all'
+    ? 'Everything this machine has produced'
+    : (FILTER==='passed' ? 'QA-passed clips' : 'Model-scored clips');
+  $('#clipGrid').innerHTML=shown.length?shown.map(clipCard).join('')
+    :'<div class="empty">No clips match. Run the pipeline from Home.</div>';
+  const rej=sortClips(REJECTED);
+  $('#rejHead').classList.toggle('hide',!rej.length);
+  $('#rejGrid').innerHTML=rej.map(clipCard).join('');
+  bindClipActions();
+}
+function bindClipActions(){
+  $$('[data-open]').forEach(el=>el.onclick=e=>{e.stopPropagation();openDetail(el.dataset.open)});
+  $$('[data-edit]').forEach(el=>el.onclick=e=>{e.stopPropagation();openEditor(el.dataset.edit)});
+  $$('[data-dl]').forEach(el=>el.onclick=e=>{e.stopPropagation();window.open(el.dataset.dl,'_blank')});
+  $$('[data-like]').forEach(el=>el.onclick=async e=>{e.stopPropagation();
+    const f=el.dataset.like, want=!LIKED.has(f);
+    want?LIKED.add(f):LIKED.delete(f);
+    el.classList.toggle('on',want);
+    try{ await post('/api/ratings',{filename:f,liked:want}) }
+    catch(err){ toast(err.message,1) }});
+  $$('[data-hide]').forEach(el=>el.onclick=async e=>{e.stopPropagation();
+    const f=el.dataset.hide;
+    HIDDEN.add(f); renderClips();
+    try{ await post('/api/ratings',{filename:f,hidden:true});
+      toast('Hidden. The file is untouched — clear it in '
+        +'workspace/uicache/ratings.json.');
+    }catch(err){ toast(err.message,1) }});
+  $$('[data-pack]').forEach(el=>el.onclick=e=>{e.stopPropagation();
+    showPack(CLIPS.concat(REJECTED).find(c=>c.filename===el.dataset.pack))});
+  $$('[data-del]').forEach(el=>el.onclick=async e=>{
+    e.stopPropagation();
+    const fn=el.dataset.del;
+    const c=CLIPS.concat(REJECTED).find(x=>x.filename===fn);
+    if(!confirm(`Move this clip to workspace/trash?\n\n${fn}\n\n`
+      +`Its export pack and thumbnail go with it. This is a move, not a `
+      +`delete — recover it from workspace/trash.`)) return;
+    el.disabled=true;
+    try{
+      const r=await api('/api/clips/delete',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({filename:fn,rejected:!!(c&&c.rejected)})});
+      toast(`Moved ${r.files.length} file(s) to trash.`);refresh();
+    }catch(err){el.disabled=false;toast(err.message,1)}
+  });
+}
+
+/* ========================================================= clip detail */
+const DETAIL_CACHE=new Map();
+async function loadDetail(fn,rejected){
+  if(DETAIL_CACHE.has(fn)) return DETAIL_CACHE.get(fn);
+  const d=await api(`/api/clips/${encodeURIComponent(fn)}/detail`
+    +(rejected?'?rejected=1':''));
+  DETAIL_CACHE.set(fn,d);
+  return d;
+}
+function gradeRows(score){
+  if(!score) return '<div class="faint" style="line-height:1.6">No score recorded — '
+    +'the ranking stage did not run for this clip.</div>';
+  return score.dimensions.map(d=>`
+    <div class="grade${d.model_judged?'':' heur'}" title="${esc(d.note)}">
+      <b>${esc(d.grade)}</b><span>${esc(d.name)}</span>
+      ${d.model_judged?'':'<em>heuristic</em>'}</div>`).join('');
+}
+function sceneHtml(c,det,transcriptOnly){
+  const t=det.transcript;
+  const win=(c.clip_start!=null&&c.clip_end!=null)
+    ? `[${mmss(c.clip_start)} - ${mmss(c.clip_end)}]` : '';
+  let out=win?`<span class="ts">${win} in the source</span>`:'';
+  if(!transcriptOnly){
+    if(c.justification) out+=`<p style="margin:0 0 12px">${esc(c.justification)}</p>`;
+    if(c.hook) out+=`<p style="margin:0 0 12px;color:var(--ink)">Hook: ${esc(c.hook)}</p>`;
+    if(!c.justification&&!c.hook)
+      out+='<p style="margin:0 0 12px">No model judgement recorded for this clip.</p>';
+  }
+  if(!t||!t.available)
+    return out+`<p class="faint">${esc((t&&t.reason)||'No transcript.')}</p>`;
+  const chaps=(c.chapters||[]).map(ch=>({t:(ch.t||0)-(c.clip_start||0),
+    label:ch.label||''})).filter(ch=>ch.t>=-1);
+  let ci=0, body='';
+  t.segments.forEach(seg=>{
+    while(ci<chaps.length&&chaps[ci].t<=seg.start){
+      body+=`<div class="chapline"><u>${mmss(Math.max(0,chaps[ci].t))}</u>${esc(chaps[ci].label)}</div>`;
+      ci++;
+    }
+    body+=esc(seg.text)+' ';
+  });
+  return out+body;
+}
+async function openDetail(fn){
+  const all=CLIPS.concat(REJECTED);
+  const c=all.find(x=>x.filename===fn); if(!c) return;
+  DLG=c;
+  $('#mask').classList.add('on');
+  $('#dlgVideo').src=c.url;
+  $('#dlgTitle').textContent=c.title||c.filename;
+  $('#dlgDur').textContent=mmss(c.duration_s);
+  $('#dlgQual').textContent=(c.width&&c.height)?`${c.width}×${c.height}`:'preview';
+  const idx=DLGLIST.findIndex(x=>x.filename===fn);
+  $('#dlgRank').textContent=idx>=0?`#${idx+1}`:'';
+  $('#dlgScore').textContent=c.score?Math.round(c.score.overall):'—';
+  $('#dlgGrades').innerHTML=gradeRows(c.score);
+  $('#dlgLike').classList.toggle('on',LIKED.has(fn));
+  $('#dlgSrc').innerHTML=[
+    c.encoder?`Encoder ${esc(c.encoder)}`:'',
+    (c.loudness_i!=null)?`${c.loudness_i} LUFS · ${c.loudness_tp} dBTP`:'',
+    c.framing_mode?`Framing ${esc(c.framing_mode)}`:'',
+    c.qa?(c.qa.passed?`QA passed (${c.qa.checks.length} checks)`
+                     :`QA failed (${c.qa.failed_count})`):'',
+    mb(c.size_mb)].filter(Boolean).join('<br>');
+  $('#dlgActs').innerHTML=actionStack(c);
+  bindActions(c);
+  $('#dlgScene').innerHTML='<span class="faint">Loading transcript…</span>';
+  try{
+    const det=await loadDetail(fn,c.rejected);
+    if(DLG&&DLG.filename===fn)
+      $('#dlgScene').innerHTML=sceneHtml(c,det,$('#dlgTranscriptOnly').checked);
+  }catch(e){ $('#dlgScene').innerHTML=`<span class="faint">${esc(e.message)}</span>`; }
+}
+function actionStack(c){
+  const rows=[
+    ['publish','cal','Publish on social',true],
+    ['pack','save','Copy export pack',!!c.has_export],
+    ['dl','crown','Download master',true],
+    ['srt','cc','Download subtitles',!!(c.subtitle_tracks||[]).length],
+    ['dub','globe','Dub & translate',capOk('dubbing'),'hot'],
+    ['edit','x','Edit clip',true],
+    ['ai','spark','AI tools',!!c.source_exists,'','rt'],
+    ['aspect','phone','9:16',true],
+    ['rerun','copy','Re-run source',!!c.source_exists],
+  ];
+  return rows.map(([k,i,label,ok,cls,rt])=>
+    `<button class="act ${cls||''} ${ok?'':'dis'}" data-act="${k}">
+      ${ic(i,15)}${esc(label)}${rt?`<span class="rt">${ic('chev',13)}</span>`:''}</button>`
+  ).join('');
+}
+function bindActions(c){
+  const acts={
+    publish:()=>{closeDetail();go('publish');PUBLISH_FOR=c.filename;renderPublish()},
+    pack:()=>showPack(c),
+    dl:()=>window.open(c.url,'_blank'),
+    srt:()=>{
+      const langs=c.subtitle_tracks||[];
+      if(!langs.length) return toast('No translated subtitles yet.',1);
+      langs.forEach(l=>window.open(
+        `/api/clips/subtitles/${encodeURIComponent(c.filename)}/${l}`,'_blank'));
+    },
+    dub:e=>dubMenu(e.currentTarget,c),
+    edit:()=>{closeDetail();openEditor(c.filename)},
+    ai:e=>aiMenu(e.currentTarget,c),
+    aspect:()=>toast(`Rendered ${c.width||'?'}×${c.height||'?'}. Aspect comes `
+      +`from the style at render time — pick a 16:9 style and re-run to change it.`),
+    rerun:()=>{
+      if(!confirm(`Re-run the pipeline on this clip's source?\n\n`
+        +`${c.source_path||''}\n\nIt re-ranks and re-renders; this clip stays.`))
+        return;
+      rerun(c,{clips:3},'Re-run');
+    },
+  };
+  $$('#dlgActs [data-act]').forEach(b=>b.onclick=e=>{
+    if(b.classList.contains('dis')) return toast('Not available on this machine.',1);
+    acts[b.dataset.act]?.(e);
+  });
+}
+function menuAt(anchor,html,bind){
+  $('.submenu')?.remove();
+  const m=document.createElement('div');
+  m.className='submenu'; m.innerHTML=html;
+  document.body.appendChild(m);
+  const r=anchor.getBoundingClientRect();
+  m.style.left=Math.max(8,r.left-m.offsetWidth-8)+'px';
+  m.style.top=Math.min(window.innerHeight-m.offsetHeight-8,r.top)+'px';
+  bind(m);
+  setTimeout(()=>document.addEventListener('click',function h(){m.remove();
+    document.removeEventListener('click',h)},{once:true}),0);
+  return m;
+}
+function aiMenu(anchor,c){
+  const items=[
+    ['jumpcut','clock','Remove pauses',null,{jumpcut:true}],
+    ['gentle','wave','Speech cleanup','speech',{enhance:'gentle'}],
+    ['broll','img','Add B-roll','broll',{broll:true}],
+  ];
+  menuAt(anchor,items.map(([k,i,n,cap])=>
+    `<button data-ai="${k}" class="${capOk(cap)?'':'dis'}">${ic(i,15)}${n}</button>`
+  ).join(''),m=>{
+    m.querySelectorAll('[data-ai]').forEach(b=>b.onclick=()=>{
+      const it=items.find(x=>x[0]===b.dataset.ai);
+      m.remove();
+      if(!capOk(it[3])){
+        const cc=capOf(it[3]);
+        return toast((cc&&(cc.blocker||cc.note))||'Not available here.',1);
+      }
+      if(!confirm(`${it[2]}\n\nRe-runs the pipeline on this clip's source `
+        +`and renders a new clip. This one stays.`)) return;
+      closeDetail(); rerun(c,it[4],it[2]);
+    });
+  });
+}
+function dubMenu(anchor,c){
+  if(!DUBLANGS.length) return toast('No dubbing targets loaded.',1);
+  menuAt(anchor,DUBLANGS.map(l=>
+    `<button data-dl2="${esc(l.code)}">${ic(l.audio?'mic':'cc',15)}
+      ${esc(l.label)}<span class="rt" style="margin-left:auto;font-size:10px;
+      color:var(--faint)">${l.audio?'voiced':'subs'}</span></button>`
+  ).join(''),m=>{
+    m.querySelectorAll('[data-dl2]').forEach(b=>b.onclick=()=>{
+      const l=DUBLANGS.find(x=>x.code===b.dataset.dl2); m.remove();
+      if(!confirm(`Dub to ${l.label}?\n\n`+(l.audio
+        ? `Translates and voices it with ${l.voice}, writing a new video `
+          +`beside the clip.`
+        : `Writes a translated .srt beside the clip. No installed voice `
+          +`speaks ${l.label}, so the audio is not dubbed.`))) return;
+      closeDetail(); dubClip(c,l.code,!l.audio,0);
+    });
+  });
+}
+function showPack(c){
+  if(!c) return;
+  if(!c.has_export) return toast('No export pack beside this clip. It is written '
+    +'when the publish stage runs.',1);
+  const lines=[
+    c.title?`TITLE\n${c.title}`:'',
+    c.caption?`\n\nCAPTION\n${c.caption}`:'',
+    (c.hashtags||[]).length?`\n\nHASHTAGS\n${c.hashtags.join(' ')}`:'',
+  ].join('');
+  navigator.clipboard?.writeText(lines);
+  toast('Export pack copied. It is a DRAFT — nothing was posted.');
+}
+function closeDetail(){
+  $('#mask').classList.remove('on');
+  const v=$('#dlgVideo'); v.pause(); v.removeAttribute('src'); v.load();
+  DLG=null;
+}
+$('#dlgClose').onclick=closeDetail;
+$('#mask').onclick=e=>{if(e.target.id==='mask') closeDetail()};
+$('#dlgTranscriptOnly').onchange=async()=>{
+  if(!DLG) return;
+  const det=await loadDetail(DLG.filename,DLG.rejected);
+  $('#dlgScene').innerHTML=sceneHtml(DLG,det,$('#dlgTranscriptOnly').checked);
+};
+$('#dlgLike').onclick=()=>{if(!DLG)return;
+  LIKED.has(DLG.filename)?LIKED.delete(DLG.filename):LIKED.add(DLG.filename);
+  $('#dlgLike').classList.toggle('on',LIKED.has(DLG.filename));renderClips()};
+$('#dlgHide').onclick=()=>{if(!DLG)return;
+  HIDDEN.add(DLG.filename);closeDetail();renderClips()};
+const step=d=>{
+  if(!DLG||!DLGLIST.length) return;
+  const i=DLGLIST.findIndex(x=>x.filename===DLG.filename);
+  const n=DLGLIST[(i+d+DLGLIST.length)%DLGLIST.length];
+  if(n) openDetail(n.filename);
+};
+$('#dlgPrev').onclick=()=>step(-1);
+$('#dlgNext').onclick=()=>step(1);
+document.addEventListener('keydown',e=>{
+  if($('#mask').classList.contains('on')){
+    if(e.key==='Escape') closeDetail();
+    if(e.key==='ArrowDown'){e.preventDefault();step(1)}
+    if(e.key==='ArrowUp'){e.preventDefault();step(-1)}
+  }else if(ED.open){
+    if(e.key==='Escape') closeEditor();
+    if(e.key===' '&&e.target.tagName!=='TEXTAREA'&&e.target.tagName!=='INPUT'){
+      e.preventDefault();togglePlay();}
+  }
+});
+
+/* =============================================================== EDITOR */
+const CAPTION_PRESETS=[
+  {k:'none',    n:'No captions',   cls:'quiet',        html:'—'},
+  {k:'karaoke', n:'Karaoke',       cls:'karaoke',      html:'TO <span class="hl">GET</span> STARTED'},
+  {k:'boxed',   n:'Headline',      cls:'karaoke boxed',html:'TO GET STARTED'},
+  {k:'neon',    n:'Neon',          cls:'karaoke neon', html:'TO GET STARTED'},
+  {k:'quiet',   n:'Quiet',         cls:'quiet',        html:'stop chasing people'},
+  {k:'pop',     n:'Word pop',      cls:'karaoke',      html:'<span class="hl">GET</span>'},
+];
+const RTABS=[
+  {k:'enhance', n:'AI enhance', i:'spark'},
+  {k:'captions',n:'Captions',   i:'cc'},
+  {k:'media',   n:'Media',      i:'folder'},
+  {k:'brand',   n:'Brand',      i:'grid'},
+  {k:'broll',   n:'B-Roll',     i:'img'},
+  {k:'trans',   n:'Transitions',i:'trans'},
+  {k:'text',    n:'Text',       i:'text'},
+  {k:'audio',   n:'Audio',      i:'music'},
+  {k:'vo',      n:'Voiceover',  i:'mic'},
+  {k:'dub',     n:'Dubbing',    i:'globe'},
+  {k:'up',      n:'Upscale',    i:'zoomin'},
+];
+let DUBLANGS=[];
+
+async function openEditor(fn,tab){
+  const c=CLIPS.concat(REJECTED).find(x=>x.filename===fn);
+  if(!c) return toast('Clip not found.',1);
+  ED.open=true; ED.clip=c; ED.detail=null; ED.strip=null; ED.peaks=null;
+  ED.cutWords.clear(); ED.cutGaps.clear();
+  // History belongs to the clip being edited; carrying it across an
+  // openEditor() would let undo remove a mark from a different video.
+  ED.hist.length=0; ED.undone.length=0;
+  if(tab) ED.tab=tab;
+  $('#editor').classList.add('on');
+  $('#edTitle').textContent=c.title||c.filename;
+  $('#edCredits').textContent='local';
+  const v=$('#edVideo'); v.src=c.url; v.currentTime=0;
+  $('#frame916').style.setProperty('--none','0');
+  renderRTabs(); renderRPanel(); updateStageChips();
+  $('#edTranscript').innerHTML='<div class="faint">Loading transcript…</div>';
+  $('#edNoticeText').textContent=
+    'Edits here are a plan. The browser cannot re-encode — applying them '
+    +'re-runs the pipeline on this machine.';
+  try{
+    ED.detail=await loadDetail(fn,c.rejected);
+    renderTranscript(); renderCropOverlay(); updateStageChips();
+  }catch(e){ $('#edTranscript').innerHTML=`<div class="faint">${esc(e.message)}</div>` }
+  loadStrip(); loadPeaks(); drawRuler(); syncTime();
+}
+function closeEditor(){
+  ED.open=false;
+  $('#editor').classList.remove('on');
+  const v=$('#edVideo'); v.pause(); v.removeAttribute('src'); v.load();
+}
+$('#edBack').onclick=closeEditor;
+/* Applying the cut plan for real. This used to be three separate toasts
+   (#edSave, #tlDel, #edNoticeAct) all describing a CLI command for the
+   operator to go and run. The plan is still a plan — the browser cannot
+   re-encode — but sending it is now one click, and the result is a new
+   clip rather than an edit in place. */
+async function applyCuts(){
+  if(!ED.clip) return;
+  const n=ED.cutWords.size+ED.cutGaps.size;
+  if(!n) return toast('Nothing marked. Alt-click a word, or click a pause '
+    +'pill, to mark it for cutting.',1);
+  if(!ED.clip.source_exists) return toast(ED.clip.source_path
+    ? `The source this clip came from is no longer on disk:\n${ED.clip.source_path}`
+    : 'No source recorded for this clip, so it cannot be re-cut.',1);
+  try{
+    const r=await post('/api/clips/recut',{filename:ED.clip.filename,
+      rejected:!!ED.clip.rejected,cut_words:[...ED.cutWords],
+      cut_gaps:[...ED.cutGaps]});
+    toast(`Re-cutting: ${r.cuts} cut(s), ${r.removed_s}s removed. The clip on `
+      +`disk is untouched — the re-cut lands as a new clip when QA passes.`);
+    go('activity'); refresh();
+  }catch(e){ toast(e.message,1) }
+}
+$('#edSave').onclick=applyCuts;
+$('#edExport').onclick=()=>{
+  if(!ED.clip) return;
+  window.open(ED.clip.url,'_blank');
+  toast('Downloading the rendered file as it exists on disk.');
+};
+$('#edNoticeAct').onclick=applyCuts;
+$('#edFull').onclick=()=>$('#frame916').requestFullscreen?.();
+/* Undo/redo over the cut plan. Redo used to be a toast explaining that no
+   history existed — so one was added rather than left described. `undone`
+   is the redo stack; marking anything new clears it, which is what every
+   editor does and what stops a redo from resurrecting a cut that no longer
+   relates to the current plan. Gaps are tracked too: undo popped only
+   words, so undoing a marked pause was silently impossible. */
+function pushUndo(kind,id){ ED.hist.push([kind,id]); ED.undone.length=0 }
+$('#edUndo').onclick=()=>{
+  const last=ED.hist.pop();
+  if(!last) return toast('Nothing to undo.');
+  const [kind,id]=last;
+  (kind==='gap'?ED.cutGaps:ED.cutWords).delete(id);
+  ED.undone.push(last); renderTranscript();
+};
+$('#edRedo').onclick=()=>{
+  const next=ED.undone.pop();
+  if(!next) return toast('Nothing to redo.');
+  const [kind,id]=next;
+  (kind==='gap'?ED.cutGaps:ED.cutWords).add(id);
+  ED.hist.push(next); renderTranscript();
+};
+$('#edCleanup').onclick=()=>{
+  ED.tab='enhance'; renderRTabs(); renderRPanel();
+  $('#rpanel').scrollTop=0;
+};
+$('#edFind').onclick=()=>{
+  const q=prompt('Find in transcript:'); if(!q) return;
+  const hit=[...document.querySelectorAll('.w')]
+    .find(w=>w.textContent.toLowerCase().includes(q.toLowerCase()));
+  if(!hit) return toast('Not found.',1);
+  hit.scrollIntoView({block:'center',behavior:'smooth'});
+  $('#edVideo').currentTime=Number(hit.dataset.t)||0;
+};
+$('#edTFilter').onclick=()=>{
+  ED.highlight.lowconf=!ED.highlight.lowconf; renderTranscript();
+  toast(ED.highlight.lowconf?'Marking words the aligner was unsure of.'
+    :'Alignment confidence hidden.');
+};
+$('#edTDl').onclick=()=>{
+  if(!ED.detail?.transcript?.available) return toast('No transcript.',1);
+  const txt=ED.detail.transcript.segments.map(s=>
+    `[${mmss(s.start)}] ${s.text}`).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([txt],{type:'text/plain'}));
+  a.download=(ED.clip.stem||'clip')+'.txt'; a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+/* ---- transcript ---- */
+function keywordSet(){
+  const c=ED.clip||{};
+  const set=new Set();
+  (c.hashtags||[]).forEach(h=>set.add(String(h).replace(/^#/,'').toLowerCase()));
+  return set;
+}
+function renderTranscript(){
+  const t=ED.detail&&ED.detail.transcript;
+  const host=$('#edTranscript');
+  if(!t||!t.available){
+    host.innerHTML=`<button class="extend">${ic('plus',12)}Extend a clip</button>
+      <div class="faint">${esc((t&&t.reason)||'No transcript for this clip.')}</div>`;
+    return;
+  }
+  const keys=ED.toggles.keywords?keywordSet():new Set();
+  const c=ED.clip||{};
+  const chaps=(c.chapters||[]).map(ch=>({t:(ch.t||0)-(c.clip_start||0),
+    label:ch.label||''})).filter(ch=>ch.t>=-1).sort((a,b)=>a.t-b.t);
+  let ci=0;
+  let html=`<button class="extend">${ic('plus',12)}Extend a clip</button>`;
+  t.segments.forEach(seg=>{
+    while(ci<chaps.length&&chaps[ci].t<=seg.start){
+      html+=`<span class="chapter"><u>${mmss(Math.max(0,chaps[ci].t))}</u>${esc(chaps[ci].label)}</span>`;
+      ci++;
+    }
+    html+='<span class="seg">';
+    seg.words.forEach(w=>{
+      const id=`${w.start}`;
+      if(w.gap_before!=null)
+        html+=`<span class="gap${ED.cutGaps.has(id)?' cut':''}" data-gap="${id}"
+          title="${w.gap_before}s of silence">${w.gap_before.toFixed(2)}s</span>`;
+      const bare=w.text.replace(/[^a-z0-9']/gi,'').toLowerCase();
+      const cls=['w'];
+      if(keys.has(bare)) cls.push(bare.length>4?'key':'key2');
+      if(ED.highlight.lowconf&&w.score!=null&&w.score<0.4) cls.push('low');
+      if(ED.cutWords.has(id)) cls.push('cut');
+      html+=`<span class="${cls.join(' ')}" data-t="${Math.max(0,w.start)}"
+        data-w="${id}" title="${w.score!=null?'alignment '+(w.score*100|0)+'%':''}"
+        >${esc(w.text)}</span> `;
+    });
+    html+='</span>';
+  });
+  host.innerHTML=html;
+  host.querySelectorAll('.w').forEach(el=>{
+    el.onclick=e=>{
+      if(e.altKey){
+        const id=el.dataset.w;
+        if(ED.cutWords.has(id)) ED.cutWords.delete(id);
+        else { ED.cutWords.add(id); pushUndo('word',id) }
+        renderTranscript(); return;
+      }
+      $('#edVideo').currentTime=Number(el.dataset.t)||0;
+    };
+  });
+  host.querySelectorAll('.gap').forEach(el=>el.onclick=()=>{
+    const id=el.dataset.gap;
+    if(ED.cutGaps.has(id)) ED.cutGaps.delete(id);
+    else { ED.cutGaps.add(id); pushUndo('gap',id) }
+    renderTranscript();
+  });
+  host.querySelector('.extend').onclick=()=>toast(
+    'The clip window is fixed by the ranking stage. Re-run with a different '
+    +'candidate to extend it.');
+}
+function highlightPlayhead(t){
+  const host=$('#edTranscript');
+  if(!host) return;
+  let cur=null;
+  host.querySelectorAll('.w').forEach(el=>{
+    const s=Number(el.dataset.t);
+    if(s<=t) cur=el;
+    el.classList.remove('on');
+  });
+  if(cur) cur.classList.add('on');
+}
+
+/* ---- stage ---- */
+function updateStageChips(){
+  const c=ED.clip||{};
+  $('#sbAspect').querySelector('span').textContent=
+    (c.width&&c.height)?`${c.width}:${c.height}`.replace('1080:1920','9:16'):'9:16';
+  $('#sbLayout').querySelector('span').textContent='Layout: '+ED.layout;
+  const cam=ED.detail&&ED.detail.campath;
+  const on=ED.tracker&&cam&&cam.available;
+  $('#sbTracker').querySelector('span').textContent='Tracker: '+(on?'ON':'OFF');
+  $('#sbTracker').classList.toggle('on',!!on);
+  $('#edCrop').classList.toggle('hide',!on);
+  $('#edCropTool').classList.toggle('hide',!on);
+}
+$('#sbLayout').onclick=()=>{
+  ED.layout=ED.layout==='Fit'?'Fill':'Fit';
+  $('#edVideo').style.objectFit=ED.layout==='Fit'?'contain':'cover';
+  updateStageChips();
+};
+$('#sbTracker').onclick=()=>{
+  const cam=ED.detail&&ED.detail.campath;
+  if(!cam||!cam.available) return toast((cam&&cam.reason)||'No tracking data.',1);
+  ED.tracker=!ED.tracker; updateStageChips(); renderCropOverlay();
+  if(ED.tracker) toast(`Showing the crop the renderer followed — `
+    +`${cam.framing_mode} mode, ${cam.frame_count} frames`
+    +(cam.timed?'':' (untimed: no fps recorded)'));
+};
+$('#sbAspect').onclick=()=>toast('Aspect is fixed at render time.');
+/* The crop box is the rectangle S4 actually chose for the current time —
+   read back from the artifact, interpolated between sampled frames. */
+function cropAt(t){
+  const cam=ED.detail&&ED.detail.campath;
+  if(!cam||!cam.available||!cam.timed||!cam.frames.length) return null;
+  const f=cam.frames;
+  let lo=0,hi=f.length-1;
+  if(t<=f[0].t) return f[0];
+  if(t>=f[hi].t) return f[hi];
+  while(hi-lo>1){const mid=(lo+hi)>>1; if(f[mid].t<=t) lo=mid; else hi=mid;}
+  const a=f[lo],b=f[hi],k=(b.t-a.t)?(t-a.t)/(b.t-a.t):0;
+  const mix=(p,q)=>p+(q-p)*k;
+  return {x:mix(a.x,b.x),y:mix(a.y,b.y),w:mix(a.w,b.w),h:mix(a.h,b.h)};
+}
+function renderCropOverlay(){
+  const box=$('#edCrop');
+  if(!ED.tracker) return;
+  const r=cropAt($('#edVideo').currentTime||0);
+  if(!r){box.classList.add('hide');return}
+  box.classList.remove('hide');
+  // The source frame is letterboxed inside a 9:16 preview under Fit, so
+  // the overlay is placed against the video's DISPLAYED rectangle.
+  const c=ED.clip||{};
+  const sw=c.source_width||16, sh=c.source_height||9;
+  const host=$('#frame916').getBoundingClientRect();
+  const scale=Math.min(host.width/sw,host.height/sh);
+  const dw=sw*scale, dh=sh*scale;
+  const ox=(host.width-dw)/2, oy=(host.height-dh)/2;
+  box.style.left=(ox+r.x*dw)+'px';
+  box.style.top=(oy+r.y*dh)+'px';
+  box.style.width=(r.w*dw)+'px';
+  box.style.height=(r.h*dh)+'px';
+  const tool=$('#edCropTool');
+  tool.style.left=(ox+(r.x+r.w/2)*dw)+'px';
+  tool.style.top=(oy+r.y*dh)+'px';
+}
+
+/* ---- right rail ---- */
+function renderRTabs(){
+  $('#rtabs').innerHTML=RTABS.map(t=>
+    `<button class="rtab${ED.tab===t.k?' on':''}" data-rt="${t.k}">
+      ${ic(t.i,17)}${esc(t.n)}</button>`).join('');
+  $$('[data-rt]').forEach(b=>b.onclick=()=>{
+    ED.tab=b.dataset.rt;renderRTabs();renderRPanel()});
+}
+function togRow(key,label,why,capKey){
+  const ok=capOk(capKey);
+  const on=ED.toggles[key];
+  return `<div class="rrow${ok?'':' dis'}" data-tog="${key}" data-cap="${capKey||''}">
+    <div class="grow"><div>${esc(label)}</div>
+      <div class="why">${esc(ok?why:((capOf(capKey)||{}).blocker||why))}</div></div>
+    <span class="sw${on&&ok?' on':''}"><i></i></span></div>`;
+}
+/* `act` names the rerun options this row applies. A row with no act is
+   inert by design and says why in its own subtitle. */
+function actRow(icon,label,why,capKey,act){
+  const ok=capOk(capKey);
+  const runnable=ok&&!!act;
+  return `<div class="rrow${ok?'':' dis'}" data-run="${esc(label)}"
+      data-cap="${capKey||''}" data-act='${esc(JSON.stringify(act||null))}'>
+    ${ic(icon,16)}<div class="grow"><div>${esc(label)}</div>
+    <div class="why">${esc(ok?why:((capOf(capKey)||{}).blocker||why))}</div></div>
+    ${runnable?`<span class="tag mut">apply</span>`:''}</div>`;
+}
+function renderRPanel(){
+  const p=$('#rpanel');
+  const t=ED.detail&&ED.detail.transcript;
+  const gaps=(t&&t.available)?t.words.filter(w=>w.gap_before!=null).length:0;
+  const low=(t&&t.available)?t.words.filter(w=>w.score!=null&&w.score<0.4).length:0;
+  let h='';
+  if(ED.tab==='enhance'){
+    h=`<div class="ph">AI enhance</div><div class="pb">
+      ${actRow('clock','Remove pauses & filler',
+        gaps?`${gaps} silences over 0.2s — recut at word boundaries`
+            :'no measured silences in this clip',null,{jumpcut:true})}
+      ${actRow('x','Keep original pacing',
+        're-render with silences intact (right for music)',null,
+        {jumpcut:false})}
+      ${actRow('wave','Speech cleanup — gentle',
+        'denoise and de-ess before loudness normalisation','speech',
+        {enhance:'gentle'})}
+      ${actRow('wave','Speech cleanup — strong',
+        'heavier; damages a beat, good for a noisy room','speech',
+        {enhance:'strong'})}
+      ${actRow('shield','Auto censor','no profanity list is configured')}
+      <div class="rsep"></div>
+      ${actRow('img','AI B-roll over the pauses',
+        'generated locally from the transcript','broll',{broll:true})}
+      ${actRow('film','Stock video B-roll','no stock library ships with this tool')}
+      ${actRow('mic','Auto voiceover hook','neural voice, runs on this machine','voiceover')}
+      <div class="rsep"></div>
+      ${togRow('emoji','AI emoji','places emoji on emphasised words')}
+      ${togRow('keywords','AI keyword highlighter',
+        'highlights words the export pack chose as hashtags')}
+      ${togRow('transitions','Auto transitions','cross fade on every hard cut')}
+      ${togRow('speakers','Speaker colors',
+        (t&&t.available&&t.diarized)?'diarization ran on this clip'
+                                    :'diarization did not run — no speakers to colour')}
+      ${low?`<div class="warnbox" style="margin-top:12px"><b>${low} word(s)</b>
+        were aligned with low confidence. They are underlined in the transcript —
+        worth reading before you publish.</div>`:''}
+    </div>`;
+  }else if(ED.tab==='captions'){
+    h=`<div class="ph">Captions</div>
+      <div class="minitabs"><button class="on">Presets</button>
+        <button data-ct="font">Font</button><button data-ct="fx">Effects</button></div>
+      <div class="pgrid">${CAPTION_PRESETS.map(pr=>
+        `<div class="pcell"><div class="preset${ED.preset===pr.k?' on':''}"
+          data-preset="${pr.k}"><div class="pv ${pr.cls}">${pr.html}</div>
+          <div class="nm">${esc(pr.n)}</div></div></div>`).join('')}</div>
+      <div class="pb">
+        <div class="field" style="margin-top:18px">
+          <button class="bigbtn" data-applypreset="1">Re-render with this style</button>
+        </div>
+        <div class="warnbox">Captions are burned into the pixels, so a
+          different preset means a new render. The preview above shows the
+          real weight, case and highlight colour each style uses.</div>
+      </div>`;
+  }else if(ED.tab==='media'){
+    h=`<div class="ph">Media</div>
+      <div class="dropzone" id="dzMedia">${ic('upload',18)}
+        <div style="margin-top:7px">Drag files here or click to upload</div></div>
+      <div class="minitabs" style="padding-top:12px">
+        <button class="on">All</button><button>Images</button>
+        <button>Videos</button><button>Audio</button></div>
+      <div class="pb"><div class="warnbox">Uploading is not wired: the pipeline
+        reads files in place from a path you give it. Drop your footage anywhere
+        on disk and paste the path on Home.</div></div>`;
+  }else if(ED.tab==='brand'){
+    h=`<div class="ph">Brand template</div><div class="pb">
+      ${NICHES.map(n=>`<div class="tile2" data-brand="${esc(n.name)}">
+        <span class="th" style="${nicheSwatch(n)}"></span>
+        <div class="grow"><div>${esc(n.label)}</div>
+          <div class="why">${esc(n.captions)} captions${n.graded?' · graded':''}</div></div>
+        ${ED.clip&&SEL===n.name?ic('check',15):''}</div>`).join('')}
+      <div class="warnbox">A style sets captions, colour grade and pacing together,
+        and is applied when the clip is rendered — not afterwards.</div></div>`;
+  }else if(ED.tab==='broll'){
+    const ok=capOk('broll');
+    h=`<div class="ph">B-Roll</div><div class="pb">
+      ${actRow('upload','Upload your own','reads from a path, in place')}
+      ${actRow('img','AI video B-roll','generated locally from the transcript','broll')}
+      ${actRow('img','AI image B-roll','stills cut over sentence gaps','broll')}
+      ${actRow('text','Create from prompt','one shot from a written beat','genvideo')}
+      ${ED.clip&&ED.clip.variant==='broll'
+        ?'<div class="warnbox" style="margin-top:12px">This clip <b>is</b> the '
+         +'B-roll variant — it was rendered with generated cutaways already.</div>'
+        :(ok?'<div class="warnbox" style="margin-top:12px">Run the pipeline with '
+            +'<b>--broll</b> to cut generated footage over the pauses.</div>':'')}
+      </div>`;
+  }else if(ED.tab==='trans'){
+    h=`<div class="ph">Transitions</div><div class="pb">
+      ${togRow('transitions','Auto transitions','applied at every hard cut')}
+      <div class="rsub">Custom transitions</div>
+      <div class="tgrid">${['Cross fade','Cross zoom','Zoom in','Zoom out',
+        'Fade in','Fade out'].map(n=>
+        `<div class="tcard" data-trans="${esc(n)}"><div class="th"></div>
+          <div class="nm">${esc(n)}</div></div>`).join('')}</div>
+      <div class="warnbox" style="margin-top:14px">Transitions are applied by the
+        renderer. Picking one here records the choice for the next run.</div></div>`;
+  }else if(ED.tab==='text'){
+    h=`<div class="ph">Text</div><div class="pb">
+      ${actRow('text','Add a title','burned in at render time')}
+      ${actRow('cc','Edit captions','the .ass file lives beside the artifacts')}
+      <div class="field" style="margin-top:12px"><label>Title</label>
+        <input type="text" id="edTitleIn" value="${esc((ED.clip||{}).title||'')}"></div>
+      <div class="field"><label>Caption</label>
+        <textarea id="edCaptionIn">${esc((ED.clip||{}).caption||'')}</textarea></div>
+      <div class="field"><button class="bigbtn" id="edSaveText"
+        ${(ED.clip||{}).has_export?'':'disabled'}>Save to export pack</button></div>
+      <div class="warnbox">${(ED.clip||{}).has_export
+        ? 'Saved straight to the export pack beside the clip, and every '
+          +'platform caption is re-fitted to its real character limit. '
+          +'This changes the copy you paste, not the pixels.'
+        : 'No export pack beside this clip yet — it is written when the '
+          +'publish stage runs.'}</div></div>`;
+  }else if(ED.tab==='audio'){
+    const l=(ED.clip||{}).loudness_i, tp=(ED.clip||{}).loudness_tp;
+    h=`<div class="ph">Audio</div>
+      <div class="minitabs"><button class="on">Measured</button>
+        <button data-at="music">Music</button></div>
+      <div class="pb">
+        ${l!=null?`<div class="tile2"><span class="th"
+            style="background:linear-gradient(135deg,#1e3a2a,#0f1a14)"></span>
+          <div class="grow"><div>${l} LUFS integrated</div>
+          <div class="why">true peak ${tp} dBTP — measured after the render,
+            not requested</div></div>${ic('check',15)}</div>`
+          :'<div class="warnbox">No loudness measurement recorded.</div>'}
+        ${actRow('music','Add background music','no music library ships with this tool')}
+        ${actRow('wave','Auto SFX','no sound-effect library is installed')}
+        <div class="warnbox" style="margin-top:12px">Every clip is normalised to
+          −14 LUFS with true peak under −1.5 dBTP, and QA fails the render if the
+          measurement misses. That is why there is no output gain slider here.</div>
+      </div>`;
+  }else if(ED.tab==='dub'){
+    const cap=capOf('dubbing')||{};
+    const tracks=(ED.clip||{}).subtitle_tracks||[];
+    const voiced=DUBLANGS.filter(l=>l.audio).map(l=>l.label);
+    h=`<div class="ph">Dubbing</div><div class="pb">
+      ${cap.available?'':`<div class="warnbox">${esc(cap.blocker
+        ||'Dubbing is not available on this machine.')}</div>`}
+      ${tracks.length?`<div class="tile2"><span class="th"
+          style="background:linear-gradient(135deg,#1e2f3a,#0f171a)"></span>
+        <div class="grow"><div>${tracks.length} translated track(s)</div>
+        <div class="why">${esc(tracks.join(', '))} — .srt beside the clip</div>
+        </div>${ic('check',15)}</div>`:''}
+      <div class="rsub">Translate to</div>
+      <div class="tgrid">${DUBLANGS.map(l=>`
+        <div class="tcard" data-dub="${esc(l.code)}" title="${esc(l.blocker||'')}">
+          <div class="th" style="display:flex;align-items:center;
+            justify-content:center;font-size:15px;font-weight:800;
+            color:${l.audio?'var(--score)':'var(--dim)'}">${esc(l.code.toUpperCase())}</div>
+          <div class="nm">${esc(l.label)}${tracks.includes(l.code)?' ✓':''}</div>
+        </div>`).join('')}</div>
+      <div class="rsep"></div>
+      <div class="rrow" data-dubmode="subs">
+        ${ic('cc',16)}<div class="grow"><div>Subtitles only</div>
+        <div class="why">translate and write the .srt — every language</div></div>
+        <span class="sw${ED.dubSubsOnly?' on':''}"><i></i></span></div>
+      <div class="warnbox" style="margin-top:12px">
+        Dubbed <b>audio</b> needs a voice that speaks the target.
+        ${voiced.length?`Installed: <b>${esc(voiced.join(', '))}</b>. Other
+          languages get subtitles only.`
+         :'No voice is installed, so every target is subtitles only.'}
+        A dub is a new file beside the clip — the original is untouched.
+      </div></div>`;
+  }else if(ED.tab==='vo'){
+    const ok=capOk('voiceover');
+    h=`<div class="ph">Voiceover hook</div><div class="pb">
+      <div class="field"><label>Voiceover hook script</label>
+        <textarea id="voScript" placeholder="Type your script here">${esc((ED.clip||{}).hook||'')}</textarea></div>
+      <div class="field"><label>Speaker voice</label>
+        <select id="voVoice" ${ok?'':'disabled'}>
+          <option value="">${esc(voEngine())}</option></select></div>
+      <div class="field"><label>Original video audio volume</label>
+        <input type="range" id="voVol" min="-50" max="50" value="0"
+          ${ok?'':'disabled'}>
+        <div class="rangerow"><span>−50%</span><span>Normal</span><span>+50%</span></div></div>
+      <div class="field"><button class="bigbtn" id="voGo" ${ok?'':'disabled'}
+        style="background:${ok?'#fff':'var(--panel3)'};color:${ok?'#0a0a0b':'var(--faint)'}">
+        Generate voiceover hook</button></div>
+      <div class="warnbox" style="margin-top:12px">
+        The voice is mixed over this clip and the clip's own audio ducks
+        under it. The result is a <b>new file beside this one</b> — the
+        original is untouched.
+      </div>
+      ${ok?'':`<div class="warnbox">${esc((capOf('voiceover')||{}).blocker
+        ||'No local voice model is installed. See Studio.')}</div>`}
+    </div>`;
+  }else if(ED.tab==='up'){
+    const ok=capOk('upscale');
+    const c=ED.clip||{}, sw=c.width||0, sh=c.height||0;
+    h=`<div class="ph">Upscale</div><div class="pb">
+      <div class="field"><label>Target size</label>
+        <select id="upHeight" ${ok?'':'disabled'}>
+          <option value="2560">1440 x 2560 (1440p vertical)</option>
+          <option value="3840">2160 x 3840 (4K vertical)</option>
+        </select></div>
+      ${sw&&sh?`<div class="why" style="margin:-4px 0 12px">
+        This clip is ${sw} x ${sh}.</div>`:''}
+      <div class="field"><button class="bigbtn" id="upGo" ${ok?'':'disabled'}
+        style="background:${ok?'#fff':'var(--panel3)'};color:${ok?'#0a0a0b':'var(--faint)'}">
+        Upscale this clip</button></div>
+      <div class="warnbox" style="margin-top:12px">
+        This is high-quality <b>resampling</b>, not learned
+        super-resolution: it will not invent detail the source does not
+        contain. A target that is not larger than the source is refused
+        rather than silently degrading the clip. Lands as a new file
+        beside this one.
+      </div>
+      ${ok?'':`<div class="warnbox">${esc((capOf('upscale')||{}).blocker
+        ||'No upscaler in this ffmpeg build.')}</div>`}
+    </div>`;
+  }
+  p.innerHTML=h;
+  bindRPanel();
+}
+function bindRPanel(){
+  $$('#rpanel [data-tog]').forEach(el=>el.onclick=()=>{
+    if(el.classList.contains('dis')){
+      const c=capOf(el.dataset.cap);
+      return toast((c&&(c.blocker||c.note))||'Not available on this machine.',1);
+    }
+    const k=el.dataset.tog;
+    ED.toggles[k]=!ED.toggles[k];
+    renderRPanel();
+    if(k==='keywords') renderTranscript();
+  });
+  $$('#rpanel [data-run]').forEach(el=>el.onclick=()=>{
+    if(el.classList.contains('dis')){
+      const c=capOf(el.dataset.cap);
+      return toast((c&&(c.blocker||c.note))||'Not available on this machine.',1);
+    }
+    let act=null;
+    try{ act=JSON.parse(el.dataset.act||'null') }catch(e){ act=null }
+    if(!act) return toast(`"${el.dataset.run}" is not something this `
+      +`pipeline can do — the subtitle under it says what is missing.`,1);
+    if(!confirm(`${el.dataset.run}\n\nThis re-runs the pipeline on this `
+      +`clip's source and renders a new clip. The current one is not `
+      +`touched. Continue?`)) return;
+    rerun(ED.clip,act,el.dataset.run);
+  });
+  $$('#rpanel [data-preset]').forEach(el=>el.onclick=()=>{
+    ED.preset=el.dataset.preset;renderRPanel()});
+  $$('#rpanel [data-applypreset]').forEach(el=>el.onclick=()=>{
+    const n=NICHES.find(x=>x.captions===ED.preset)||NICHES.find(x=>x.name===SEL);
+    if(!n) return toast('No style uses that caption preset.',1);
+    if(!confirm(`Re-render with the "${n.label}" style?\n\nCaptions are `
+      +`burned in, so changing them means a new render.`)) return;
+    rerun(ED.clip,{niche:n.name},'Caption style '+n.label);
+  });
+  $$('#rpanel [data-brand]').forEach(el=>el.onclick=()=>{
+    const n=NICHES.find(x=>x.name===el.dataset.brand);
+    if(!confirm(`Re-render this clip with the "${n?n.label:el.dataset.brand}" `
+      +`style?\n\nA style sets captions, grade and pacing together, all of `
+      +`which are applied at render time.`)) return;
+    rerun(ED.clip,{niche:el.dataset.brand},'Style '+(n?n.label:''));
+  });
+  $$('#rpanel [data-dub]').forEach(el=>el.onclick=()=>{
+    const l=DUBLANGS.find(x=>x.code===el.dataset.dub);
+    if(!l) return;
+    const subsOnly=ED.dubSubsOnly||!l.audio;
+    if(!confirm(`Dub this clip to ${l.label}?\n\n`
+      +(subsOnly?'Writes a translated .srt beside the clip.'
+               :`Translates and voices it with ${l.voice}, then writes a new `
+                +`video beside the clip.`))) return;
+    dubClip(ED.clip,l.code,subsOnly,0);
+  });
+  const dm=$('#rpanel [data-dubmode]');
+  if(dm) dm.onclick=()=>{ED.dubSubsOnly=!ED.dubSubsOnly;renderRPanel()};
+  $$('#rpanel [data-trans]').forEach(el=>el.onclick=()=>
+    toast(`Transitions are applied by the renderer from the style. Pick a `
+      +`style under Brand to change them.`,1));
+  const dz=$('#dzMedia');
+  if(dz) dz.onclick=()=>pickUpload();
+  const saveText=$('#edSaveText');
+  if(saveText) saveText.onclick=async()=>{
+    try{
+      const r=await post('/api/clips/text',{filename:ED.clip.filename,
+        rejected:!!ED.clip.rejected, title:$('#edTitleIn').value,
+        caption:$('#edCaptionIn').value});
+      Object.assign(ED.clip,{title:r.pack.title,caption:r.pack.caption});
+      $('#edTitle').textContent=r.pack.title||ED.clip.filename;
+      toast('Export pack updated. Per-platform captions were re-fitted.');
+      DETAIL_CACHE.delete(ED.clip.filename); refresh();
+    }catch(e){ toast(e.message,1) }
+  };
+  const vo=$('#voGo');
+  if(vo&&!vo.disabled) vo.onclick=()=>{
+    const script=($('#voScript')||{}).value||'';
+    if(!script.trim()) return toast('Write a hook script first.',1);
+    /* The slider is a percentage of the ORIGINAL audio, which is a gain on
+       the bed, not on the voice. Sending it as voice gain would raise the
+       voice when the operator asked to lower the video — so it is mapped
+       explicitly here rather than passed through because the numbers
+       happen to line up. -50..+50 percent -> -12..+12 dB on the voice's
+       relative level, which is the same control expressed the way the
+       backend takes it. */
+    const pct=Number(($('#voVol')||{}).value||0);
+    voiceoverClip(ED.clip,script,-(pct/50)*12);
+  };
+  const up=$('#upGo');
+  if(up&&!up.disabled) up.onclick=()=>
+    upscaleClip(ED.clip,($('#upHeight')||{}).value||2560);
+}
+
+/* Uploads land in workspace/downloads — the same folder `grab` writes to,
+   so an uploaded file is then just a path the pipeline can read. */
+function pickUpload(){
+  const input=document.createElement('input');
+  input.type='file';
+  input.accept='.mp4,.mkv,.mov,.webm,.m4v,.ts,.mp3,.wav,.m4a,.flac';
+  input.onchange=async()=>{
+    const f=input.files&&input.files[0]; if(!f) return;
+    toast(`Uploading ${f.name} (${(f.size/1048576).toFixed(0)} MB)…`);
+    try{
+      const r=await api('/api/upload?name='+encodeURIComponent(f.name),
+        {method:'POST',body:f});
+      $('#srcUrl').value=r.path;
+      toast(`Saved to ${r.name} (${r.size_mb} MB). It is on Home now — `
+        +`press "Get clips in 1 click" to run it.`);
+      go('home');
+    }catch(e){ toast(e.message,1) }
+  };
+  input.click();
+}
+
+/* ---- timeline ---- */
+async function loadStrip(){
+  const c=ED.clip; if(!c) return;
+  const lane=$('#tlVideo');
+  lane.style.backgroundImage='none';
+  try{
+    const url=`/api/clips/filmstrip/${encodeURIComponent(c.filename)}`
+      +`?columns=40${c.rejected?'&rejected=1':''}`;
+    const r=await fetch(url);
+    if(!r.ok) throw new Error((await r.json()).error||'no filmstrip');
+    const cols=+r.headers.get('X-Strip-Columns')||40;
+    const tw=+r.headers.get('X-Strip-Tile-W')||52;
+    const th=+r.headers.get('X-Strip-Tile-H')||92;
+    const blob=await r.blob();
+    ED.strip={url:URL.createObjectURL(blob),cols,tw,th};
+    lane.style.backgroundImage=`url(${ED.strip.url})`;
+    layoutTimeline();
+  }catch(e){
+    lane.style.background='repeating-linear-gradient(90deg,#141418 0 26px,#101014 26px 52px)';
+  }
+}
+async function loadPeaks(){
+  const c=ED.clip; if(!c) return;
+  try{
+    ED.peaks=await api(`/api/clips/waveform/${encodeURIComponent(c.filename)}`
+      +`?buckets=900${c.rejected?'&rejected=1':''}`);
+  }catch(e){ ED.peaks=null; }
+  drawWave();
+}
+function drawWave(){
+  const cv=$('#tlWave'); if(!cv) return;
+  const box=cv.parentElement.getBoundingClientRect();
+  const dpr=window.devicePixelRatio||1;
+  cv.width=Math.max(1,box.width*dpr); cv.height=Math.max(1,box.height*dpr);
+  const g=cv.getContext('2d');
+  g.clearRect(0,0,cv.width,cv.height);
+  if(!ED.peaks||!ED.peaks.peaks?.length){
+    g.fillStyle='#4a4a54';g.font=`${11*dpr}px system-ui`;
+    g.fillText('no decodable audio',8*dpr,cv.height/2+4*dpr);
+    return;
+  }
+  const p=ED.peaks.peaks, n=p.length, mid=cv.height/2;
+  const bw=cv.width/n;
+  g.fillStyle='#7d8aa0';
+  for(let i=0;i<n;i++){
+    const h=Math.max(1*dpr,p[i]*mid*0.94);
+    g.fillRect(i*bw,mid-h,Math.max(1,bw*0.62),h*2);
+  }
+}
+function layoutTimeline(){
+  const inner=$('#tlInner');
+  const body=$('#tlBody');
+  inner.style.width=(body.clientWidth*ED.zoom)+'px';
+  const lane=$('#tlVideo');
+  if(ED.strip){
+    const w=lane.clientWidth;
+    lane.style.backgroundSize=`${w}px 100%`;
+    lane.style.backgroundRepeat='no-repeat';
+  }
+  drawRuler(); drawWave(); syncTime();
+}
+function drawRuler(){
+  const dur=(ED.clip&&ED.clip.duration_s)||$('#edVideo').duration||0;
+  const r=$('#tlRuler'); if(!dur||!isFinite(dur)){r.innerHTML='';return}
+  const w=$('#tlInner').clientWidth||1;
+  // Pick a tick spacing that keeps labels ~90px apart at the current zoom.
+  const targets=[1,2,5,10,15,30,60,120,300];
+  const perSec=w/dur;
+  const major=targets.find(t=>t*perSec>=90)||targets[targets.length-1];
+  let h='';
+  for(let t=0;t<=dur;t+=major){
+    const x=(t/dur)*100;
+    h+=`<div class="tick" style="left:${x}%"><u>${mmss(t)}</u></div>`;
+    for(let k=1;k<4;k++){
+      const st=t+major*k/4; if(st>dur) break;
+      h+=`<div class="sub" style="left:${(st/dur)*100}%"></div>`;
+    }
+  }
+  r.innerHTML=h;
+  // "Fit"/"Fill" markers mirror what the renderer did per tracked shot.
+  const cam=ED.detail&&ED.detail.campath;
+  const fit=$('#tlFit');
+  if(cam&&cam.available&&cam.frames.length&&cam.timed){
+    let out='',last=null;
+    cam.frames.forEach(f=>{
+      const mode=(f.w>=0.98)?'Fill':'Fit';
+      if(mode!==last){
+        out+=`<span style="left:${(f.t/dur)*100}%">${mode}</span>`;
+        last=mode;
+      }
+    });
+    fit.innerHTML=out;
+  }else fit.innerHTML='';
+}
+function syncTime(){
+  const v=$('#edVideo');
+  const dur=(ED.clip&&ED.clip.duration_s)||v.duration||0;
+  $('#tlTime').textContent=`${mmssms(v.currentTime||0)} / ${mmssms(dur)}`;
+  const pct=dur?clamp((v.currentTime||0)/dur,0,1):0;
+  $('#tlHead').style.left=(pct*100)+'%';
+}
+function togglePlay(){
+  const v=$('#edVideo');
+  if(v.paused){v.play();ED.playing=true}else{v.pause();ED.playing=false}
+  $('#tlPlay').innerHTML=ic(v.paused?'play':'pause',17);
+}
+$('#tlPlay').onclick=togglePlay;
+$('#tlPrev').onclick=()=>{$('#edVideo').currentTime=0};
+$('#tlNext').onclick=()=>{const v=$('#edVideo');
+  v.currentTime=(ED.clip&&ED.clip.duration_s)||v.duration||0};
+$('#tlZoom').oninput=e=>{ED.zoom=+e.target.value;layoutTimeline()};
+$('#tlZoomIn').onclick=()=>{ED.zoom=clamp(ED.zoom+0.5,1,6);
+  $('#tlZoom').value=ED.zoom;layoutTimeline()};
+$('#tlZoomOut').onclick=()=>{ED.zoom=clamp(ED.zoom-0.5,1,6);
+  $('#tlZoom').value=ED.zoom;layoutTimeline()};
+$('#tlToggle').onclick=()=>{
+  const b=$('#tlBody'), hidden=b.classList.toggle('hide');
+  $('#tlToggle').textContent=hidden?'Show timeline':'Hide timeline';
+  if(!hidden) layoutTimeline();
+};
+$('#tlMute').onclick=()=>{const v=$('#edVideo');v.muted=!v.muted;
+  $('#tlMute').classList.toggle('on',v.muted)};
+/* Split at the playhead = mark the pause nearest the playhead, which is
+   where a cut can actually land. It used to explain that splitting is a
+   render-time operation and stop; it now performs the edit that statement
+   was describing, and says which pause it chose. */
+$('#tlSplit').onclick=()=>{
+  const words=(ED.detail&&ED.detail.transcript&&ED.detail.transcript.words)||[];
+  if(!words.length) return toast('No transcript, so there is no word '
+    +'boundary to split on.',1);
+  const t=$('#edVideo').currentTime||0;
+  let best=null,bestD=Infinity;
+  words.forEach(w=>{
+    if(w.gap_before==null) return;
+    const d=Math.abs(w.start-t);
+    if(d<bestD){ bestD=d; best=w }
+  });
+  if(!best) return toast('This clip has no pause long enough to split on — '
+    +'alt-click a word to cut it instead.',1);
+  const id=`${best.start}`;
+  if(!ED.cutGaps.has(id)){ ED.cutGaps.add(id); pushUndo('gap',id) }
+  renderTranscript();
+  toast(`Split at the ${best.gap_before.toFixed(2)}s pause before `
+    +`"${best.text}". Apply it with Save changes.`);
+};
+$('#tlDel').onclick=applyCuts;
+$('#tlAddL').onclick=$('#tlAddR').onclick=()=>toast(
+  'Extra tracks need a re-render; the preview plays the finished file.');
+$('#tlHit').onclick=e=>{
+  const r=e.currentTarget.getBoundingClientRect();
+  const dur=(ED.clip&&ED.clip.duration_s)||$('#edVideo').duration||0;
+  $('#edVideo').currentTime=clamp((e.clientX-r.left)/r.width,0,1)*dur;
+};
+$('#edVideo').addEventListener('timeupdate',()=>{
+  syncTime();
+  if(ED.tracker) renderCropOverlay();
+  highlightPlayhead($('#edVideo').currentTime);
+});
+$('#edVideo').addEventListener('loadedmetadata',()=>{
+  // Seek off zero so the preview paints a real frame. Every clip opens on
+  // a fade from black (S6 adds edge fades), so t=0 is a black frame and
+  // the preview looks broken rather than loaded.
+  const v=$('#edVideo');
+  if(v.currentTime===0 && isFinite(v.duration))
+    v.currentTime=Math.min(1.0,v.duration/20);
+  drawRuler(); layoutTimeline();
+});
+$('#edVideo').addEventListener('play',()=>$('#tlPlay').innerHTML=ic('pause',17));
+$('#edVideo').addEventListener('pause',()=>$('#tlPlay').innerHTML=ic('play',17));
+window.addEventListener('resize',()=>{if(ED.open){layoutTimeline();
+  if(ED.tracker) renderCropOverlay()}});
+
+/* =============================================================== STUDIO */
+function renderCaps(){
+  $('#capGrid').innerHTML=CAPS.map(c=>{
+    const tag=c.available?'<span class="tag ok">ready</span>'
+      :(c.by_policy?'<span class="tag mut">by design</span>'
+                   :'<span class="tag warn">needs setup</span>');
+    return `<div class="card" style="${c.available?'':'opacity:.62'}">
+      <div class="row" style="justify-content:space-between;align-items:flex-start">
+        <b style="font-size:13.5px">${esc(c.label)}</b>${tag}</div>
+      <p class="faint" style="margin:8px 0 0;line-height:1.6">
+        ${esc(c.available?c.note:(c.blocker||c.note))}</p></div>`;
+  }).join('')||'<div class="empty">No capabilities reported.</div>';
+}
+function renderModels(){
+  $('#modelGrid').innerHTML=MODELS.map(m=>`
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <b style="font-size:14.5px">${esc(m.label)}</b>
+        <span class="tag ${m.usable?'ok':(m.installed?'warn':'mut')}">
+          ${m.usable?'ready':(m.installed?'will not fit':'not downloaded')}</span></div>
+      <div class="faint" style="margin:7px 0 12px">${esc(m.model_id)}</div>
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:7px;font-size:12.5px">
+        <div><span class="dim">Max frame</span><br>${Math.round(m.max_pixels/1000)}k px</div>
+        <div><span class="dim">Peak VRAM</span><br>${m.vram_gb} GB</div>
+        <div><span class="dim">Steps</span><br>${m.steps}</div>
+        <div><span class="dim">Relative time</span><br>${m.relative_cost}×</div></div>
+      <div class="row" style="margin-top:11px;gap:5px">
+        ${(m.strengths||[]).map(s=>`<span class="tag mut">${esc(s)}</span>`).join('')}</div>
+      ${m.notes?`<p class="faint" style="margin-top:11px;line-height:1.55">${esc(m.notes)}</p>`:''}
+    </div>`).join('')||'<div class="empty">No models registered.</div>';
+}
+
+$('#btnDoctor').onclick=async()=>{
+  try{ await post('/api/doctor');
+    toast('Prerequisite check running — output appears under Activity.');
+    go('activity'); refresh();
+  }catch(e){ toast(e.message,1) }
+};
+$('#btnResetQuota').onclick=async()=>{
+  try{ await post('/api/genquota/reset'); toast('Quota state cleared.'); refresh() }
+  catch(e){ toast(e.message,1) }
+};
+
+/* ============================================================= PUBLISH */
+let AUTH=[], PUBLISH_FOR=null, CLI='bta', CWD='';
+const PLAT_LABEL={youtube:'YouTube',tiktok:'TikTok',
+  instagram:'Instagram',x_twitter:'X / Twitter'};
+/* A command that works from whatever directory the shell is sitting in.
+   Three things bite otherwise, and `--config` alone fixes only the first
+   two:
+     1. `bta` is a venv console script, not on PATH.
+     2. config.toml is resolved relative to the CURRENT directory.
+     3. workspace.root in that config is itself RELATIVE ("workspace"),
+        so running from D:\ would save the session into D:\workspace and
+        this dashboard would never find it.
+   Setting the location first is what actually fixes all three. */
+const authCmd=p=>(CWD?`Set-Location "${CWD}"; `:'')+`& "${CLI}" auth ${p}`;
+function renderPublish(){
+  $('#authGrid').innerHTML=AUTH.map(a=>`
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:flex-start">
+        <b style="font-size:13.5px">${esc(PLAT_LABEL[a.platform]||a.platform)}</b>
+        <span class="tag ${a.authorized?'ok':'mut'}">
+          ${a.authorized?'signed in':'not signed in'}</span></div>
+      <p class="faint" style="margin:8px 0 0;line-height:1.6">
+        ${a.authorized
+          ? 'A saved browser session exists, so a draft can be prepared. '
+            +'The automation fills the upload form and stops — it never '
+            +'presses Publish.'
+          : 'Signing in has to happen in a terminal, not here: it opens a '
+            +'real browser for you to log into yourself, so this app never '
+            +'sees your password.'}</p>
+      ${a.authorized?'':`<div class="cmd" data-cmd="${esc(authCmd(a.platform))}">
+        <code>${esc(authCmd(a.platform))}</code>
+        <button title="Copy">${ic('copy',14)}</button></div>`}
+    </div>`).join('')||'<div class="empty">Could not read auth status.</div>';
+  $$('#authGrid .cmd').forEach(el=>el.onclick=()=>{
+    navigator.clipboard?.writeText(el.dataset.cmd);
+    toast('Copied. Paste it into PowerShell — the whole line, nothing before it.');
+  });
+
+  const usable=CLIPS.filter(c=>c.has_export);
+  $('#pubClip').innerHTML=usable.map(c=>
+    `<option value="${esc(c.filename)}"${PUBLISH_FOR===c.filename?' selected':''}>
+      ${esc(c.title||c.filename)}</option>`).join('')
+    ||'<option value="">no clip has an export pack yet</option>';
+  const ready=AUTH.filter(a=>a.authorized);
+  $('#pubPlatform').innerHTML=AUTH.map(a=>
+    `<option value="${esc(a.platform)}"${a.authorized?'':' disabled'}>
+      ${esc(PLAT_LABEL[a.platform]||a.platform)}${a.authorized?'':' — not signed in'}
+    </option>`).join('');
+  $('#pubHint').textContent = ready.length
+    ? 'Draft only. Nothing is published — you press the button on the platform.'
+    : 'Sign in to a platform first — copy the command from its card above.';
+  $('#pubGo').disabled=!(ready.length&&usable.length);
+}
+$('#pubGo').onclick=async()=>{
+  const filename=$('#pubClip').value, platform=$('#pubPlatform').value;
+  if(!filename) return toast('No clip with an export pack.',1);
+  const c=CLIPS.find(x=>x.filename===filename)||{};
+  if(!confirm(`Prepare a ${PLAT_LABEL[platform]||platform} draft for:\n\n`
+    +`${c.title||filename}\n\nA browser opens, fills the upload form with `
+    +`your export pack, and STOPS. Nothing is published — you review and `
+    +`post it yourself.`)) return;
+  try{
+    await post('/api/post',{filename,platform,rejected:!!c.rejected});
+    toast('Draft being prepared — watch it under Activity.');
+    go('activity'); refresh();
+  }catch(e){ toast(e.message,1) }
+};
+
+function renderPacks(){
+  const withPack=CLIPS.filter(c=>c.has_export);
+  $('#packList').innerHTML=withPack.length?withPack.map(c=>`
+    <div class="card" style="margin-bottom:10px">
+      <div class="row" style="justify-content:space-between;align-items:flex-start">
+        <div style="min-width:0">
+          <b style="font-size:13.5px">${esc(c.title||c.filename)}</b>
+          <div class="faint" style="margin-top:5px">${esc(c.caption||'')}</div>
+          <div class="row" style="margin-top:9px;gap:5px">
+            ${(c.hashtags||[]).slice(0,10).map(h=>
+              `<span class="tag mut">${esc(h)}</span>`).join('')}</div>
+        </div>
+        <button class="wbtn" data-copy="${esc(c.filename)}">Copy</button>
+      </div>
+      <div class="faint" style="margin-top:11px">
+        ${(c.chapters||[]).length} chapter(s) · DRAFT — nothing was posted</div>
+    </div>`).join('')
+    :'<div class="empty">No export packs yet. They are written when the '
+     +'publish stage runs.</div>';
+  $$('[data-copy]').forEach(b=>b.onclick=()=>
+    showPack(CLIPS.find(c=>c.filename===b.dataset.copy)));
+}
+const HELP=[
+  ['How a clip is chosen','S2 scores every window on boundary cleanliness, '
+   +'speaker turns, energy, laughter and self-containment. S3 sends the '
+   +'survivors\' frames to a vision-language model for hook strength, '
+   +'comprehensibility and visual action. The blend is what you see as the score.'],
+  ['Why there is no Trend score','Trend means "how this resembles what is '
+   +'performing on a platform right now", which needs platform data this machine '
+   +'deliberately never fetches. The fourth dimension is Motion, which is '
+   +'genuinely measured. Naming it Trend would be inventing a measurement.'],
+  ['What "heuristic" means on a grade','The vision pass did not run for that '
+   +'dimension, so the number comes from structure alone — it measures a clean '
+   +'sentence start, not whether the opening is compelling.'],
+  ['Why edits here do not change the file','The browser cannot re-encode. '
+   +'Marking cuts records intent; the pipeline applies them at word boundaries '
+   +'and re-measures loudness afterwards, which is why QA can still gate the result.'],
+  ['Loudness','Every clip is normalised to −14 LUFS integrated with true peak '
+   +'under −1.5 dBTP, then measured again after the render. A miss fails QA and '
+   +'the clip is quarantined rather than shipped.'],
+  ['Where the files are','Renders in workspace/clips, stage artifacts in '
+   +'workspace/artifacts, deleted clips in workspace/trash. The dashboard only '
+   +'ever reads what is already there.'],
+];
+function renderHelp(){
+  $('#helpGrid').innerHTML=HELP.map(([t,b])=>`
+    <div class="card"><b style="font-size:13.5px">${esc(t)}</b>
+    <p class="faint" style="margin:9px 0 0;line-height:1.7">${esc(b)}</p></div>`).join('');
+}
+
+/* =============================================================== ASSETS */
+function renderAssets(){
+  const rows=[['Clips',CLIPS.length],['Quarantined',REJECTED.length],
+    ['Generated',PIECES.length],['Ready models',MODELS.filter(m=>m.usable).length]];
+  $('#assetStats').innerHTML=rows.map(([k,v])=>
+    `<div class="card"><b style="font-size:23px;display:block;letter-spacing:-.5px">${v}</b>
+     <i style="font-style:normal;font-size:10px;color:var(--faint);
+        text-transform:uppercase;letter-spacing:.1em">${k}</i></div>`).join('');
+  $('#genGrid').innerHTML=PIECES.length?PIECES.map(p=>`
+    <div class="card" style="padding:0;overflow:hidden">
+      <video controls preload="none" style="width:100%;display:block;background:#000;
+        aspect-ratio:9/16;object-fit:cover" src="${esc(p.url||p.sequence_url||'')}"></video>
+      <div style="padding:10px 12px"><b style="font-size:12.5px">${esc(p.slug)}</b>
+        <div class="faint">${p.shots||1} shot(s) · ${mb(p.size_mb)}</div></div>
+    </div>`).join('') : '<div class="empty">Nothing generated yet.</div>';
+}
+
+/* ================================================================ POLL */
+async function refresh(){
+  if(busy) return; busy=true;
+  try{
+    const [clips,pieces,quota,tasks,stages,auth]=await Promise.all([
+      api('/api/clips'),api('/api/generated'),api('/api/generated/status'),
+      api('/api/tasks'),api('/api/stages?limit=14'),
+      api('/api/auth/status').catch(()=>[])]);
+    $('#conn').innerHTML='<span class="dot"></span>connected';
+    CLIPS=clips.filter(c=>!c.rejected);
+    REJECTED=clips.filter(c=>c.rejected);
+    PIECES=pieces; TASKS=tasks; AUTH=auth;
+
+    renderHome(); renderClips(); renderAssets(); renderPacks(); renderPublish();
+
+    $('#quotaBody').innerHTML=quota.map(q=>`<tr><td><b>${esc(q.name)}</b></td>
+      <td><span class="tag ${q.available?'ok':'warn'}">${q.available?'ready'
+        :'metered out · '+Math.round(q.available_in_s/60)+' min'}</span></td>
+      <td class="dim">${q.calls} call(s) · ${Math.round(q.seconds_generated)}s</td></tr>`)
+      .join('')||'<tr><td colspan="3" class="dim">no runs yet</td></tr>';
+
+    const running=tasks.filter(t=>t.status==='running');
+    const badge=$('#navRunning');
+    badge.classList.toggle('hide',!running.length);
+    badge.textContent=running.length;
+    $('#taskList').innerHTML=tasks.length?tasks.slice().reverse().map(t=>`
+      <div class="card" style="margin-bottom:10px">
+        <div class="row" style="justify-content:space-between">
+          <b style="font-size:13.5px">${esc(t.description||t.kind)}</b>
+          <span class="tag ${t.status==='running'?'warn'
+            :(t.status==='completed'?'ok':'bad')}">${esc(t.status)}</span></div>
+        <div class="faint" style="margin:6px 0 9px">${t.elapsed_s}s elapsed${
+          t.return_code!==null&&t.return_code!==undefined
+            ? ' · exit '+t.return_code : ''}</div>
+        ${t.status==='running'?'<div class="bar" style="margin-bottom:10px"><i style="width:55%"></i></div>':''}
+        <pre class="log">${esc(t.log||'')||'(no output yet)'}</pre>
+        ${t.status==='running'?`<button class="wbtn" style="margin-top:9px"
+          data-cancel="${esc(t.id)}">Cancel</button>`:''}
+      </div>`).join('') : '<div class="empty">Nothing running.</div>';
+    $$('[data-cancel]').forEach(b=>b.onclick=async()=>{
+      try{await api('/api/tasks/'+b.dataset.cancel+'/cancel',{method:'POST'});
+        toast('Cancelled.');refresh()}
+      catch(e){toast(e.message,1)}});
+
+    $('#stageBody').innerHTML=stages.map(s=>`<tr>
+      <td><b>${esc(s.stage)}</b></td>
+      <td><span class="tag ${s.status==='done'?'ok'
+        :(s.status==='running'?'warn':'bad')}">${esc(s.status)}</span></td>
+      <td class="dim">#${esc(s.job_id)}</td>
+      <td class="dim" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;
+        white-space:nowrap">${esc((s.artifact||'—').split(/[\\/]/).pop())}</td>
+      </tr>`).join('')||'<tr><td colspan="4" class="dim">no stages recorded</td></tr>';
+
+    document.title=running.length?`(${running.length}) BTA — Studio`:'BTA — Studio';
+  }catch(e){
+    $('#conn').innerHTML=`<span class="dot off"></span>${esc(e.message)}`;
+  }finally{ busy=false; }
+}
+
+/* ================================================================ init */
+(async function init(){
+  try{
+    const [n,m,c,h,d,r]=await Promise.all([api('/api/niches'),api('/api/models'),
+      api('/api/capabilities'),api('/api/health'),
+      api('/api/dub/languages').catch(()=>[]),
+      api('/api/ratings').catch(()=>({liked:[],hidden:[]}))]);
+    NICHES=n;MODELS=m;CAPS=c;DUBLANGS=d;
+    (r.liked||[]).forEach(f=>LIKED.add(f));
+    (r.hidden||[]).forEach(f=>HIDDEN.add(f));
+    SEL=(NICHES[0]||{}).name||null;
+    $('#wsPath').textContent=h.workspace||'workspace/';
+    CLI=h.cli||'bta'; CWD=h.cwd||'';
+    $('#whoSub').innerHTML='<span class="dot"></span>'+
+      ((h.workspace||'').split(/[\\/]/).slice(-2)[0]||'local');
+  }catch(e){
+    toast('Could not load niches, models or capabilities: '+e.message,1);
+  }
+  renderTools(); renderNiches(); syncComposer(); renderCaps();
+  renderModels(); renderHelp();
+  $('#tbFilter').classList.add('hide');
+  $('#tbSort').classList.add('hide');
+  $('#tbGrid').classList.add('hide');
+  await refresh();
+  // Pause polling in a hidden tab: five endpoints every four seconds from a
+  // background tab is pure waste on a machine that is also rendering.
+  setInterval(()=>{ if(!document.hidden && !ED.open) refresh(); },4000);
+})();
+</script>

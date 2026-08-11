@@ -1,0 +1,23 @@
+# ClipForge watchlist — the ONLY channels the pipeline will ever touch.
+#
+# Authorization Law (spec §3.5): list only channels you are authorized to
+# record and clip. ClipForge produces local files and stops — it never
+# uploads, and it never accesses private or subscriber-gated content.
+#
+# platform: "youtube" | "twitch" | "kick"
+# handle:   the channel handle/slug as the platform names it
+# priority: higher = polled first when contended
+
+# Example entries (disabled) — replace with your own channels:
+
+[[channels]]
+platform = "twitch"
+handle = "your_channel_here"
+enabled = false
+priority = 10
+
+[[channels]]
+platform = "youtube"
+handle = "@IShowSpeed"
+enabled = true
+priority = 10

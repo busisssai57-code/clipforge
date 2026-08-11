@@ -1,0 +1,650 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BTA — 1 long video, 10 viral clips</title>
+<!-- Landing page: the front door before the dashboard. Same premise as
+     dashboard_live.html — no external requests of any kind. Every visual
+     below is CSS, inline SVG, or (when the pipeline has real clips on
+     disk) a thumbnail served by the local API. -->
+<style>
+:root{
+  --bg:#000; --card:#101013; --card2:#17171b; --card3:#1f1f24;
+  --line:#26262b; --line2:#35353c;
+  --ink:#f4f4f6; --dim:#9a9aa3; --faint:#6b6b74;
+  --score:#b4f22e; --green:#3ddc9a; --pink:#ff3d8a; --violet:#8b5cf6;
+  --r:14px; --rBig:26px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);min-height:100vh;overflow-x:hidden;
+  font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Inter,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input,textarea,select{font:inherit}
+svg{display:block}
+::selection{background:#b4f22e33}
+
+/* ================================================================ nav */
+nav{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:6px;
+  padding:14px 28px;background:rgba(0,0,0,.82);backdrop-filter:blur(14px)}
+.logo{display:flex;align-items:center;gap:9px;font-weight:800;font-size:19px;
+  letter-spacing:-.5px;margin-right:14px;cursor:pointer}
+.logo .mark{width:28px;height:28px;border-radius:8px;flex:0 0 auto;
+  background:conic-gradient(from 210deg,#ff9a3d,#ff3d6e,#8b5cf6,#3ddc9a,#ff9a3d);
+  display:flex;align-items:center;justify-content:center}
+.logo .mark svg{width:15px;height:15px}
+.navlinks{display:flex;align-items:center;gap:2px;margin:0 auto}
+.navlinks button{display:flex;align-items:center;gap:5px;padding:8px 13px;
+  border-radius:9px;color:var(--ink);font-size:14px;font-weight:500}
+.navlinks button:hover{background:#ffffff14}
+.navlinks .chev{opacity:.55}
+.dashlink{font-weight:700;font-size:14px;padding:8px 14px;border-radius:9px}
+.dashlink:hover{background:#ffffff14}
+
+/* ================================================================ hero */
+.hero{text-align:center;padding:72px 20px 46px;position:relative}
+.eyebrow{font-size:13px;font-weight:800;letter-spacing:.14em;margin-bottom:14px}
+h1{font-size:clamp(34px,5.2vw,58px);font-weight:800;letter-spacing:-2px;line-height:1.08}
+.hero .sub{color:#c8c8cf;font-size:clamp(14px,1.4vw,17px);margin:16px auto 34px;max-width:64ch}
+
+.cta{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap}
+.linkbar{display:flex;align-items:center;gap:8px;background:#ffffff14;
+  border:1px solid #ffffff22;border-radius:999px;padding:5px 6px 5px 18px;
+  min-width:min(430px,86vw);transition:border-color .2s,box-shadow .2s}
+.linkbar:focus-within{border-color:#ffffff55;box-shadow:0 0 0 4px #ffffff10}
+.linkbar.drag{border-color:var(--score);box-shadow:0 0 0 4px #b4f22e22}
+.linkbar svg{flex:0 0 auto;opacity:.8}
+.linkbar input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--ink);
+  font-size:14.5px}
+.linkbar input::placeholder{color:#b9b9c2}
+.btn{background:#fff;color:#0a0a0b;font-weight:700;font-size:14px;
+  border-radius:999px;padding:11px 20px;white-space:nowrap;
+  transition:transform .15s,opacity .15s}
+.btn:hover{transform:scale(1.03)}
+.btn:active{transform:scale(.98)}
+.btn[disabled]{opacity:.55;pointer-events:none}
+.or{color:#b9b9c2;font-size:14px}
+.uphint{margin-top:14px;font-size:12.5px;color:var(--faint);min-height:18px}
+
+/* ================================================================ carousel */
+.stage{position:relative;margin-top:26px}
+.track{display:flex;align-items:stretch;gap:26px;will-change:transform;
+  transition:transform .55s cubic-bezier(.22,.8,.26,1);padding:6px 0 10px}
+.slide{flex:0 0 auto;width:min(860px,78vw);border-radius:var(--rBig);
+  position:relative;overflow:hidden;min-height:min(560px,64vw);
+  transition:opacity .45s,transform .45s;opacity:.38;transform:scale(.965)}
+.slide.on{opacity:1;transform:scale(1)}
+.arrow{position:absolute;top:50%;transform:translateY(-50%);z-index:10;
+  width:44px;height:44px;border-radius:50%;background:#ffffff18;
+  border:1px solid #ffffff2a;backdrop-filter:blur(8px);
+  display:flex;align-items:center;justify-content:center;transition:background .2s}
+.arrow:hover{background:#ffffff30}
+.arrow.l{left:max(18px,calc(50% - min(430px,39vw) - 62px))}
+.arrow.r{right:max(18px,calc(50% - min(430px,39vw) - 62px))}
+.arrow svg{width:18px;height:18px}
+
+/* pills */
+.pills{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;
+  padding:26px 16px 64px}
+.pill{display:flex;align-items:center;gap:8px;border:1px solid var(--line2);
+  border-radius:999px;padding:9px 16px;font-size:13.5px;font-weight:600;
+  color:var(--ink);background:#0d0d10;transition:background .2s,border-color .2s}
+.pill:hover{background:var(--card2)}
+.pill.on{background:#fff;color:#0a0a0b;border-color:#fff}
+.pill svg{width:15px;height:15px;flex:0 0 auto}
+
+/* ---------- shared slide internals ---------- */
+.chip{display:inline-flex;align-items:center;gap:6px;background:#ffffff20;
+  border:1px solid #ffffff2c;backdrop-filter:blur(6px);border-radius:999px;
+  padding:7px 14px;font-size:12.5px;font-weight:600}
+.vframe{border-radius:14px;overflow:hidden;position:relative;
+  box-shadow:0 18px 50px #00000090}
+.capline{position:absolute;left:0;right:0;bottom:9%;text-align:center;
+  font-weight:900;letter-spacing:.02em;text-shadow:0 2px 10px #000c}
+.persona{position:absolute;inset:0}
+/* a stylised "speaker" built from gradients so frames read as video, not
+   flat swatches */
+.persona::before{content:"";position:absolute;left:50%;top:56%;width:58%;height:70%;
+  transform:translateX(-50%);border-radius:46% 46% 8px 8px;
+  background:linear-gradient(180deg,#2b2b33,#17171c)}
+.persona::after{content:"";position:absolute;left:50%;top:26%;width:26%;
+  aspect-ratio:.82;transform:translateX(-50%);border-radius:50% 50% 44% 44%;
+  background:linear-gradient(180deg,#c69a7b,#8f6a50)}
+
+/* ---------- slide 1 · AI clipping ---------- */
+.s-clip{background:
+  radial-gradient(120% 90% at 20% 10%,#1d3a2f 0%,transparent 55%),
+  radial-gradient(110% 80% at 85% 20%,#33203f 0%,transparent 60%),
+  radial-gradient(120% 100% at 60% 95%,#0f2740 0%,transparent 60%),#0c0f12}
+.s-clip .inner{position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:26px}
+.minibar{display:flex;align-items:center;gap:10px;background:#00000066;
+  border:1px solid #ffffff26;backdrop-filter:blur(10px);border-radius:999px;
+  padding:6px 6px 6px 16px;font-size:13.5px;color:#d4d4da;cursor:pointer}
+.minibar .btn{padding:9px 16px;font-size:13px}
+.socialrow{display:flex;gap:10px}
+.socialrow .so{width:30px;height:30px;border-radius:50%;display:flex;
+  align-items:center;justify-content:center;box-shadow:0 6px 16px #0009}
+.fan{display:flex;align-items:flex-end;justify-content:center;
+  perspective:900px;height:250px}
+.fan .card{width:132px;aspect-ratio:9/16;border-radius:12px;position:relative;
+  overflow:hidden;border:1px solid #ffffff1e;box-shadow:0 16px 44px #000a;
+  background-size:cover;background-position:center;flex:0 0 auto}
+.fan .card:nth-child(1){transform:rotate(-10deg) translate(26px,14px)}
+.fan .card:nth-child(2){transform:rotate(-5deg) translate(12px,4px)}
+.fan .card:nth-child(3){transform:translateY(-6px);z-index:2;width:146px}
+.fan .card:nth-child(4){transform:rotate(5deg) translate(-12px,4px)}
+.fan .card:nth-child(5){transform:rotate(10deg) translate(-26px,14px)}
+.score{position:absolute;left:8px;bottom:8px;background:#000000b0;border-radius:8px;
+  padding:3px 7px;line-height:1.15;text-align:center}
+.score b{display:block;font-size:15px;color:var(--score)}
+.score span{font-size:8px;letter-spacing:.08em;color:#cfcfd6}
+
+/* ---------- slide 2 · AI captioning ---------- */
+.s-cap{background:radial-gradient(100% 120% at 70% 0%,#20141f 0%,#101013 55%)}
+.s-cap .inner{position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;gap:34px;padding:30px}
+.capvid{width:min(46%,420px);aspect-ratio:16/10;
+  background:linear-gradient(140deg,#31434a,#1b2a30 60%,#12181c)}
+.capvid .badge{position:absolute;top:10px;right:12px;font-size:12px;font-weight:800;
+  color:#ffd60a;letter-spacing:.04em}
+.cappanel{width:250px;background:#101014dd;border:1px solid var(--line2);
+  border-radius:16px;overflow:hidden;backdrop-filter:blur(8px)}
+.cappanel .tabs{display:flex;gap:4px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.cappanel .tabs span{font-size:12px;color:var(--dim);padding:4px 9px;border-radius:7px}
+.cappanel .tabs span.on{background:var(--card3);color:var(--ink);font-weight:600}
+.presetlist{padding:10px;display:flex;flex-direction:column;gap:8px;max-height:380px;overflow:auto}
+.preset{border:1px solid var(--line2);border-radius:10px;padding:10px 8px 6px;
+  text-align:center;cursor:pointer;background:var(--card2);transition:border-color .15s}
+.preset:hover{border-color:#ffffff55}
+.preset.on{border-color:#fff}
+.preset .demo{font-size:13px;font-weight:800;min-height:19px}
+.preset .nm{font-size:10.5px;color:var(--faint);margin-top:4px}
+/* caption styles, shared by list demos and the big video caption */
+.st-karaoke i{font-style:normal;color:var(--score);background:#000c;padding:0 4px;border-radius:4px}
+.st-beasty{font-family:ui-rounded,'Arial Black',sans-serif;-webkit-text-stroke:1px #000;
+  text-transform:uppercase}
+.st-beasty i{font-style:normal;color:var(--green)}
+.st-diver{background:#fff;color:#000;padding:1px 8px;border-radius:5px;font-weight:900}
+.st-podp i{font-style:normal;color:var(--pink)}
+.st-hook{color:#ffd60a;text-transform:uppercase}
+.st-hook i{font-style:normal;color:#fff}
+.st-mozi i{font-style:normal;color:var(--green);text-decoration:underline}
+
+/* ---------- slide 3 · AI reframe ---------- */
+.s-ref{background:radial-gradient(120% 120% at 50% 0%,#6b6f77 0%,#3c4046 45%,#26292e 100%)}
+.s-ref .inner{position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;gap:56px;padding:30px}
+.court{width:min(44%,400px);aspect-ratio:16/10;
+  background:linear-gradient(180deg,#7d5a3c 62%,#8a6janed 0),
+             linear-gradient(180deg,#20242b 0 30%,#c8965f 30% 100%)}
+.courtlines::before{content:"";position:absolute;left:18%;right:18%;top:44%;height:44%;
+  border:2px solid #ffffff70;border-bottom:0;border-radius:60% 60% 0 0/38% 38% 0 0}
+.courtlines::after{content:"";position:absolute;left:0;right:0;top:30%;height:3px;background:#ffffff50}
+.player{position:absolute;width:9%;aspect-ratio:.5;border-radius:5px 5px 40% 40%}
+.tallvid{aspect-ratio:9/16;width:min(26%,222px);
+  background:linear-gradient(180deg,#23272e 0 26%,#c8965f 26% 100%)}
+.ai-tag{position:absolute;font-size:10px;font-weight:800;background:#ffd60a;
+  color:#000;border-radius:5px;padding:1px 6px;box-shadow:0 4px 12px #0008}
+.belowchip{position:absolute;left:50%;transform:translateX(-50%);bottom:-46px}
+.dots{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  display:flex;gap:7px;flex-direction:row}
+.dots i{width:6px;height:6px;border-radius:50%;background:#ffffff55}
+.dots i.on{background:#fff}
+
+/* ---------- slide 4 · AI B-roll ---------- */
+.s-broll{background:radial-gradient(110% 110% at 80% 0%,#171a26 0%,#0d0e14 60%)}
+.s-broll .inner{position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:flex-end;padding:26px}
+.brpanel{position:absolute;top:22px;right:22px;width:230px;background:#101014dd;
+  border:1px solid var(--line2);border-radius:14px;padding:12px;backdrop-filter:blur(8px)}
+.brpanel .t{font-size:13px;font-weight:700;margin-bottom:10px}
+.brpanel .gen{width:100%;background:#e8e8ec;color:#0a0a0b;font-weight:700;
+  font-size:13px;border-radius:9px;padding:9px 0;text-align:center}
+.portal{width:min(40%,250px);aspect-ratio:9/14;margin-bottom:18px;
+  background:
+   radial-gradient(42% 30% at 50% 38%,#59e3ff40 0%,transparent 70%),
+   radial-gradient(30% 22% at 50% 38%,#9a6bff66 0%,transparent 70%),
+   linear-gradient(180deg,#1b2137 0%,#232746 46%,#38265a 78%,#1c1430 100%)}
+.portal::before{content:"";position:absolute;left:50%;top:38%;width:56%;aspect-ratio:1;
+  transform:translate(-50%,-50%);border-radius:50%;
+  border:2px solid #6fd9ff88;box-shadow:0 0 40px #6fd9ff55,inset 0 0 30px #9a6bff55;
+  background:conic-gradient(from 0deg,#6fd9ff22,#9a6bff33,#6fd9ff22)}
+.portal .capline{font-size:15px}
+.portal .capline i{font-style:normal;color:var(--score)}
+.timeline{width:min(88%,660px);background:#0b0b0eae;border:1px solid var(--line2);
+  border-radius:12px;padding:8px;position:relative}
+.tl-thumbs{position:absolute;top:-58px;display:flex;gap:8px;left:8px;right:8px;
+  justify-content:space-between;pointer-events:none}
+.tl-thumb{width:84px;height:48px;border-radius:8px;border:1px solid #ffffff33;
+  background:linear-gradient(140deg,#243,#1b2137 60%,#38265a);position:relative;overflow:hidden}
+.tl-thumb span{position:absolute;left:5px;top:4px;font-size:9px;font-weight:700;color:#e8e8ec}
+.tl-row{display:flex;height:52px;border-radius:8px;overflow:hidden}
+.seg{position:relative;flex:1;background:
+  repeating-linear-gradient(90deg,#b83a6e 0 26px,#7e4fd1 26px 52px,#3a6eb8 52px 78px)}
+.seg+.seg{border-left:2px solid #000}
+.seg em{position:absolute;left:6px;top:4px;font-size:9.5px;font-style:normal;
+  font-weight:700;color:#fff;text-shadow:0 1px 3px #000}
+.playhead{position:absolute;top:-64px;bottom:6px;width:2px;background:#fff;
+  left:72%;border-radius:2px;box-shadow:0 0 8px #fff8}
+
+/* ---------- slide 5 · AI audio enhance ---------- */
+.s-audio{background:radial-gradient(110% 110% at 20% 0%,#1a1418 0%,#101013 60%)}
+.s-audio .inner{position:absolute;inset:0;display:flex;flex-direction:column;
+  justify-content:center;gap:22px;padding:38px 44px}
+.audiorow{display:flex;align-items:center;gap:36px}
+.transcript{flex:1;font-size:clamp(14px,1.7vw,19px);line-height:1.75;color:#e6e6ea;max-width:46%}
+.transcript s{color:#5c5c66;text-decoration-thickness:2px}
+.transcript .sep{color:var(--faint);padding:0 5px}
+.audvid{width:min(40%,340px);aspect-ratio:16/10;
+  background:linear-gradient(140deg,#4a4038,#2b241f 60%,#191512)}
+.audvid .capline{font-size:14px}
+.audvid .capline i{font-style:normal;color:var(--green)}
+.filmstrip{display:flex;gap:3px;border-radius:10px;overflow:hidden;height:54px}
+.filmstrip i{flex:1;background:linear-gradient(140deg,#4a4038,#241f1b)}
+.filmstrip i:nth-child(2n){filter:brightness(1.18)}
+.filmstrip i:nth-child(3n){filter:brightness(.85)}
+.wave{display:flex;align-items:center;gap:2px;height:44px;position:relative}
+.wave i{flex:1;background:#d9d9de;border-radius:2px;min-width:2px}
+.wave .ph{position:absolute;top:-4px;bottom:-4px;width:2px;background:#fff;left:34%}
+
+/* ---------- slide 6 · AI voice-over ---------- */
+.s-voice{background:
+  radial-gradient(100% 100% at 15% 15%,#3d2f55 0%,transparent 60%),
+  radial-gradient(110% 110% at 90% 85%,#1c3d4f 0%,transparent 60%),#141420}
+.s-voice .inner{position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;gap:40px;padding:30px}
+.hookpanel{width:290px;background:#181826d8;border:1px solid #ffffff22;
+  border-radius:16px;padding:16px;backdrop-filter:blur(10px)}
+.hookpanel .t{font-size:14px;font-weight:700;margin-bottom:12px}
+.hookpanel label{display:block;font-size:11.5px;color:var(--dim);margin:10px 0 5px}
+.hookpanel textarea{width:100%;height:88px;resize:none;background:#ffffff10;
+  border:1px solid #ffffff1c;border-radius:10px;color:var(--ink);padding:9px 11px;
+  font-size:13px;outline:0}
+.hookpanel textarea::placeholder{color:#8a8a94}
+.hookpanel select{width:100%;background:#ffffff10;border:1px solid #ffffff1c;
+  border-radius:10px;color:var(--ink);padding:9px 11px;font-size:13px;outline:0;
+  appearance:none}
+.slider{position:relative;height:26px;display:flex;align-items:center}
+.slider .rail{width:100%;height:4px;border-radius:3px;background:#ffffff28}
+.slider .knob{position:absolute;top:50%;width:16px;height:16px;border-radius:50%;
+  background:#fff;transform:translate(-50%,-50%);left:58%;cursor:grab;
+  box-shadow:0 2px 8px #0008}
+.slider-labels{display:flex;justify-content:space-between;font-size:10.5px;
+  color:var(--faint);margin-top:3px}
+.hookpanel .gen{width:100%;margin-top:16px;background:#fff;color:#0a0a0b;
+  font-weight:700;font-size:13.5px;border-radius:10px;padding:10px 0;text-align:center}
+.voicevid{width:min(30%,240px);aspect-ratio:9/15;
+  background:linear-gradient(160deg,#4b2a4f,#241b3a 70%)}
+.voicevid .neon{position:absolute;inset:0;
+  background:radial-gradient(60% 30% at 70% 18%,#ff3d8a33 0,transparent 70%)}
+.ttspill{position:absolute;left:-34%;bottom:22%;display:flex;align-items:center;gap:8px;
+  background:#000000b8;border:1px solid #ffffff2c;border-radius:999px;
+  padding:10px 16px;backdrop-filter:blur(8px);font-size:16px;font-weight:700;
+  white-space:nowrap;box-shadow:0 14px 40px #000a}
+.ttspill .cursor{width:2px;height:20px;background:#fff;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.ttspill .wave{height:22px;width:150px}
+.ttspill .wave i{background:#fff}
+
+/* toast */
+.toast{position:fixed;left:50%;bottom:30px;transform:translateX(-50%);z-index:99;
+  background:#17171c;border:1px solid var(--line2);border-radius:12px;
+  padding:12px 18px;font-size:13.5px;box-shadow:0 16px 50px #000c;max-width:78vw}
+.toast b{color:var(--bad, #ff6b6b)}
+
+footer{padding:26px;text-align:center;color:var(--faint);font-size:12.5px}
+footer b{color:var(--dim)}
+
+@media (max-width:760px){
+  .navlinks{display:none}
+  .s-cap .inner,.s-ref .inner,.s-voice .inner{flex-direction:column;gap:22px}
+  .capvid,.court,.transcript,.audvid{width:88%;max-width:none}
+  .transcript{max-width:none}
+  .arrow.l{left:8px}.arrow.r{right:8px}
+}
+</style>
+
+<nav>
+  <div class="logo" onclick="scrollTo({top:0,behavior:'smooth'})">
+    <span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#0a0a0b" stroke-width="3" stroke-linecap="round"><path d="M5 4l14 8-14 8z" fill="#0a0a0b"/></svg></span>
+    BTA
+  </div>
+  <div class="navlinks">
+    <button onclick="goSlide(0,true)">Features <svg class="chev" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 3.5l3 3 3-3"/></svg></button>
+    <button onclick="goSlide(2,true)">Solutions <svg class="chev" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 3.5l3 3 3-3"/></svg></button>
+    <button onclick="goSlide(3,true)">Resources <svg class="chev" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 3.5l3 3 3-3"/></svg></button>
+    <button onclick="toast('BTA runs on your own GPU — there is no pricing page.')">Pricing</button>
+    <button onclick="goSlide(5,true)">For business <svg class="chev" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 3.5l3 3 3-3"/></svg></button>
+  </div>
+  <button class="dashlink" onclick="location.href='/dashboard'">My dashboard</button>
+</nav>
+
+<header class="hero" id="drop">
+  <div class="eyebrow">#1 LOCAL AI VIDEO CLIPPING TOOL</div>
+  <h1>1 long video, 10 viral clips.<br>Create 10x faster.</h1>
+  <p class="sub">BTA turns long videos into shorts and posts them to every platform —
+    ranked, captioned, reframed and rendered entirely on this machine.</p>
+  <div class="cta">
+    <form class="linkbar" id="linkbar" onsubmit="return grab(event)">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 14a5 5 0 007.07 0l2.83-2.83a5 5 0 00-7.07-7.07L11 5.93M14 10a5 5 0 00-7.07 0L4.1 12.83a5 5 0 007.07 7.07L13 18.07"/></svg>
+      <input id="url" placeholder="Drop a video link" autocomplete="off" spellcheck="false">
+      <button class="btn" id="grabBtn" type="submit">Get free clips</button>
+    </form>
+    <span class="or">or</span>
+    <button class="btn" id="upBtn" onclick="file.click()">Upload files</button>
+    <input type="file" id="file" hidden
+           accept=".mp4,.mkv,.mov,.webm,.m4v,.ts,.mp3,.wav,.m4a,.flac">
+  </div>
+  <div class="uphint" id="uphint"></div>
+</header>
+
+<section class="stage" id="stage">
+  <button class="arrow l" onclick="goSlide(cur-1,true)" aria-label="Previous">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg>
+  </button>
+  <button class="arrow r" onclick="goSlide(cur+1,true)" aria-label="Next">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M9 5l7 7-7 7"/></svg>
+  </button>
+
+  <div class="track" id="track">
+
+    <!-- 1 · AI clipping -->
+    <div class="slide s-clip">
+      <div class="inner">
+        <div class="minibar" onclick="focusDrop()">Drop a long video and …
+          <span class="btn">Get clips</span></div>
+        <div class="socialrow">
+          <span class="so" style="background:#ff0000"><svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M9.5 8l7 4-7 4z"/></svg></span>
+          <span class="so" style="background:linear-gradient(45deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4.2"/><circle cx="17.4" cy="6.6" r="1.1" fill="#fff" stroke="none"/></svg></span>
+          <span class="so" style="background:#0a66c2"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fff"><path d="M4 9h4v11H4zM6 3.5A2.1 2.1 0 116 7.7a2.1 2.1 0 010-4.2zM10 9h3.8v1.7c.6-1 1.9-2 3.8-2 3 0 4.4 1.8 4.4 5.2V20h-4v-5.5c0-1.7-.6-2.7-2-2.7-1.5 0-2 1.1-2 2.7V20h-4z"/></svg></span>
+          <span class="so" style="background:#000;border:1px solid #333"><svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M16.6 5.82A4.28 4.28 0 0115.5 3h-3.1v12.4a2.6 2.6 0 11-2.6-2.6c.27 0 .53.04.78.12V9.75a5.8 5.8 0 00-.78-.05 5.7 5.7 0 105.7 5.7V9.01a7.35 7.35 0 004.3 1.38V7.28a4.3 4.3 0 01-3.2-1.46z"/></svg></span>
+          <span class="so" style="background:#1877f2"><svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M13.5 21v-8h2.7l.4-3.1h-3.1V7.9c0-.9.25-1.5 1.54-1.5h1.65V3.6c-.29-.04-1.27-.12-2.4-.12-2.4 0-4 1.45-4 4.1v2.3H7.6V13h2.68v8z"/></svg></span>
+          <span class="so" style="background:#000;border:1px solid #333"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fff"><path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3l-4.9-6.4L6.4 22H3.3l7.3-8.3L1.6 2H8l4.4 5.9zm-1.1 18.2h1.7L7.1 3.7H5.2z"/></svg></span>
+        </div>
+        <div class="fan" id="fan">
+          <div class="card" style="background-image:linear-gradient(160deg,#2f6d4f,#173629)"><span class="score"><b>97</b><span>SCORE</span></span></div>
+          <div class="card" style="background-image:linear-gradient(160deg,#6d3f8f,#2a1839)"><span class="score"><b>99</b><span>SCORE</span></span></div>
+          <div class="card" style="background-image:linear-gradient(160deg,#3f6d8f,#182a39)"><span class="score"><b>95</b><span>SCORE</span></span></div>
+          <div class="card" style="background-image:linear-gradient(160deg,#8f6d3f,#393018)"><span class="score"><b>98</b><span>SCORE</span></span></div>
+          <div class="card" style="background-image:linear-gradient(160deg,#8f3f5b,#391822)"><span class="score"><b>93</b><span>SCORE</span></span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2 · AI captioning -->
+    <div class="slide s-cap">
+      <div class="inner">
+        <div class="vframe capvid"><div class="persona"></div>
+          <span class="badge">BTA</span>
+          <div class="capline" id="bigcap" style="font-size:24px"></div>
+        </div>
+        <div class="cappanel">
+          <div class="tabs"><span class="on">Presets</span><span>Font</span><span>Effects</span></div>
+          <div class="presetlist" id="presetlist"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3 · AI reframe -->
+    <div class="slide s-ref">
+      <div class="inner">
+        <div style="position:relative">
+          <div class="vframe court courtlines" style="position:relative">
+            <span class="player" style="left:34%;top:48%;background:#2244aa"></span>
+            <span class="player" style="left:47%;top:42%;background:#eee"></span>
+            <span class="player" style="left:56%;top:55%;background:#cc3333"></span>
+            <span class="ai-tag" style="left:44%;top:36%">✦ AI</span>
+          </div>
+          <span class="chip belowchip">Before</span>
+        </div>
+        <div class="dots"><i></i><i class="on"></i><i></i><i></i><i></i></div>
+        <div style="position:relative">
+          <div class="vframe tallvid courtlines" style="position:relative">
+            <span class="player" style="left:38%;top:40%;background:#eee;width:16%"></span>
+            <span class="player" style="left:52%;top:52%;background:#2244aa;width:16%"></span>
+          </div>
+          <span class="chip belowchip">Fill layout</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4 · AI B-roll -->
+    <div class="slide s-broll">
+      <div class="brpanel"><div class="t">B-Roll</div><div class="gen">Generate AI B-Roll</div></div>
+      <div class="inner">
+        <div class="vframe portal">
+          <div class="capline">SO IF I <i>START</i></div>
+        </div>
+        <div class="timeline">
+          <div class="tl-thumbs">
+            <span class="tl-thumb"><span>✦ AI B-roll</span></span>
+            <span class="tl-thumb"><span>✦ AI B-roll</span></span>
+          </div>
+          <div class="tl-row">
+            <span class="seg"><em>Fill</em></span>
+            <span class="seg"><em>Fit</em></span>
+            <span class="seg" style="flex:.5"><em>Fill</em></span>
+            <span class="seg" style="flex:.6"><em>Fill</em></span>
+          </div>
+          <span class="playhead"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5 · AI audio enhance -->
+    <div class="slide s-audio">
+      <div class="inner">
+        <div class="audiorow">
+          <p class="transcript">Growing on YouTube is <s>ummm</s> actually so
+            f*** hard <span class="sep">•</span> You spend <s>like</s> all this
+            time on a video and then <s>uh</s> it barely gets seen
+            <span class="sep">•</span> It's <s>like</s> really draining</p>
+          <div class="vframe audvid"><div class="persona"></div>
+            <div class="capline">ACTUALLY SO <i>F*** HARD</i></div>
+          </div>
+        </div>
+        <div class="filmstrip"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="wave" id="wave1"><span class="ph"></span></div>
+      </div>
+    </div>
+
+    <!-- 6 · AI voice-over -->
+    <div class="slide s-voice">
+      <div class="inner">
+        <div class="hookpanel">
+          <div class="t">Auto generate AI hook</div>
+          <label>AI hook script</label>
+          <textarea placeholder="Type your script here"></textarea>
+          <label>Speaker voice</label>
+          <select><option>John</option><option>Sarah</option><option>Nova</option></select>
+          <label>Speed</label>
+          <div class="slider" id="speed"><span class="rail"></span><span class="knob"></span></div>
+          <div class="slider-labels"><span>-50%</span><span>Normal</span><span>50%</span></div>
+          <div class="gen" onclick="toast('Voice-over is coming to the pipeline — hooks render as styled captions today.')">Generate AI hook</div>
+        </div>
+        <div class="vframe voicevid"><div class="persona"></div><div class="neon"></div>
+          <div class="ttspill">Text to aud<span class="cursor"></span>
+            <span class="wave" id="wave2"></span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<div class="pills" id="pills">
+  <button class="pill on" onclick="goSlide(0,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.5 15.5M8.5 8.5L20 20"/></svg>AI clipping</button>
+  <button class="pill" onclick="goSlide(1,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M6 15h6M15 15h3"/></svg>AI captioning</button>
+  <button class="pill" onclick="goSlide(2,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 3v18M17 3v18M3 7h18M3 17h18"/></svg>AI reframe</button>
+  <button class="pill" onclick="goSlide(3,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M3 9h18M9 21V9"/></svg>AI B-Roll</button>
+  <button class="pill" onclick="goSlide(4,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 5L6 9H2v6h4l5 4zM15.5 8.5a5 5 0 010 7M19 5a9 9 0 010 14"/></svg>AI audio enhance</button>
+  <button class="pill" onclick="goSlide(5,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0M12 17v4"/></svg>AI voice-over</button>
+</div>
+
+<footer><b>BTA</b> · everything above runs on this machine — nothing is uploaded anywhere.</footer>
+
+<script>
+'use strict';
+/* ------------------------------------------------------------ helpers */
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+function toast(m,bad){
+  const t=document.createElement('div');t.className='toast';
+  t.innerHTML=(bad?'<b>Failed</b> — ':'')+m;
+  document.body.appendChild(t);setTimeout(()=>t.remove(),5200);
+}
+const post=(u,b)=>fetch(u,{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})})
+  .then(async r=>{if(!r.ok){let d;try{d=(await r.json()).error}catch(e){d=r.statusText}
+    throw new Error(d||('HTTP '+r.status))}return r.json()});
+
+/* ------------------------------------------------------------ carousel */
+let cur=0,auto=null;
+const N=$$('.slide').length;
+function layout(){
+  const track=$('#track'),slide=$('.slide'),
+        w=slide.getBoundingClientRect().width,gap=26,
+        center=(innerWidth-w)/2;
+  track.style.transform=`translateX(${center-cur*(w+gap)}px)`;
+  $$('.slide').forEach((s,i)=>s.classList.toggle('on',i===cur));
+  $$('#pills .pill').forEach((p,i)=>p.classList.toggle('on',i===cur));
+}
+function goSlide(i,user){
+  cur=((i%N)+N)%N;layout();
+  if(user){clearInterval(auto);auto=setInterval(()=>goSlide(cur+1),7000);
+    $('#stage').scrollIntoView({behavior:'smooth',block:'nearest'});}
+}
+addEventListener('resize',layout);
+addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight')goSlide(cur+1,true);
+  if(e.key==='ArrowLeft')goSlide(cur-1,true);
+});
+auto=setInterval(()=>goSlide(cur+1),7000);
+$('#stage').addEventListener('pointerenter',()=>clearInterval(auto));
+$('#stage').addEventListener('pointerleave',
+  ()=>{clearInterval(auto);auto=setInterval(()=>goSlide(cur+1),7000)});
+
+/* ------------------------------------------------------------ hero: link */
+function focusDrop(){
+  $('#drop').scrollIntoView({behavior:'smooth'});
+  setTimeout(()=>$('#url').focus(),450);
+}
+async function grab(e){
+  e.preventDefault();
+  const url=$('#url').value.trim(),btn=$('#grabBtn');
+  if(!url)return focusDrop(),false;
+  if(!/^https?:\/\//i.test(url)){toast('That does not look like an http(s) link.',1);return false}
+  btn.disabled=true;btn.textContent='Starting…';
+  try{
+    await post('/api/grab',{url,clips:10});
+    toast('Clipping started — taking you to your dashboard.');
+    setTimeout(()=>location.href='/dashboard',900);
+  }catch(err){toast(err.message,1);btn.disabled=false;btn.textContent='Get free clips'}
+  return false;
+}
+
+/* ------------------------------------------------------------ hero: upload */
+const fileInput=$('#file');
+fileInput.addEventListener('change',()=>{
+  if(fileInput.files.length)uploadFile(fileInput.files[0]);
+});
+async function uploadFile(f){
+  const btn=$('#upBtn'),hint=$('#uphint');
+  btn.disabled=true;btn.textContent='Uploading…';
+  hint.textContent=`${f.name} · ${(f.size/1048576).toFixed(1)} MB`;
+  try{
+    const up=await fetch('/api/upload?name='+encodeURIComponent(f.name),
+      {method:'POST',body:f});
+    if(!up.ok){let d;try{d=(await up.json()).error}catch(e){d=up.statusText}
+      throw new Error(d||('HTTP '+up.status))}
+    const saved=await up.json();
+    btn.textContent='Clipping…';
+    await post('/api/process',{source:saved.path,clips:10});
+    toast('Upload complete, clipping started — taking you to your dashboard.');
+    setTimeout(()=>location.href='/dashboard',900);
+  }catch(err){
+    toast(err.message,1);
+    btn.disabled=false;btn.textContent='Upload files';hint.textContent='';
+  }
+}
+/* drag & drop: a dropped FILE uploads, dropped TEXT fills the link input */
+const bar=$('#linkbar');
+['dragenter','dragover'].forEach(ev=>addEventListener(ev,e=>{
+  e.preventDefault();bar.classList.add('drag')}));
+['dragleave','drop'].forEach(ev=>addEventListener(ev,e=>{
+  e.preventDefault();if(ev==='dragleave'&&e.relatedTarget)return;
+  bar.classList.remove('drag')}));
+addEventListener('drop',e=>{
+  e.preventDefault();
+  if(e.dataTransfer.files.length)return uploadFile(e.dataTransfer.files[0]);
+  const txt=e.dataTransfer.getData('text');
+  if(txt){$('#url').value=txt.trim();$('#url').focus()}
+});
+
+/* ------------------------------------------------------- caption presets */
+const PRESETS=[
+  {nm:'No captions',demo:'',cls:''},
+  {nm:'Karaoke',demo:'<i>TO</i> GET STARTED',cls:'st-karaoke'},
+  {nm:'Beasty',demo:'CHOOSE <i>A</i> STYLE',cls:'st-beasty'},
+  {nm:'Deep Diver',demo:'to get',cls:'st-diver'},
+  {nm:'Pod P',demo:'GET <i>STARTED</i>',cls:'st-podp'},
+  {nm:'Hook',demo:'TO <i>GET STARTED</i>',cls:'st-hook'},
+  {nm:'Mozi',demo:'CHOOSE A <i>STYLE</i>',cls:'st-mozi'},
+];
+const plist=$('#presetlist');
+PRESETS.forEach((p,i)=>{
+  const d=document.createElement('div');
+  d.className='preset'+(i===3?' on':'');
+  d.innerHTML=`<div class="demo ${p.cls}">${p.demo||'⃠'}</div><div class="nm">${p.nm}</div>`;
+  d.onclick=()=>{
+    $$('.preset').forEach(x=>x.classList.remove('on'));d.classList.add('on');
+    const big=$('#bigcap');
+    big.className='capline '+p.cls;big.style.fontSize='24px';
+    big.innerHTML=p.demo?(p.cls==='st-diver'?'<span class="st-diver">change</span>'
+                          :p.demo.replace(/GET STARTED|CHOOSE A STYLE|STYLE|to get/i,'change')):'';
+  };
+  plist.appendChild(d);
+});
+plist.children[3].click();
+
+/* ---------------------------------------------------------- waveform bars */
+function drawWave(el,n,amp){
+  for(let i=0;i<n;i++){
+    const b=document.createElement('i');
+    const h=Math.abs(Math.sin(i*.55)+Math.sin(i*.19)*.8)/1.8;
+    b.style.height=Math.max(9,h*amp)+'%';
+    el.appendChild(b);
+  }
+}
+drawWave($('#wave1'),110,100);
+drawWave($('#wave2'),34,100);
+
+/* ------------------------------------------------------------ speed knob */
+(()=>{const sl=$('#speed'),knob=sl.querySelector('.knob');
+  let drag=false;
+  const move=e=>{if(!drag)return;
+    const r=sl.getBoundingClientRect(),
+          x=Math.min(Math.max(e.clientX-r.left,0),r.width);
+    knob.style.left=(x/r.width*100)+'%'};
+  knob.addEventListener('pointerdown',e=>{drag=true;knob.setPointerCapture(e.pointerId)});
+  addEventListener('pointermove',move);
+  addEventListener('pointerup',()=>drag=false);
+})();
+
+/* --------------------------------------------- real clips into the fan */
+(async()=>{
+  try{
+    const r=await fetch('/api/clips');if(!r.ok)return;
+    const clips=(await r.json()).slice(0,5);if(!clips.length)return;
+    const cards=$$('#fan .card');
+    clips.forEach((c,i)=>{
+      if(!cards[i])return;
+      cards[i].style.backgroundImage=
+        `url('/api/clips/thumb/${encodeURIComponent(c.filename)}')`;
+      const s=cards[i].querySelector('.score b');
+      if(s&&c.score!=null)s.textContent=Math.round(c.score);
+    });
+  }catch(e){/* API down or no clips yet — the gradients stand in */}
+})();
+
+layout();
+</script>

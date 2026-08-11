@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bta"
+version = "0.1.0"
+description = "BTA — Beyond The Average. Local-first autonomous stream-to-viral-clip pipeline (Windows 11 / RTX 3090)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+# Runtime dependencies are managed via requirements.txt (constraint set) and
+# requirements.lock (exact freeze). pyproject deliberately lists only the
+# CPU-side core so `pip install -e .` never drags in the GPU stack by accident.
+dependencies = [
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "structlog>=24.1",
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.scripts]
+# main(), not app: main wraps the Typer app with the ClipForgeError →
+# clean-one-liner handler; pointing at app would make that handler dead code.
+bta = "clipforge.cli:main"
+# Kept so existing scripts, docs and muscle memory keep working. The import
+# package stays `clipforge` on purpose: renaming it would rewrite every
+# import in the tree AND change every stage's cache key, silently
+# invalidating the whole artifact cache. The brand is what users see; the
+# module path is plumbing.
+clipforge = "clipforge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["clipforge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: requires CUDA GPU (deselect with '-m \"not gpu\"')",
+    "network: requires live network access",
+]
+asyncio_mode = "auto"

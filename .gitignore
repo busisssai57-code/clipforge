@@ -1,0 +1,19 @@
+# Secrets — never commit. Read via clipforge.config.Secrets (env_file=".env").
+.env
+.env.*
+!.env.example
+
+# Workspace: media, artifacts, state, generated pieces, quota ledger.
+workspace/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Model weights (fetched, not vendored)
+*.pt
+*.task
+*.safetensors

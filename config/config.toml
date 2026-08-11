@@ -1,0 +1,110 @@
+# ClipForge configuration â€” copy to config/config.toml and edit.
+# Every key shown here is every key that exists; unknown keys are REJECTED
+# at startup (fail-fast), so typos surface immediately.
+#
+# Secrets do NOT live here. Set environment variables (or a .env file):
+#   CLIPFORGE_HF_TOKEN = hf_...   # gated pyannote models (doctor explains)
+
+[workspace]
+# All pipeline state lives under this root: chunks/ artifacts/ clips/ logs/ tmp/
+root = "workspace"
+
+[ingest]
+poll_interval_s = 60.0        # per-channel live/VOD poll cadence
+segment_time_s = 900          # live chunk length (15 min, spec Â§S0)
+playlist_end = 5              # how many recent VODs yt-dlp inspects per poll
+overlap_s = 60                # T1: trailing overlap carried into the next chunk
+segment_ready_stable_s = 20.0 # size-unchanged window => segment is closed
+backoff_base_s = 5.0          # reconnect backoff: base * 2^n + jitter
+backoff_max_s = 300.0
+twitch_disable_ads = true     # streamlink --twitch-disable-ads
+kick_enabled = false          # T4: Kick is best-effort; off unless you opt in
+quality = "best"              # streamlink stream selector
+
+[disk]
+free_floor_gb = 50.0          # below this free space, ingestion PAUSES
+retention_hours = 48.0        # processed chunks older than this are deleted
+
+[s1]                          # transcription â€” WhisperX + pyannote
+model = "small"
+batch_size = 8                # HARD CAP (VRAM protection) â€” do not raise
+compute_type = "float16"
+# language = "en"             # unset = autodetect; pin for full determinism
+vram_budget_gb = 8.0
+
+[s2]                          # candidate prefilter â€” CPU heuristics
+window_min_s = 30.0
+window_max_s = 60.0
+top_k = 10
+nms_iou = 0.25
+
+[s3]                          # semantic ranking â€” Qwen2.5-VL-7B INT4
+# LOCAL. Ranking decides which clip ships, and it decides it here: with
+# use_cloud = false the cloud ranker is never constructed, so no frame or
+# transcript line can leave the machine. Ranking runs on the local Qwen
+# below. Operator decision, 2026-08-05 — spec §2 says "Cloud: None", and
+# this is the switch that makes that true rather than aspirational.
+use_cloud = false
+cloud_models = ["gemini-2.5-pro", "gemini-2.5-flash"]
+cloud_model = "gemini-2.5-pro"
+cloud_timeout_s = 90.0
+cloud_max_attempts = 3
+model_id = "unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit"
+fallback_model_id = "Qwen/Qwen2.5-VL-7B-Instruct"   # NF4 via bitsandbytes
+frames_per_candidate = 8      # strictly 6-8 (spec Â§S3)
+max_pixels = 451584           # T7: per-frame pixel cap (~768x588); OOM guard
+seed = 1234
+vram_budget_gb = 10.0
+
+[s4]                          # tracking + active speaker + virtual camera
+pose_model = "yolo11m-pose.pt"
+asd_confidence_tau = 0.5      # below Ï„: documented fallback framing
+deadzone_frac = 0.02          # ignore target drift under 2% of frame width
+max_pan_px_per_frame = 40.0
+one_euro_min_cutoff = 1.0
+one_euro_beta = 0.007
+vram_budget_gb = 3.0
+
+[s5]                          # karaoke subtitles (.ass)
+font = "Arial Black"
+font_size = 72
+highlight_color = "&H0000FFFF"  # ASS BGR: yellow active word
+base_color = "&H00FFFFFF"       # white
+outline = 3.0
+shadow = 1.0
+margin_v = 260                # keeps text inside the 9:16 safe area
+max_words_per_line = 4
+max_lines = 2
+
+[s6]                          # final render
+width = 1080
+height = 1920
+encoder = "h264_nvenc"        # falls back to libx264 automatically
+nvenc_preset = "p5"
+cq = 21
+audio_bitrate = "192k"
+loudness_i = -14.0            # integrated loudness target (LUFS)
+loudness_tp = -1.5
+loudness_lra = 11.0
+
+[orchestration]
+ingest_concurrency = 4
+gpu_concurrency = 1           # LAW â€” exactly one GPU stage at a time
+render_concurrency = 2        # NVENC consumer session cap
+queue_maxsize = 32            # bounded queues => backpressure, not OOM
+
+[genvideo]
+enabled = true
+# LOCAL. Generation runs entirely on the local diffusers model; the Veo
+# provider is not even constructed, so no brief text reaches Google.
+# Operator decision, 2026-08-05 — same call as [s3] above.
+use_cloud = false
+# Smoke-validation uses the fast variant: identical endpoint, identical
+# long-running-operation polling, identical download path, lower cost.
+# Switch to "veo-3.1-generate-preview" for full quality.
+cloud_model = "veo-3.1-fast-generate-preview"
+local_model_id = "Lightricks/LTX-Video"
+local_steps = 30
+preset = "documentary"
+shots = 6
+aspect_ratio = "9:16"

@@ -1,0 +1,340 @@
+"""`clipforge doctor` — diagnose every external prerequisite, actionably.
+
+Rules:
+  * A check NEVER raises — it returns a :class:`CheckResult` with ``ok``,
+    a human message, and a concrete ``fix`` (command or URL).
+  * Checks are independent; one failure never hides another.
+  * Severity: ``required`` blocks the pipeline; ``optional`` degrades a
+    feature (e.g. Kick ingest, NVENC → libx264).
+
+The known traps this file exists for: T5 (gated pyannote), T6 (cuDNN DLL
+hell on Windows), missing ffmpeg, missing CUDA.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import importlib.util
+import json
+import os
+import shutil
+import sys
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Literal
+
+from clipforge import ffmpeg as ff
+from clipforge.config import Secrets
+from clipforge.dllpaths import ensure_nvidia_dll_dirs
+
+Severity = Literal["required", "optional"]
+
+# T5: every gated repo diarization touches must be accepted, or S1's
+# diarization dies mid-run at CP2.
+#
+# The spec names 3.1 + segmentation-3.0, correct for the whisperx of its
+# day. A real run here on whisperx 3.8 failed on
+# `pyannote/speaker-diarization-community-1` instead — the default model
+# moved. Probing only the spec's two repos would have reported everything
+# green right up until S1 failed on the machine, so all three are checked.
+PYANNOTE_GATED_REPOS = (
+    "pyannote/speaker-diarization-community-1",
+    "pyannote/speaker-diarization-3.1",
+    "pyannote/segmentation-3.0",
+)
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    name: str
+    ok: bool
+    severity: Severity
+    message: str
+    fix: str = ""
+
+
+def _module_available(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
+
+
+# --------------------------------------------------------------------------
+# individual checks — each is total (never raises)
+# --------------------------------------------------------------------------
+
+
+def check_python() -> CheckResult:
+    v = sys.version_info
+    ok = (3, 11) <= (v.major, v.minor) < (3, 13)
+    return CheckResult(
+        "python", ok, "required",
+        f"Python {v.major}.{v.minor}.{v.micro}",
+        "" if ok else "Use Python 3.11/3.12 - the CUDA AI stack (ctranslate2, "
+                      "torch cu12x wheels) is not reliable on other versions here.")
+
+
+def check_ffmpeg() -> CheckResult:
+    path = ff.find_binary("ffmpeg")
+    if path is None:
+        return CheckResult(
+            "ffmpeg", False, "required", "ffmpeg not found",
+            "winget install Gyan.FFmpeg   (or set CLIPFORGE_FFMPEG_DIR to a "
+            "folder containing ffmpeg.exe + ffprobe.exe)")
+    return CheckResult("ffmpeg", True, "required", f"found: {path}")
+
+
+def check_ffprobe() -> CheckResult:
+    path = ff.find_binary("ffprobe")
+    if path is None:
+        return CheckResult(
+            "ffprobe", False, "required", "ffprobe not found",
+            "Install the full ffmpeg distribution (imageio-ffmpeg does NOT "
+            "ship ffprobe): winget install Gyan.FFmpeg")
+    return CheckResult("ffprobe", True, "required", f"found: {path}")
+
+
+def check_ffmpeg_capabilities() -> list[CheckResult]:
+    """NVENC encoder + libass filter, probed from the actual binary."""
+    results: list[CheckResult] = []
+    try:
+        encoders = ff.list_encoders()
+        filters = ff.list_filters()
+    except Exception as exc:
+        return [CheckResult("ffmpeg-caps", False, "required",
+                            f"could not probe ffmpeg capabilities: {exc}",
+                            "Reinstall ffmpeg; the binary is present but not runnable.")]
+    has_nvenc = "h264_nvenc" in encoders
+    results.append(CheckResult(
+        "h264_nvenc", has_nvenc, "optional",
+        "NVENC encoder available" if has_nvenc else "h264_nvenc missing",
+        "" if has_nvenc else "Renders will use libx264 (slower). Install an "
+                             "ffmpeg build with --enable-nvenc (Gyan full build has it)."))
+    has_ass = " ass " in filters or "\nass" in filters or " ass\n" in filters
+    results.append(CheckResult(
+        "libass", has_ass, "required",
+        "ass subtitle filter available" if has_ass else "ass filter missing",
+        "" if has_ass else "Install a full ffmpeg build with libass "
+                           "(Gyan.FFmpeg full)."))
+    return results
+
+
+def check_cuda() -> CheckResult:
+    if not _module_available("torch"):
+        return CheckResult(
+            "cuda", False, "required", "torch not installed",
+            "pip install torch --index-url https://download.pytorch.org/whl/cu121")
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return CheckResult(
+                "cuda", False, "required", "torch present but CUDA unavailable",
+                "Check NVIDIA driver (nvidia-smi) and that torch is a +cu12x "
+                "wheel, not CPU-only: python -c \"import torch; print(torch.__version__)\"")
+        name = torch.cuda.get_device_name(0)
+        total_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        return CheckResult("cuda", True, "required", f"{name} ({total_gb:.0f} GB)")
+    except Exception as exc:  # driver/DLL breakage manifests as import-time errors
+        return CheckResult("cuda", False, "required", f"CUDA probe failed: {exc}",
+                           "Reinstall the NVIDIA driver and the cu12x torch wheel.")
+
+
+def check_cudnn_dlls() -> CheckResult:
+    """T6 — ctranslate2 (faster-whisper) needs cuBLAS/cuDNN DLLs loadable
+    from the process. On Windows they typically come from the pip packages
+    ``nvidia-cublas-cu12`` / ``nvidia-cudnn-cu12`` (whisperx pulls them in),
+    but the DLL directory must be on the search path."""
+    if sys.platform != "win32":  # pragma: no cover
+        return CheckResult("cudnn-dlls", True, "required", "non-Windows: skipped")
+    if not _module_available("ctranslate2"):
+        return CheckResult(
+            "cudnn-dlls", False, "optional", "ctranslate2 not installed yet",
+            "Installed with whisperx at CP2; re-run doctor afterwards.")
+    # Probe with the SAME search path the pipeline runs with: register the
+    # pip-installed nvidia/*/bin dirs first (clipforge.dllpaths, also called
+    # at CLI boot), THEN attempt the loads.
+    ensure_nvidia_dll_dirs()
+    candidates = ["cudnn_ops64_9.dll", "cudnn_ops_infer64_8.dll", "cublas64_12.dll"]
+    loaded: list[str] = []
+    for dll in candidates:
+        try:
+            ctypes.WinDLL(dll)
+            loaded.append(dll)
+        except OSError:
+            continue
+    if any(d.startswith("cudnn") for d in loaded) and any(d.startswith("cublas") for d in loaded):
+        return CheckResult("cudnn-dlls", True, "required", f"loadable: {', '.join(loaded)}")
+    return CheckResult(
+        "cudnn-dlls", False, "required",
+        f"cuDNN/cuBLAS DLLs not loadable (found only: {loaded or 'none'})",
+        "pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 - clipforge "
+        "registers the site-packages nvidia/*/bin dirs via os.add_dll_directory "
+        "at startup (clipforge/dllpaths.py); see README, cuDNN section.")
+
+
+def _probe_gated_repo(repo: str, token: str) -> bool | None:
+    """True = accessible, False = gated/denied, None = could not determine
+    (offline, HF outage). Uses only stdlib — the doctor must not depend on
+    huggingface_hub being installed at CP0."""
+    req = urllib.request.Request(
+        f"https://huggingface.co/api/models/{repo}",
+        headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status != 200:
+                return None
+            # A gated repo the token cannot access can also surface as
+            # 200 + {"gated": ...} without config; require real metadata.
+            data = json.loads(resp.read().decode("utf-8"))
+            return bool(data.get("id") == repo)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False
+        return None
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return None
+
+
+def check_hf_token(*, probe: Callable[[str, str], bool | None] | None = None,
+                   ) -> CheckResult:
+    """T5 — pyannote diarization models are gated behind accepted terms.
+
+    Token PRESENCE is not enough: the exact failure this trap exists for is
+    a valid token whose owner never clicked "accept" on the model pages —
+    which then 403s twenty minutes into the first S1 run. So when a token
+    exists, actually probe both gated repos (graceful on offline machines).
+    """
+    if probe is None:
+        # Resolved at CALL time so tests can stub the module attribute —
+        # a def-time default would bind the original function forever.
+        probe = _probe_gated_repo
+    accept_urls = "\n".join(f"  https://huggingface.co/{r}" for r in PYANNOTE_GATED_REPOS)
+    token = Secrets().hf_token or os.environ.get("HF_TOKEN")
+    if not token:
+        return CheckResult(
+            "hf-token", False, "required", "No Hugging Face token configured",
+            f"Set CLIPFORGE_HF_TOKEN (or HF_TOKEN). Then accept terms at BOTH:\n{accept_urls}")
+
+    results = {r: probe(r, token) for r in PYANNOTE_GATED_REPOS}  # one probe each
+    denied = [r for r, ok in results.items() if ok is False]
+    if denied:
+        return CheckResult(
+            "hf-token", False, "required",
+            f"token present but gated access DENIED for: {', '.join(denied)}",
+            f"Log in as the token's owner and accept the terms at:\n{accept_urls}")
+    unknown = [r for r, ok in results.items() if ok is None]
+    if unknown:
+        return CheckResult(
+            "hf-token", True, "required",
+            "token present; gated access could not be verified (offline?) - "
+            "will be enforced on first S1 run")
+    return CheckResult("hf-token", True, "required",
+                       "token present; both gated pyannote repos accessible")
+
+
+def check_torchcodec() -> CheckResult:
+    """pyannote decodes audio through torchcodec, whose native library only
+    supports FFmpeg 4-7. With a current ffmpeg (8.x) it fails to load and
+    file-path diarization dies with a DLL error that names nothing relevant.
+
+    ClipForge sidesteps it by decoding audio itself, so a broken torchcodec
+    is NOT fatal — but the operator should know why the warning appears.
+    """
+    if not _module_available("torchcodec"):
+        return CheckResult("torchcodec", True, "optional",
+                           "not installed (ClipForge decodes audio itself)")
+    try:
+        import torchcodec._core  # noqa: F401, PLC0415
+
+        return CheckResult("torchcodec", True, "optional", "loadable")
+    except Exception:
+        return CheckResult(
+            "torchcodec", True, "optional",
+            "present but its native library will not load (expected with "
+            "ffmpeg 8.x; harmless - S1 decodes audio via ffmpeg itself)")
+
+
+def check_tools() -> list[CheckResult]:
+    out: list[CheckResult] = []
+    for tool, sev, fix in (
+        ("streamlink", "required", "pip install streamlink"),
+        ("yt-dlp", "required", "pip install yt-dlp"),
+    ):
+        found = shutil.which(tool) is not None or _module_available(tool.replace("-", "_"))
+        out.append(CheckResult(tool, found, sev,
+                               "available" if found else f"{tool} not found",
+                               "" if found else fix))
+    return out
+
+
+def check_disk(workspace_root: Path, floor_gb: float) -> CheckResult:
+    # The workspace may not exist yet — measure the nearest existing ancestor
+    # on the same volume (resolve() also anchors relative paths to cwd).
+    probe_path = workspace_root.resolve()
+    while not probe_path.exists() and probe_path.parent != probe_path:
+        probe_path = probe_path.parent
+    try:
+        free = shutil.disk_usage(probe_path).free / 1024**3
+    except OSError as exc:
+        return CheckResult("disk", False, "required", f"cannot stat {workspace_root}: {exc}")
+    ok = free > floor_gb
+    return CheckResult(
+        "disk", ok, "required", f"{free:.0f} GB free (floor {floor_gb:.0f} GB)",
+        "" if ok else "Free disk space or lower disk.free_floor_gb; ingestion "
+                      "pauses below the floor.")
+
+
+def check_workspace_writable(workspace_root: Path) -> CheckResult:
+    try:
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        probe = workspace_root / ".doctor_write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return CheckResult("workspace", True, "required", f"writable: {workspace_root}")
+    except OSError as exc:
+        return CheckResult("workspace", False, "required",
+                           f"not writable: {workspace_root} ({exc})",
+                           "Fix permissions or point workspace.root elsewhere.")
+
+
+# --------------------------------------------------------------------------
+# aggregation
+# --------------------------------------------------------------------------
+
+
+def run_all(workspace_root: Path, *, disk_floor_gb: float = 50.0) -> list[CheckResult]:
+    """Run every check; returns results in a stable order."""
+    results: list[CheckResult] = [check_python()]
+    results.append(check_ffmpeg())
+    results.append(check_ffprobe())
+    if results[-2].ok and results[-1].ok:
+        results.extend(check_ffmpeg_capabilities())
+    results.append(check_cuda())
+    results.append(check_cudnn_dlls())
+    results.append(check_torchcodec())
+    results.append(check_hf_token())
+    results.extend(check_tools())
+    results.append(check_disk(workspace_root, disk_floor_gb))
+    results.append(check_workspace_writable(workspace_root))
+    return results
+
+
+def render(results: list[CheckResult]) -> tuple[str, bool]:
+    """(report_text, all_required_ok) — CLI prints the text, exits on the bool."""
+    lines: list[str] = []
+    required_ok = True
+    for r in results:
+        mark = "PASS" if r.ok else ("WARN" if r.severity == "optional" else "FAIL")
+        if not r.ok and r.severity == "required":
+            required_ok = False
+        lines.append(f"[{mark:4}] {r.name:14} {r.message}")
+        if not r.ok and r.fix:
+            for fix_line in r.fix.splitlines():
+                # ASCII arrow on purpose: doctor output must survive piping
+                # through cp1252 stdout (cmd redirects, scheduled tasks).
+                lines.append(f"       {'':14} -> {fix_line}")
+    verdict = "DOCTOR: all required checks passed" if required_ok else \
+              "DOCTOR: required checks FAILED - fix the items above"
+    lines.append(verdict)
+    return "\n".join(lines), required_ok

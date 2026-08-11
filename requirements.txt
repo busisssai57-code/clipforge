@@ -1,0 +1,84 @@
+# ClipForge constraint set — human-authored, honestly loose.
+#
+# Rules (from the build spec §9):
+#   * Do NOT invent precise version pins here. Exact versions live in
+#     requirements.lock, generated from a real `pip freeze` of the working
+#     environment on the target machine (Windows 11, Python 3.11, CUDA 12.x).
+#   * torch must come from the CUDA 12.x wheel index:
+#       pip install torch --index-url https://download.pytorch.org/whl/cu121
+#     (see README for the exact bootstrap order — torch first, then the rest,
+#     so pip does not silently swap in a CPU wheel.)
+#
+# ---- core (CPU-side, needed by every checkpoint) ----
+pydantic>=2.5
+pydantic-settings>=2.1
+structlog>=24.1
+typer>=0.12
+rich>=13.7
+watchdog>=4.0
+
+# ---- ingestion ----
+yt-dlp>=2024.4.9
+streamlink>=6.7
+
+# ---- GPU / AI stack (installed at CP2+; unit tests never import these) ----
+# torch / torchaudio: CUDA 12.x wheels — install via the cu12x index URL.
+#
+# ORDER AND PINNING MATTER, learned the hard way on this machine:
+#   1. `pip install whisperx` RESOLVES TORCH ITSELF and will happily replace
+#      a working CUDA build with a CPU one (observed: torch 2.8.0+cpu
+#      silently overwriting cu121). That is the exact trap README §cuDNN
+#      warns about, and `torch.cuda.is_available()` is the only proof.
+#   2. Installing the newest CUDA torch afterwards then violates whisperx's
+#      own `torch~=2.8.0` pin. So pin torch to the version whisperx wants,
+#      from the CUDA index:
+#        pip install "torch==2.8.0" "torchaudio==2.8.0" \
+#            --index-url https://download.pytorch.org/whl/cu126
+#      and re-check `clipforge doctor` afterwards.
+#   3. TORCHVISION TOO — third occurrence of the CPU-wheel trap. A stray
+#      `torchvision 0.23.0+cpu` next to CUDA torch makes every ultralytics
+#      call die with "torchvision::nms ... not available for CUDA backend".
+#      And `pip install torchvision==0.23.0 --index-url .../cu126` will NOT
+#      fix it: pip treats the installed `+cpu` build as satisfying ==0.23.0
+#      and skips it. Force the local tag explicitly:
+#        pip install "torchvision==0.23.0+cu126" \
+#            --index-url https://download.pytorch.org/whl/cu126 \
+#            --force-reinstall --no-deps
+#   4. ultralytics 8.4.x ships its own top-level `tests` package INTO
+#      site-packages, shadowing this repo's tests/ for absolute imports.
+#      Delete `<venv>/Lib/site-packages/tests` after installing; the root
+#      conftest.py fails loudly if it comes back.
+torch>=2.8,<2.9          # upper bound: whisperx 3.8.x pins torch~=2.8.0
+torchaudio>=2.8,<2.9
+torchvision>=0.23,<0.24  # MUST be the +cu126 build — see note 3 above
+ultralytics>=8.4         # S4 pose tracking; see note 4 (stray tests pkg)
+lap>=0.5                 # ByteTrack assignment; ultralytics auto-installs
+                         # it otherwise, which fails in non-interactive runs
+whisperx>=3.8
+pyannote.audio>=3.1
+transformers>=4.49      # Qwen2.5-VL support landed in 4.49
+accelerate>=0.30
+qwen-vl-utils>=0.0.8
+# AWQ path preferred; bitsandbytes NF4 is the documented fallback (spec §S3).
+autoawq>=0.2 ; sys_platform == "win32"
+bitsandbytes>=0.43
+ultralytics>=8.3        # YOLO11
+lapx>=0.5               # Hungarian assignment for ByteTrack / S4 matching
+
+# ---- media ----
+av>=12.0
+opencv-python>=4.9
+
+# ---- dev / test ----
+pytest>=8.0
+pytest-asyncio>=0.23
+
+# ---- social posting (API-less browser engine) ----
+playwright>=1.40
+playwright-stealth>=1.0.6
+
+
+mediapipe>=1.0          # S4 MAR active-speaker detection (CPU/XNNPACK).
+                        # v1.0 removed the legacy solutions API - use
+                        # tasks.vision.FaceLandmarker; model file pinned at
+                        # workspace/models/face_landmarker.task (3.7MB).

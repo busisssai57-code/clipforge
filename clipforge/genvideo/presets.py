@@ -1,0 +1,200 @@
+"""Creative presets — the four modes the generator is asked to cover.
+
+Each preset is the difference between a prompt that produces stock-footage
+mush and one that produces a shot. They encode what a human creator would
+actually specify: lens and camera behaviour, lighting, pacing, grade, and
+what NOT to do. Providers translate these into their own dialects; the
+preset itself stays provider-neutral so the same brief renders on the
+premium model and on the local fallback.
+
+Shot lengths are deliberately short. Every current text-to-video model
+degrades past a handful of seconds — coherence drifts, faces melt, motion
+loops. Long pieces are built by generating SHOTS and cutting them, which
+is also how the human job is actually done.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class Preset:
+    name: str
+    summary: str
+    #: Appended to every shot prompt — style, lens, grade, motion.
+    style: str
+    #: What the model must avoid. Providers that support it pass this as a
+    #: negative prompt; the rest fold it into the prompt text.
+    avoid: str
+    #: Seconds per generated shot.
+    shot_seconds: float
+    #: Frames per second requested from the provider.
+    fps: int
+    #: Whether the mode expects narration audio over the visuals.
+    narrated: bool
+    #: Default number of shots when the caller does not say.
+    default_shots: int
+    #: Cutting rhythm hint used when assembling shots into a sequence.
+    cut_style: str
+    keywords: tuple[str, ...] = field(default_factory=tuple)
+
+
+DOCUMENTARY = Preset(
+    name="documentary",
+    summary="Observational non-fiction: real places, real light, no gloss.",
+    style=(
+        "observational documentary cinematography, 35mm anamorphic lens, "
+        "natural available light, handheld with subtle weight and breath, "
+        "shallow depth of field, muted filmic colour grade with lifted "
+        "blacks, patient slow push-in, authentic unposed subjects, "
+        "photojournalistic framing"),
+    avoid=("cartoon, 3d render, cgi, video game, text overlay, watermark, "
+           "logo, distorted hands, extra limbs, stock-footage smile at camera"),
+    shot_seconds=6.0,
+    fps=24,
+    narrated=True,
+    default_shots=6,
+    cut_style="slow",
+    keywords=("archival", "verite", "observational"),
+)
+
+STORYTELLING = Preset(
+    name="storytelling",
+    summary="Narrative scenes with a subject, a place, and a turn.",
+    style=(
+        "cinematic narrative film still in motion, 50mm spherical lens, "
+        "motivated practical lighting, gentle dolly and parallax, rich "
+        "contrast with deep shadows, warm highlight roll-off, character "
+        "centred in a legible environment, single clear action per shot"),
+    avoid=("montage, collage, split screen, text overlay, watermark, "
+           "morphing faces, extra fingers, jump in identity between frames"),
+    shot_seconds=5.0,
+    fps=24,
+    narrated=True,
+    default_shots=8,
+    cut_style="medium",
+    keywords=("narrative", "character", "scene"),
+)
+
+EXPLAINER = Preset(
+    name="explainer",
+    summary="Professional explainer: clean, bright, presenter-friendly.",
+    style=(
+        "clean professional explainer footage, bright soft key light with "
+        "large source, shallow but legible depth of field, locked-off or "
+        "slow smooth slider move, neutral modern colour grade, uncluttered "
+        "backgrounds with negative space for captions, corporate documentary "
+        "polish"),
+    avoid=("clutter, busy background, harsh shadows, lens flare, text "
+           "overlay, watermark, shaky handheld, distorted hands"),
+    shot_seconds=5.0,
+    fps=30,
+    narrated=True,
+    default_shots=6,
+    cut_style="medium",
+    keywords=("explainer", "corporate", "tutorial"),
+)
+
+MOTION_GRAPHICS = Preset(
+    name="motion_graphics",
+    summary="Abstract/graphic motion for titles, transitions and beds.",
+    style=(
+        "premium abstract motion graphics, clean vector and soft gradient "
+        "shapes, smooth eased keyframe motion, shallow parallax depth, "
+        "limited palette with one accent colour, seamless looping energy, "
+        "broadcast title-sequence quality, generous negative space"),
+    avoid=("photorealistic humans, faces, text, letters, watermark, logo, "
+           "jitter, strobing, harsh flicker"),
+    shot_seconds=4.0,
+    fps=30,
+    narrated=False,
+    default_shots=4,
+    cut_style="fast",
+    keywords=("abstract", "title", "transition", "bed"),
+)
+
+PRESETS: dict[str, Preset] = {
+    p.name: p for p in (DOCUMENTARY, STORYTELLING, EXPLAINER, MOTION_GRAPHICS)
+}
+
+
+def get_preset(name: str) -> Preset:
+    try:
+        return PRESETS[name]
+    except KeyError:
+        raise ValueError(
+            f"unknown preset {name!r}; available: "
+            f"{', '.join(sorted(PRESETS))}") from None
+
+
+def build_shot_prompt(brief: str, preset: Preset, *, shot_index: int,
+                      total_shots: int, beat: str | None = None) -> str:
+    """One shot's prompt: the beat, the brief, then the house style.
+
+    Order is deliberate. Diffusion and autoregressive video models both
+    weight early tokens most, so the SUBJECT leads and the style trails.
+    Putting the style first produces four shots that look identical and
+    ignore the brief.
+    """
+    subject = (beat or brief).strip().rstrip(".")
+    position = (
+        "opening establishing shot" if shot_index == 0 and total_shots > 1
+        else "closing shot" if shot_index == total_shots - 1 and total_shots > 1
+        else f"shot {shot_index + 1} of {total_shots}")
+    parts = [subject]
+    if beat and beat.strip() != brief.strip():
+        parts.append(f"part of: {brief.strip().rstrip('.')}")
+    parts.append(position)
+    parts.append(preset.style)
+    return ". ".join(p for p in parts if p) + "."
+
+
+def split_into_beats(brief: str, shots: int) -> list[str]:
+    """Split a brief into per-shot beats.
+
+    Sentence-per-beat when the brief has enough sentences, otherwise the
+    whole brief carries every shot and the position hint does the work of
+    differentiating them. Deliberately not a model call: this runs before
+    any provider is chosen and must behave identically for both.
+    """
+    import re
+
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", brief.strip())
+                 if s.strip()]
+    if not sentences:
+        return [brief.strip()] * max(1, shots)
+    if len(sentences) >= shots:
+        # Distribute sentences across shots as evenly as possible.
+        out: list[str] = []
+        per = len(sentences) / float(shots)
+        for i in range(shots):
+            lo = int(round(i * per))
+            hi = int(round((i + 1) * per)) or lo + 1
+            out.append(" ".join(sentences[lo:hi]) or sentences[min(lo, len(sentences) - 1)])
+        return out
+    # Fewer sentences than shots: cycle them so each shot has a subject.
+    return [sentences[i % len(sentences)] for i in range(shots)]
+
+
+def build_storyboard(brief: str, preset: Preset, shots: int | None = None) -> list[dict[str, Any]]:
+    """Build a structured storyboard for the piece.
+
+    Returns a list of shot specifications with beats, full prompts, durations,
+    and frame rates — enabling UI preview & editing before generation.
+    """
+    count = int(shots or preset.default_shots)
+    beats = split_into_beats(brief, count)
+    storyboard: list[dict[str, Any]] = []
+
+    for i in range(count):
+        prompt = build_shot_prompt(brief, preset, shot_index=i, total_shots=count, beat=beats[i])
+        storyboard.append({
+            "shot_index": i,
+            "beat": beats[i],
+            "prompt": prompt,
+            "seconds": preset.shot_seconds,
+            "fps": preset.fps,
+            "preset": preset.name,
+        })
+    return storyboard
