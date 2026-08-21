@@ -87,10 +87,34 @@ def build_router(cfg, ws, *, api_key: str | None = None,
     try:
         spec = select_model(needs=needs, width=width, height=height,
                             prefer=prefer)
-        providers.append(LocalDiffusersProvider(
-            spec.model_id, steps=spec.steps,
-            guidance_scale=spec.guidance_scale, seed=gv.local_seed,
-            **_wan_controls(gv)))
+        controls = _wan_controls(gv)
+        # A model that CANNOT fit the card unquantized overrides the
+        # operator's preference, rather than being loaded at bf16 and
+        # dying on an allocation. `quantize` in config is a preference;
+        # `requires_quantization` on the spec is a fact about the model.
+        if spec.requires_quantization:
+            if controls["quantize"] != spec.requires_quantization:
+                log.info("genvideo.quantization_forced",
+                         model=spec.key, requested=controls["quantize"],
+                         applied=spec.requires_quantization,
+                         note="this model does not fit the card unquantized")
+            controls["quantize"] = spec.requires_quantization
+        if spec.interpreter:
+            # This model cannot be loaded by the interpreter running this
+            # line — not a deployment preference, a dependency conflict
+            # (see ModelSpec.interpreter). It is reached only by an
+            # explicit `--model`, because `verified=False` keeps it out of
+            # automatic selection.
+            from clipforge.genvideo.subproc import (  # noqa: PLC0415
+                SubprocessModelProvider)
+
+            providers.append(SubprocessModelProvider(
+                spec, seed=gv.local_seed, quantize=controls["quantize"]))
+        else:
+            providers.append(LocalDiffusersProvider(
+                spec.model_id, steps=spec.steps,
+                guidance_scale=spec.guidance_scale, seed=gv.local_seed,
+                **controls))
     except ValueError as exc:
         # No registered model fits (nothing downloaded, or the size is out
         # of every envelope). Fall back to the configured id rather than

@@ -2409,3 +2409,818 @@ band is what makes the property observable. Sweep: 3/3 killed.
 * The editor's transcript panel shows uncompressed window times against a
   possibly jump-cut video. Pre-existing, unrelated to the recut path, and
   not chased here.
+
+## Remote access, live capture, and a dashboard that works on a phone (2026-08-12)
+
+Operator: run the pipeline against a real live stream, and reach it from
+a phone. Both asks found defects that no amount of local testing had.
+
+### Two bugs that only a real stream could find
+
+* **The chunker built its path out of the URL.** I passed the raw URL as
+  `handle`, and chunk paths are `chunks/{platform}_{handle}/sNNNNN` —
+  WinError 123 on every connect, retried forever. The capture *looked*
+  alive and produced nothing. `youtube.capture_handle()` now resolves a
+  video id to an `@handle` and sanitises it.
+* **A capture that recorded ZERO segments exited 0**, so the dashboard
+  showed "completed" for a capture that never connected. It exits 1 now.
+
+### S1 crashed on every quiet window
+
+The ISS feed is ambience. whisperx reported "No active speech found",
+guessed **`cy` (Welsh) at 0.57 confidence from silence**, and S1 died with
+`No default align-model for language: cy`. For live capture that is most
+windows.
+
+Fix: no segments → skip alignment entirely (loading an aligner to align an
+empty list burns VRAM and a model download) and emit an empty transcript
+with **`no_speech=True`**; a missing aligner for a language → degrade to
+segment-level times with **`words_aligned=False`**. Both are new fields on
+`TranscriptArtifact`, **stated rather than inferred** — an empty `words`
+list is also what a genuinely wordless segment looks like.
+
+**My first version caught every exception from the alignment phase and
+broke two existing tests, which were right:** a CUDA fault must still fail
+the stage, or a broken machine hides behind a plausible wordless artifact.
+Narrowed to `_is_missing_aligner()` message-matching, with a parametrised
+test (CUDA illegal access / OOM / truncated checkpoint) pinning the
+narrowness. Verified live: the same stream now logs `0 segments, 0 words,
+language=cy` → `s2.candidates generated=0 kept=0` → `DONE - 0 clip(s)`.
+
+### Remote access
+
+`clipforge/remote.py`. Loopback stays open — anything that can reach it
+could already run the CLI. Everything else needs a token, because **this
+API spawns CLI subprocesses, so an unauthenticated 0.0.0.0 listener is RCE
+for the whole network**. The token is persisted in `workspace/access_token`
+rather than regenerated per run: a token that changes every restart trains
+the operator to turn auth off.
+
+Three carriers (`Authorization`/`X-BTA-Token`, `?t=`, `bta_access` cookie)
+because scripts, pasted links and the dashboard each need a different one;
+a `?t=` is promoted to a cookie so the secret stops travelling in URLs and
+history. **6-digit `PairingCodes` for phones — the digit count is a UX
+choice and the security is the three limits around it** (one use, ~10 min,
+5 wrong guesses burns it), and the docstring says so rather than implying
+six digits are strong.
+
+`bta web --lan|--tunnel cloudflare|--rotate-token|--insecure-no-auth`;
+`--insecure-no-auth` together with `--tunnel` is **refused** — a public URL
+with no token is an open shell. CORS moved to a bounded
+`allow_origin_regex` (loopback/RFC1918/CGNAT/`.ts.net`/`.trycloudflare.com`)
+with credentials on, registered AFTER the auth middleware so a 401 still
+carries CORS headers.
+
+**Measured:** loopback 200, LAN no-token 401, LAN HTML navigation
+303→/login, LAN `?t=` 200, pairing redeem 200 + cookie, wrong code 401.
+
+### Responsive
+
+One layout, three widths, with breakpoints where the CONTENT breaks
+(editor's 4 columns ~1200px, sidebar ~980px, card grids ~560px) — never a
+second mobile page, because a second page is a second thing to keep true
+and the two always drift.
+
+At ≤980px the sidebar becomes a drawer. It had been `display:none`, **which
+took Studio, Publishing, Models and Learning with it — those views existed
+and were unreachable on a phone.** Plus a 5-item bottom tab bar, the
+editor's 3 regions taking turns via `[data-mtab]` (stacking all four left
+the preview ~90px tall), modals as bottom sheets, `100dvh`,
+`env(safe-area-inset-*)`, and **every form control forced to 16px or iOS
+zooms the page on every field tap**.
+
+Verified headlessly with Playwright at 1440 and 390 (`check_dash.py`):
+zero console errors, no horizontal overflow, drawer opens and closes,
+select mode, Connect sheet with a live pairing code. **That check found a
+real bug: the drawer backdrop (z-index 110) sat above modals (60), so a
+sheet opened from the drawer swallowed every tap including its own close
+button.** Full stack now page < backdrop 110 < drawer 120 < modals 130 <
+editor 140 < toasts 200.
+
+### bta-site
+
+`const API = 'http://127.0.0.1:8765'` meant the page only worked on the
+pipeline machine — from a phone every request went to the PHONE's
+localhost and it reported "Pipeline offline" while the pipeline ran fine.
+It now derives from `location.hostname` (with `?api=` override and
+localStorage), carries the token by header for `fetch` and by `?t=` for
+`<img>`/`<video>` (media elements cannot send a header), and `serve.py`
+takes `--lan/--host`.
+
+Its `.task-row` had no `min-width:0` and `.tasks-wrap` used an implicit
+`auto` grid track, so **one long nowrap log tail stretched the list to
+1647px and scrolled the page sideways at 390px** → `minmax(0,1fr)` plus
+`min-width:0`. Suite 27 → **36**. **Two of my own new validators failed
+their teeth first** — the fetch regex stopped at the first `)`, so
+`encodeURIComponent(f.name)` truncated the match and reported a false
+positive on a correctly authenticated call (now a depth-counting
+`_fetch_calls`).
+
+### Gate
+
+**971 → 1083 pytest** (+112) + `verify all` GATE PASSED + bta-site 36/36.
+
+### Open
+
+* Flow needs the operator's one-time `bta flow login` before any of it is
+  real.
+* The YouTube live URL the operator mentioned never came through. The ISS
+  stream was my stand-in and is silent by nature, so it correctly produces
+  no clips — a speech stream is needed to see clips land.
+
+## Director camera, screen script, and a quantize knob that quantized nothing (2026-08-18)
+
+Four changes to the authoring side of generation, plus the first honest
+model registry. The session was interrupted mid-download; everything below
+was re-verified on 2026-08-18 by running both gate commands and re-running
+the round's own live checks against the running server, so the evidence
+here is from this machine today, not from the session that wrote the code.
+
+### The director camera
+
+S4 decides where the camera looks by tracking whoever is speaking. That is
+the right default and it is wrong often enough to need an override, and
+there was no way to say "push in here, hold, then drift left" from the
+outside at all.
+
+`clipforge/campath_edit.py` turns a handful of keyframes into the same
+per-frame `CropFrame` list S4 already emits, so **the renderer needs no new
+concept** — it follows a path frame by frame via sendcmd either way. A
+director camera is not a new rendering mode; it is a different author for
+an existing artifact.
+
+* **S4 still runs when a camera is authored.** It establishes the geometry
+  the keyframes are interpolated against (source dimensions, exact
+  rational fps), and re-deriving that in the override path would be a
+  second source of truth for the one number the camera is indexed by.
+* **The camera is part of the cache key.** `digest(keyframes)` goes into
+  the S5/S6 params, so re-framing produces a different render rather than
+  a cache hit on the old one — the Determinism Law applies to an authored
+  camera exactly as it does to a knob.
+* **`POST /api/clips/recam` validates the keyframes before spawning
+  anything**, because a malformed path that fails after S1–S4 costs the
+  whole run. Same shape as `/api/clips/recut`: the browser cannot re-frame
+  video, the pipeline can.
+* Everything in the module is a pure function of its inputs. Camera
+  geometry is exactly the kind of thing that looks right in a preview and
+  is wrong by two pixels in the render, so §S4's rules — even coordinates,
+  9:16, inside the frame — are arithmetic under test rather than something
+  to eyeball. **28 tests**, including a push-in that must actually get
+  smaller, a crop taller than the source that is clamped rather than
+  moved, and frame counts from the exact rational fps.
+
+**Live, at 1440x900 against the running dashboard:** source 2560x880,
+push-in h 880 → 220, pan cx 1280 → 62, `{inside: True, minH: True}` after
+both, 3 keyframes → 3 ruler markers → "3 keyframes" → a payload whose
+first two entries are the authored ones. Zero console errors.
+
+### The screen script
+
+`split_into_beats` cut a brief on sentence boundaries and hoped they landed
+where shots should. That is fine for a one-line idea and wrong for
+anything written: the moment a brief contains dialogue or a scene change,
+punctuation stops predicting where a shot begins.
+
+`clipforge/screenplay.py` parses Fountain, so **the blocks the writer typed
+are the beats the generator gets**. Fountain rather than a bespoke syntax
+because writers already use it, it is plain text (it diffs, greps and
+survives a paste), and a screenplay written elsewhere pastes in and works.
+Deliberately not a model call: it runs before a provider is chosen and must
+behave identically for all of them.
+
+The property worth naming: **dialogue is spoken, not drawn — it never
+enters the video prompt**, and a test asserts that at every shot count.
+Fewer shots than scenes merges rather than truncates; more shots repeats
+rather than invents. **27 tests.**
+
+**Live, desktop and phone (1440x900 and 390x844):** the editor is hidden
+until toggled, the plain brief hides when it is shown, mirror classes
+`haaacdacpdahaaa` (headings, action, cue, dialogue, parenthetical all
+coloured), status bar `2 shots | 2 scenes | 2 dialogue | GEEL · WAXAR |
+31 words`, prose survives toggling back, no horizontal overflow, zero
+console errors.
+
+### The knob that was accepted, stored, and never applied
+
+`[genvideo] quantize` came in from config, was stored on
+`self.quantize`, and **was never read again**. The config said "quantize
+the transformer to 8-bit to fit a smaller card" and nothing quantized
+anything — the same defect class as the `enhance` module with no caller and
+the split screen that advertised itself LIVE.
+
+It is load-bearing now: a 22B video transformer is ~38 GB at bf16 against
+24 GB of card, and NF4 brings it to roughly 11 GB. This is the difference
+between a model running on this machine and not running at all.
+
+`_quantization_config()` applies it, **only to the transformer**, and is
+honest in both failure directions: an unknown mode and a missing
+`bitsandbytes` each log that the run is proceeding unquantized rather than
+pretending. An operator who asked for int8 and silently got bf16 has no way
+to work out why they are out of memory. On Ampere (sm_86) there are no
+native FP4/FP8 tensor cores, so this is **a storage format dequantized per
+layer — it buys VRAM, not speed**, and the config comment says so. 16
+tests, including that the config actually reaches `from_pretrained`.
+
+### A registry that admits what it has not measured
+
+LTX-Video 0.9 was retired and LTX-2.5 (22B audio+video DiT) registered in
+its place, with `local_model_id` repointed at Wan2.2-TI2V-5B so **the
+fallback branch cannot name a model that is not on disk**.
+
+The new field is `verified`. Every number in the LTX-2.5 spec comes from
+the model card and the HF file listing — the VAE config could not even be
+read, because the repo is gated and 403s until the licence is accepted — so
+**`verified=False` keeps it out of automatic selection until a render on
+this machine has been inspected**. It can still be chosen explicitly with
+`--model ltx25`. `requires_quantization="nf4"` overrides the operator's
+preference rather than letting a model that cannot fit be loaded as if it
+could.
+
+This is the correction to a habit this ledger has recorded twice: a spec
+whose numbers are aspirations reads exactly like one whose numbers are
+measurements.
+
+### Gate
+
+**1083 → 1192 pytest** (+109) + `verify all` GATE PASSED (skeleton 7/7,
+ingestion 20/20, ai 13/13).
+
+### Open
+
+* **LTX-2.5's weights are still downloading.** The session was cut at
+  14:31 with `transformer/` and `vae/` missing; the pull was resumed on
+  2026-08-18 with the same allow/ignore set (the distilled diffusers path
+  only — `transformer_full`, ComfyUI int8-convrot and NVFP4 are skipped
+  because none of them can run on Ampere). Until it finishes, **NF4 has
+  never quantized a real 22B checkpoint here, and no LTX-2.5 frame
+  exists** — the route is proven by its tests, not by output.
+* The provisional envelope numbers (`max_pixels`, `vram_gb`, `cost`) stand
+  uncorrected until that render happens. `verified=False` is what keeps
+  that from mattering.
+* Flow still needs the operator's one-time `bta flow login`, and the
+  speech-carrying live URL from 2026-08-12 is still outstanding.
+
+## Copying a format: the Somali sketch post (2026-08-18)
+
+Operator, mid-session, with a TikTok link: *"watch this video i want you to
+copy the movements and motion and humor and language"*.
+
+### Measured, not eyeballed
+
+The reference was pulled with yt-dlp and taken apart rather than
+described: **65.1s, 720x960 (3:4), 30fps, 352k views / 21.8k likes /
+11.8k reposts**. Scene detection over the whole file gives **35 shots,
+mean 1.86s, median 1.9s** — it cuts on every reaction. Five acts: a market
+haggle, a phone call CROSS-CUT between two animals, a shop counter, a
+courtroom where photoreal humans play it straight opposite a camel in the
+dock, and a desert epilogue held 4.7s.
+
+Three things carry the format that no model produces: a hook card on frame
+one (**"INTAAN MIDKEE KAA QOSLIYAY"** — the hook is a question, an ask),
+emoji stamped on the punchlines, and a handle bottom-centre on every
+frame.
+
+**What could not be recovered: the dialogue.** Whisper detects Somali at
+p=1.00 and then emits Arabic script — unusable. The timing and turn-taking
+of the speech are measurable; the words are not. Said here because the
+brief asked for "the language", and half of that request is unmet by
+anything in this round.
+
+### The post layer
+
+`clipforge/socialpost.py`. Hook card, punchline stickers, handle —
+rasterised with Pillow and overlaid, NOT drawn with ffmpeg's drawtext:
+drawtext renders colour-emoji glyphs as monochrome tofu on most builds,
+its filter-graph syntax eats every character a script is likely to
+contain, and both it and libass substitute a missing font in silence.
+
+* **A punchline is marked in the SCRIPT.** A Fountain note that is only
+  emoji — `[[😂]]` — becomes a sticker on that shot; a note with a word in
+  it stays a production comment. The mark cannot drift out of sync with
+  its beat because it is written where the beat is.
+* **.notdef is caught by COLOUR.** A font without a glyph draws a flat
+  box, which would be stamped on the punchline as a black rectangle.
+  Measured: the laughing face antialiases into 317 tones, the
+  deliberately monochrome black square into 34, and the substituted box
+  into exactly one — so "one opaque colour" is the test, and a real
+  monochrome emoji survives it (pinned).
+* Stickers are held for their own shot and no longer, timed off the
+  **probed** duration of each rendered shot rather than the preset's
+  nominal length: a provider returning 1.87s for a 1.9s request drifts
+  half a shot over thirty cuts.
+* Positions cycle a fixed ring by sticker INDEX, so two marks on one beat
+  cannot stack and a re-render puts them in the same places (§3.2).
+
+### Four defects the work exposed
+
+1. **`bta generate --screenplay` was a declared flag nothing read.** The
+   CLI parsed it and the router always split the brief on full stops. The
+   dashboard generated through `build_storyboard`, which DID honour it —
+   which is exactly why the flag looked implemented.
+2. **The dialogue leaked into the prompt anyway.** `build_shot_prompt`
+   appends the brief to every shot as context, and in screenplay mode the
+   brief is the raw script. The beat excluded the speech and the next line
+   put the whole screenplay back. **The existing test asserted on the
+   BEAT — one layer below where the leak was.** Both paths were affected;
+   fixing only the router would have left the dashboard button shipping
+   speech to the model. Now the context is a picture-only `synopsis()`.
+3. **`Niche.aspect` reached a dashboard label and nothing else.** Every
+   niche declared 9:16, which equalled the config default, so the dead
+   field was invisible until one declared 3:4. Aspect is now flag → niche
+   → config, in a named function because the ORDER is the decision.
+4. **"9:16 or else landscape" existed TWICE** — the generation size and
+   the delivery size. Fixing the first alone produced a portrait render
+   scaled into a 1920x1080 landscape frame, **measured on a real shot**:
+   1920x1080 out of a 3:4 request. Both halves now derive from one ratio
+   map, and a parametrised test walks every accepted aspect through both.
+
+Two more, found by reading output rather than by a test failing: a
+Fountain **title page** was parsed as action and became shot 0 — a
+generated picture of the file's own header — and the output directory was
+named from the first 48 characters of the script,
+`title-geel-suuqa-tegey-credit-bta-draft-date-202`.
+
+### A test hole I opened and closed in the same round
+
+Replacing the aspect arithmetic with a grid search, ranked on ratio error,
+picked **288x512 for 9:16** — an exactly correct ratio at 147k of a 460k
+budget, upscaled to 1080x1920 from a third of the detail. My own new test
+passed: it asserted the SHAPE and said nothing about the SIZE. Ranking now
+takes the largest frame whose ratio is within 3%, and a second test pins
+that a generated frame spends at least 85% of the envelope. The search
+also revealed that 9:16 had been generating **480x896 — below the 512x896
+this module's own measurements call proven-good**.
+
+### The niche
+
+`geel_sketch`: 1.9s shots (the measured median — the format IS the
+pacing), 3:4, photoreal anthropomorphic animals in a Somali setting, and
+`text, subtitles, watermark` in the negative prompt so the model never
+draws the format's own text. `cut_style` is now DERIVED from
+`shot_seconds` rather than hardcoded "medium" for every niche including
+the six-second one.
+
+`examples/geel_suuq.fountain` ships as the worked example: 11 scenes of
+Somali with four punchline marks, and a test that fails if it stops
+parsing into marked scenes. **The Somali is mine and unreviewed** — the
+operator writes the register; this is a placeholder with the right shape.
+
+## The gate died silently, and LTX-2.5 rendered (2026-08-20)
+
+Resumed on the round's stated open item — "LTX-2.5 weights still
+downloading; NF4 has never quantized a real 22B checkpoint here and no
+LTX-2.5 frame exists". The weights had finished. The gate had not.
+
+### The gate was exiting 139 and reading as a pass
+
+`pytest` on the current tree never reached a summary line. It printed
+eight dots, then a Windows **access violation** inside a memory-mapped
+read in safetensors, then a faulthandler stack dump, and stopped. 1259 of the 1267
+collected tests never ran. Two things made that worse than a red gate:
+the shell reported the exit code of the last command in a pipeline, so
+`pytest ... | tail` came back 0, and the last thing in the output was a
+stack trace rather than a count — a run that has died this way looks like
+a run that has passed to anything reading the exit code, and like a
+crashed *test* to anyone reading the tail.
+
+The cause was `test_quantization_real_weights.py`, added on 2026-08-18: it
+held an unquantized Wan pipeline and an NF4 one in the same interpreter so
+it could compare their footprints. That is ~36 GB of weights on a 32 GB
+machine. It passed on 08-18 with more RAM free and segfaulted on 08-20
+with less, which is the worst kind of test — one whose result depends on
+what else the machine happens to be doing.
+
+**Fixed by moving each load into its own process** (`_quant_probe.py`,
+invoked as a script; pytest collects `test_*.py`, so it is never itself a
+test). The child prints one JSON line; the parent asserts on the numbers.
+A segfault is now an exit code the parent can name — with the free-RAM
+figure and the requirement in the failure message — instead of the end of
+the run. The two loads no longer overlap, and the bf16 side loads only
+the `transformer` and `vae` **components** rather than the pipeline: every
+assertion in the file is per-component, and the pipeline drags in an
+11.36 GB text encoder that nothing here looks at.
+
+### A guard built on file sizes was wrong by exactly 2x
+
+The first RAM precondition used the checkpoint's file sizes and demanded
+**28.4 GB** for a load that needs 13 — so all three tests skipped, on the
+machine they were written for. The checkpoint is stored **fp32 and loaded
+bf16**. Sizing now reads each safetensors header and counts elements ×
+2 bytes: transformer 10.00 GB against a measured footprint of 10.02 GB,
+vae 1.41 GB. Where a shard index exists only the files it names are
+counted — this repo has already met a checkpoint that ships two shardings
+of the same weights.
+
+Measured while doing it, and worth writing down because they disagree:
+peak working set for the bf16 components is **24.0 GB** while peak commit
+is **42.2 GB**; for the NF4 pipeline, **6.3 GB** working set against
+**29.4 GB** commit — both completed with ~19 GB free. Neither number is
+"how much RAM this needs": most of it is memory-mapped checkpoint the OS
+can drop, and the NF4 side is the cheaper because bitsandbytes quantizes
+layer by layer on the card.
+
+**The second version of the guard was wrong in the other direction, and
+only a full-suite run showed it.** Summing the components asked 19.3 GB
+for the NF4 load; standalone the file passed 3/3, but inside the whole
+suite — where earlier tests have taken their RAM — all three skipped, at
+**18.1 GB free against a 19.3 GB ask**, for a load whose measured peak
+working set is 6.3 GB. A
+guard that turns the gate green by removing the check is the same defect
+as the crash wearing better clothes. The requirement is now the **largest
+single component** the mode loads (12.0 GB bf16, 13.6 GB NF4), because
+the failure being guarded against — 36 GB of weights in one process — is
+structurally gone: each load is a child that holds one checkpoint and
+exits, and a child that dies is a named failure. Erring toward running
+the test, with containment behind it, is the trade.
+
+### LTX-2.5: constructed, rendered, and seed-stable
+
+The route had never loaded here. It loads now, under
+`.venv-ltx25` — diffusers 0.40.0, transformers 5.15.1,
+huggingface-hub 1.28.0 — in 75.6 s, as `LTX2Pipeline`, with `Linear4bit`
+layers in a 9.51 GB transformer.
+
+**The first real frames**: 512x896, 25 frames at 24 fps, 8 steps, CFG 1.0
+(the card's distilled schedule), seed 1234 — 61.7 s of generation after a
+92.5 s load, **13.27 GB peak VRAM**. Looked at, not just logged: a
+photoreal camel at a market stall, coherent push-in from frame 0 to frame
+24, per-channel stddev ~57 (a brown-frame failure sits near 0) and a mean
+absolute first-to-last difference of 40/33/31 per channel. **A re-run at
+the same seed produced byte-identical frames** (sha256 over frames 0, 12
+and 24). Evidence in `workspace/ltx25_probe_2026-08-20/`.
+
+Three things that were not known before the attempt:
+
+1. **Transformer-only quantization does not fit this model.** The Gemma4
+   text encoder is 23.92 GB at bf16 and the connectors 6.34 GB, so
+   quantizing the transformer alone leaves ~30 GB of bf16 companions for
+   a 24 GB card. NF4 across all three gives 9.51 / 7.50 / 1.59 GB.
+   `_quantization_config()` maps `transformer` alone — correct for the
+   model the pipeline can select, and named in that docstring as
+   something LTX-2.5 would need widened.
+2. **`enable_sequential_cpu_offload()` cannot be used with bitsandbytes
+   here** — accelerate's per-submodule hooks raise `Cannot copy out of
+   meta tensor` on the first forward. `enable_model_cpu_offload()` works.
+3. **The registry's stated blocker was wrong.** It said connectors,
+   duration_head and vocoder "come from an `ltx2` package that is not
+   installed". No such package exists on PyPI; diffusers 0.40.0 ships all
+   three under `diffusers.pipelines.ltx2`, and the `"ltx2"` library name
+   in `model_index.json` resolves to the pipeline's own submodule. The
+   0.39.0 meta-tensor death was real and stands.
+
+### Why `verified=False` still stands
+
+Not for the reason it used to. **LTX-2.5 and WhisperX cannot share an
+interpreter**: diffusers 0.40 requires `huggingface-hub>=1.23`, whisperx
+pins `huggingface-hub<1.0`, and S1 is whisperx. The render above was made
+in a second venv that the pipeline cannot import from. Wiring this route
+live means a provider that shells out to another interpreter — an
+architecture decision, not a dependency bump, and one for the operator.
+
+**One of the first three loads died with an access violation** at 79% of
+the connector weights, which read as "not reliably repeatable" until it
+was measured properly — see the ten-run series below, which did not
+reproduce it. `max_pixels` and `vram_gb` in the spec are untouched:
+512x896 is 459k pixels against the 921k the card declares, and a
+measurement below a number does not license the number.
+
+### On disk
+
+Measured, not from the file listing: the LTX-2.5 cache holds
+**116.52 GB**, of which **72.19 GB** is referenced and **44.33 GB is
+referenced by no index** — the transformer's 8-shard duplicate (37.8 GB)
+and a second copy of the connectors (6.34 GB). Reclaimable; left alone,
+because deleting from the operator's model cache is the operator's call.
+
+### A help string that named two gates nobody can run
+
+`clipforge verify --help` offered "all | skeleton | ingestion | ai |
+compositing | orchestration". `clipforge/verify/` holds four modules;
+both of the extra names answer "unknown verify module" and exit 2.
+Nothing ever failed over it, which is the point — an operator reading
+that line would believe two more gates existed and were part of the
+green. The help now names what exists, and
+`test_verify_help_names_only_modules_that_exist` reads the list back out
+of the signature and imports each one, so the next module named in help
+and never written fails the gate. Checked for teeth: putting
+`compositing` back kills it.
+
+### Gate
+
+**pytest 1268 passed, 0 skipped** (6:49) — up from a run that could not
+finish, and with the two real-weight loads actually executing inside the
+full suite rather than skipping around it. **`clipforge verify all`: GATE
+PASSED** (skeleton, ingestion, ai — ai 13/13), zero `[FAIL]` lines. Both
+halves exit 0.
+
+### Still open
+
+* **The second interpreter is not built.** LTX-2.5 renders in
+  `.venv-ltx25` and the pipeline cannot import from it. Nothing was
+  wired; the provider is unchanged and `verified=False` keeps the model
+  out of automatic selection.
+* **44.33 GB of duplicate weights** are still on disk, by choice.
+* Unchanged from the last round: Flow still needs the operator's one-time
+  `bta flow login`, and the speech-carrying live URL is still
+  outstanding.
+
+### Ten runs, one hash
+
+"Two successes and one segfault" is not a failure rate, so the same
+seeded generation was run **ten times back to back**, recording free RAM
+before each, where it died if it did, and the sha256 of frame 0.
+
+**10 of 10 succeeded. All ten frame-0 hashes are the same value, and it
+is the same hash the first run produced** — twelve renders, one image,
+byte for byte. Peak VRAM was **13.27 GB on every single run**, not a
+range. Load 81.3-102.5 s (median 96.1), generation 56.1-60.9 s (median
+58.2), 161-188 s wall per clip. Peak host commit 53.9-58.8 GB.
+
+The failure did not reproduce, and free RAM does not explain it: **one of
+the ten succeeded with 12.9 GB free**, well under the ~19 GB that was
+available when the failure happened. So the honest statement is 1 failure
+in 13 attempts, with ten consecutive clean runs after it, and commit
+pressure at that moment — not a RAM threshold — as an unproven
+hypothesis. Numbers in `workspace/ltx25_probe_2026-08-20/repeatability.json`.
+
+### The duplicate weights are gone
+
+44.33 GB deleted, operator-approved. The snapshot entries are symlinks
+into `blobs/`, so removing the link alone would have freed nothing; the
+prune resolves each entry to its blob, refuses to touch a blob any
+referenced file also resolves to (Hugging Face de-duplicates by content
+hash, so two names can share one), and removes both ends. Nine files,
+exactly the set the dry run listed. The cache went **109 GB to 68 GB**,
+and the ten runs above all loaded from what is left — the referenced
+72.19 GB is intact by demonstration, not by assertion.
+
+## LTX-2.5 wired: a second interpreter, and a flag that never existed (2026-08-20)
+
+Operator decision after the ten-run series: wire it behind `--model
+ltx25`, batching a brief's shots through one process, kept out of AUTO
+selection.
+
+### The flag the registry told operators to use
+
+`--model ltx25` could not be typed. The chain was dead at **every** link:
+
+* `swarm plan --model` put a key in a task payload.
+* The payload carried it through the generate task and into the critique
+  task.
+* `Generator.run` built the `bta generate` argv **without it**.
+* `bta generate` had no `--model` flag at all.
+* `build_router(prefer=...)` had **no caller anywhere in the product** —
+  and `prefer` is the one path in `select_model` that lets an
+  **unverified** model run, which is how a model gets verified in the
+  first place.
+
+Meanwhile the registry entry for LTX-2.5 ended: "select it explicitly
+with `--model ltx25`". Nothing failed, nothing warned, and a swarm run
+with `--model` produced pieces from whatever the registry picked.
+
+All four links are connected now, each with a test that dies when its
+link is cut (the CLI-to-router link and the swarm-to-argv link were both
+mutation-checked). `bta models` lists the keys, because until now the
+only way to learn one was to pass a wrong one and read the error — and it
+prints *downloaded* and *verified* separately, since an unverified model
+can be run on request but is never chosen for you.
+
+### The provider
+
+`clipforge/genvideo/subproc.py` + `_ltx_worker.py`, JSON lines over a
+pipe. Three decisions worth keeping:
+
+**The VRAM Law crosses the process boundary.** A child holding 13 GB is
+invisible to the residency registry, so the worker's whole lifetime sits
+inside one `gpu_session` — the same reentrant lock, the same
+cross-process lock every stage takes. The session is released in
+`close()`, and the router closes providers in a `finally` around the shot
+loop: a worker held past its sequence would block every later GPU stage
+on a lock nobody would release. `render_broll` walks cues itself, so it
+closes too. Both are tested with the provider raising, because a
+`finally` is exactly what gets forgotten on the failure path.
+
+**The worker outlives a shot.** Load is 120 s against 225-267 s per
+six-second shot, so a process per shot is pure waste. Tested by asserting
+the second shot reuses the first shot's pid.
+
+**The child never encodes anything.** It returns raw uint8 frames in a
+`.npy`; the parent calls the same `_write_video` every provider uses, so
+the blank-frame guard, the ffmpeg flags and the `.partial` discipline
+stay in one place — in an environment that has no ffmpeg helper, a second
+copy of them is guaranteed drift.
+
+The worker also claims stdout at import (`_REPLY = sys.stdout; sys.stdout
+= sys.stderr`) because diffusers, transformers and bitsandbytes all print
+progress and one stray line would be read as a reply. That guard is
+tested against the REAL worker file — its `ping` op imports nothing, so
+it runs in the pipeline venv.
+
+### Run through the actual pipeline
+
+    bta generate "a camel haggling at a market stall, warm afternoon
+    light" --model ltx25 --shots 2 --aspect 9:16
+
+`genvideo.unverified_model` warned, `genvideo.quantization_forced`
+applied nf4 over the config's `none`, and the provider announced itself
+as `ltx25-subprocess`. **Both shots ok, one worker for both** (`load_s`
+120.2 on both calls, second call `loaded=True`, same pid), worker stopped
+`exit=0`, GPU session released. 145 frames per shot at 512x896,
+**224.5 s and 266.5 s**, delivered as 1080x1920 h264, 290 frames,
+12.08 s. Manifest: `providers: ["ltx25-subprocess"]`, `degraded: false`.
+
+At six-second shots the model costs **~41 s of GPU per second of video**,
+better than the 56 s/s the 25-frame probe implied — longer sequences
+amortise the per-call overhead. A 60-second piece is around 40 minutes,
+not the 57 estimated from the probe.
+
+### Two things the tests found in the provider
+
+**A failed generation was keeping the card.** The router answers a
+`ProviderError` by trying the NEXT provider, which loads its own model on
+the same GPU — while a worker that merely failed a shot was still holding
+13 GB of it, invisible to everything but the session this provider
+opened. It now releases before raising, and says so in the message. The
+trade is a 120 s reload if the operator retries, against a fallback that
+cannot fit.
+
+**A dead worker took the full timeout to report, and then lied about
+why.** Measured while writing these tests: a stub that exited immediately
+was reported 126 s later as "did not answer", when its stderr had carried
+the reason from the first second. A child that dies never puts anything
+in the reply queue, so one long `get(timeout=120)` learns nothing. The
+queue is polled in two-second slices with a liveness check between them;
+the same case now takes about two seconds and comes back with the exit
+code and the child's own last words. Pinned by a test that asserts BOTH —
+under 30 s, and the child's stderr inside the message.
+
+### Gate
+
+**pytest 1286 passed, 0 skipped** (6:01) — 1268 before this feature, plus
+the 18 that hold it up. **`clipforge verify all`: GATE PASSED** —
+skeleton 7/7, ingestion 20/20, ai 13/13. Both halves exit 0.
+
+`verified=False` is unchanged on the spec, and deliberately so: the
+pipeline can now RUN this model on request, which is what the operator
+asked for, but nothing selects it automatically. The envelope numbers
+above it are still the model card's.
+
+## Google Flow removed, and four things wrong with the first LTX-2.5 pieces (2026-08-20)
+
+Operator, after watching the first generated piece: *"there's morphing,
+weird textures and blurry, no audio"*. And: *"get rid of Google Flow …
+that whole thing"*.
+
+### Google Flow is gone
+
+`clipforge/genvideo/flow.py` (631 lines), the `bta flow` command group
+(login / doctor / calibrate / status, 222 lines of CLI), the
+`/api/flow`, `/api/flow/login` and `/api/flow/doctor` endpoints, the
+dashboard's Flow tile and its 15-second poll, the five `[genvideo]`
+settings, and the two web tests. The browser session it had stored
+(`workspace/auth/flow_profile/` and `flow_session.json` — a live Google
+sign-in) was deleted with it: leaving credentials on disk for a feature
+that no longer exists is worse than either keeping the feature or
+removing them.
+
+One line the removal changed rather than deleted: the sidebar's *"nothing
+leaves this machine"* was conditional, rewritten at runtime by
+`renderFlow()` because with Flow on it was false. It is unconditional
+again, and the only remaining way out is `[genvideo] use_cloud`, which
+the cloud chokepoint gates.
+
+### The picture: three of the four were choices this repo made
+
+Measured on one prompt and one seed, 49 frames, three configurations
+through the same pipeline:
+
+| | steps / CFG | size | generate | sharpness | spatial std | drift |
+|---|---|---|---|---|---|---|
+| A — what shipped | 8 / 1.0 | 512x896 | 104.7 s | 110.9 | 41.8 | 33.7 |
+| B — vendor schedule | 30 / 3.0 | 512x896 | 283.9 s | 134.8 | 58.5 | 46.4 |
+| C — model's envelope | 30 / 3.0 | 704x1216 | 489.1 s | 83.6 | 63.6 | 38.4 |
+
+(The sharpness column is Laplacian variance and is only comparable
+within a resolution — C's frames are larger, so the same detail spreads
+over more pixels. Across resolutions the comparison has to be made on
+the DELIVERED pixel, which is why the crops below were rendered.)
+
+**1. "Morphing" and "weird textures" — 8 steps at CFG 1.0.** The spec
+said *"the distilled checkpoint's published schedule: 8 steps at CFG 1"*,
+taken from a model card. diffusers' own LTX2 example uses **30 steps at
+guidance 3.0**, and nothing here had ever run the two against each other.
+At 8 steps the last frame is blobby fur, a smeared human and a white
+speckle crawling over the sky; at 30 it is real coat texture, legible
+market stalls and correct anatomy.
+
+**The speckle needed two corrections.** It was first written up here as
+fixed by the step count, on the strength of two-second probes. Measured —
+percentage of sky-band pixels differing from a 5x5 median by more than
+20, everything brought back to generation scale first, because the 1.5x
+delivery upscale smears a one-pixel speck into a blob a 3x3 test scores
+as 0.00 — it is a RESOLUTION artifact, not a step-count one:
+
+On the generated frames, before delivery:
+
+| steps | size | speckle |
+|---|---|---|
+| 8 | 512x896 | 2.63 % |
+| 30 | 512x896 | 1.82 % |
+| 30 | 704x1216 | **0.10 %** |
+
+Steps barely move it. Generating at the model's own size all but removes
+it. The first version of this table then mixed those numbers with ones
+measured on DELIVERED clips and read a length trend out of the
+difference, which was an artifact of the two bases, not of the model. On
+a consistent delivered basis:
+
+| what | length | speckle |
+|---|---|---|
+| shipped (8 steps, 512x896) | 6.0 s | 2.54 - 2.99 % |
+| fixed (30 steps, 704x1280) | 2.0 s | 0.45 % |
+| fixed | 4.0 s | 0.70 % |
+| fixed | 6.0 s | 0.59 % |
+
+About 4-5x better at the length the operator actually watched, and flat
+with length rather than growing. The gap between 0.10 % generated and
+~0.5 % delivered is the delivery chain; a one-frame decomposition puts
+almost none of it on the sharpen (0.10 -> 0.14 with unsharp 0.6, 0.12 at
+0.3), so the filter was left alone. **What actually degrades with length
+is the AUDIO** — see below. A test asserted
+`spec.steps == 8` — it checked that a published number had been copied
+correctly, which is the exact failure mode the registry exists to
+prevent. It now pins the measured schedule and says why.
+
+**2. "Blurry" — a cap measured on a different model.** Generation ran at
+512x896 and was scaled 2.1x to 1080x1920 because `MAX_GEN_PIXELS = 460k`
+was applied to every model. That number is real and was measured — on
+LTX-Video 0.9, which returned blank frames above it. LTX-2.5 declares
+921,600 px, so the subprocess provider now asks `_generation_dims` for
+**the model's own envelope**: 704x1280 for 9:16, a 1.5x delivery upscale
+instead of 2.1x. Cropped to the same delivered window, B upscaled is waxy
+skin and a mushy eye; C native has pores, a catchlight and stitching on
+the harness. VRAM went 13.62 -> 14.44 GB, still inside the card.
+
+**3. "No audio" — the model made sound and this repo threw it away.**
+LTX-2.5 is an audio+video DiT: `audio_in_channels: 128` and a vocoder are
+in its own config, and the pipeline returns `(video, audio)`. The worker
+read `result.frames[0]` and nothing else. Measured: **(2, 96480) float32
+at 48 kHz** for 49 frames — stereo, 2.01 s, RMS 0.48. It now comes back
+over the pipe as a second `.npy` and is muxed in the SAME ffmpeg encode
+as the video.
+
+**4. Temporal drift is the model.** The scene still changes over six
+seconds — background stalls rearrange, the framing wanders. 30 steps
+reduces it (C drifts less than B) but does not remove it, and nothing
+here claims to have fixed it. The honest lever is shorter shots: this is
+why the sketch niche uses 1.9 s.
+
+### What the audio path had to get right
+
+* **Length is matched in numpy, not with `-shortest`.** The model
+  returned 2.010 s against 2.042 s of video; letting ffmpeg trim to the
+  shorter stream would silently drop a video frame. Short audio is
+  padded, a long tail trimmed, both exactly.
+* **Full scale clamps.** This model comes back at peak 1.0; converting to
+  int16 without clamping wraps a loud mix into a buzz.
+* **Inputs before output options.** The first version put `-i audio.wav`
+  after the `-vf` scale filter, and ffmpeg applied a filter option to the
+  second input's decoder and failed the encode. Caught by the tests, not
+  by reading.
+* **`_concat_shots` keeps sound, and a mixed sequence still concats.**
+  The concat demuxer requires matching streams, and a failover can put an
+  LTX-2.5 shot (with audio) next to a Wan 2.2 one (without). Dropping
+  audio would make that work by discarding the thing worth keeping, so
+  silent shots are given silence instead.
+
+### The trade, stated
+
+30 steps at the model's own envelope costs about **6.4x** what the
+shipped configuration did: roughly 24 minutes for one six-second shot on
+this card, against 3.7. That is the price of the difference in those
+crops, and it applies only when `--model ltx25` is asked for explicitly —
+Wan 2.2 remains what automatic selection picks.
+
+### The fix broke a constant that used to be right
+
+The first render at the new settings **died at 900 s with the picture
+still generating**: `FIRST_CALL_TIMEOUT_S = 900` and `CALL_TIMEOUT_S =
+600` were sized against 8 steps at 512x896, and 30 steps at 704x1280 for
+145 frames is a ~26-minute job. The failure was reported as *"worker did
+not answer 'generate' within 900s"*, which is true and useless — nothing
+was wrong except the budget.
+
+Timeouts are now derived from the work: frames x steps x megapixels,
+times a measured **0.6 s** (the slow end of 0.39 / 0.42 / 0.58 taken from
+the three runs above), times 2 for headroom, plus a load allowance on the
+first call, with a 600 s floor. The budget is logged with the call, so a
+long render says how long it is allowed to be. A test pins that the
+number grows with each of frames, steps and pixels — a constant fails it.
+
+### Gate
+
+**pytest 1297 passed, 0 skipped** (6:17) — 1286 before, plus 13 new
+(nine on the audio path, the model envelope and the negatives; four on
+the concat) and minus the two Flow web tests that went with the feature.
+**`clipforge verify all`: GATE PASSED** — skeleton 7/7, ingestion 20/20,
+ai 13/13. Both halves exit 0.

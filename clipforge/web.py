@@ -31,6 +31,7 @@ from __future__ import annotations
 import json as _json
 import mimetypes
 import os
+import secrets
 import subprocess
 import sys
 import threading
@@ -42,9 +43,12 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse, Response)
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
+from clipforge import remote
 from clipforge.config import load_config, load_watchlist
 from clipforge.log import get_logger
 from clipforge.paths import Workspace
@@ -53,18 +57,148 @@ from clipforge.state import StateDB
 log = get_logger(__name__)
 
 app = FastAPI(title="BTA Control API",
-              description="Local-only control surface. Nothing leaves this "
-                          "machine.")
+              description="Control surface for this machine. It serves and "
+                          "acts on files that are already here; reaching it "
+                          "from another device needs the access token.")
 
-# CORS allows the dashboard on the same origin plus common dev ports.
+
+# ============================================================ access control
+#
+# This API spawns CLI subprocesses on the host. On loopback that is fine —
+# anything that can reach it could already run the CLI directly. Off
+# loopback it is not, so `bta web --lan` and `--tunnel` set a token in the
+# environment and every request from a non-loopback address must carry it.
+# The decision itself lives in clipforge.remote as a pure function; this is
+# only the plumbing that feeds it a Request and turns its answer into a
+# response.
+
+#: Reachable without a credential, because they are how a credential is
+#: obtained in the first place.
+_OPEN_PATHS = frozenset({"/login", "/login/redeem", "/favicon.ico"})
+
+#: Rebuilt from the environment at import time. Held in a mutable box so a
+#: test (or a future `bta web --rotate`) can swap it without reaching into
+#: module globals from three different places.
+_policy: remote.AccessPolicy = remote.AccessPolicy.from_env()
+_pairing = remote.PairingCodes()
+
+
+def current_policy() -> remote.AccessPolicy:
+    return _policy
+
+
+def set_policy(policy: remote.AccessPolicy) -> None:
+    global _policy
+    _policy = policy
+
+
+def _presented(request: Request) -> remote.Presented:
+    """Collect whatever credential material this request carries."""
+    header = request.headers.get(remote.TOKEN_HEADER)
+    if not header:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            header = auth[7:]
+    client = request.client.host if request.client else None
+    return remote.Presented(
+        client_host=client,
+        header_token=header,
+        cookie_token=request.cookies.get(remote.COOKIE_NAME),
+        query_token=request.query_params.get(remote.TOKEN_QUERY),
+    )
+
+
+def _wants_html(request: Request) -> bool:
+    """A browser navigating, as opposed to a fetch() or a media element.
+
+    Sec-Fetch-Mode is the reliable signal — an <img>/<video> request also
+    sends an HTML-ish Accept header, and bouncing those to a login page
+    renders a broken-image icon instead of an error anyone can read.
+    """
+    if request.headers.get("sec-fetch-mode") == "navigate":
+        return True
+    if request.headers.get("sec-fetch-dest") in ("document", "iframe"):
+        return True
+    accept = request.headers.get("accept") or ""
+    return "text/html" in accept and "sec-fetch-mode" not in request.headers
+
+
+async def _access_middleware(request: Request, call_next):
+    path = request.url.path
+    # Preflight carries no credentials by design and reveals nothing; it
+    # must pass or every cross-origin call fails as a CORS error rather
+    # than the 401 it actually is.
+    if request.method == "OPTIONS" or path in _OPEN_PATHS:
+        return await call_next(request)
+
+    decision = remote.decide(_presented(request), _policy, pairing=_pairing)
+    if not decision.allowed:
+        log.warning("web.access_denied", path=path[:120],
+                    client=(request.client.host if request.client else "?"),
+                    reason=decision.reason)
+        if _wants_html(request):
+            nxt = request.url.path
+            if request.url.query:
+                nxt = f"{nxt}?{request.url.query}"
+            return RedirectResponse(
+                f"/login?next={_quote(nxt)}", status_code=303)
+        return JSONResponse(status_code=401,
+                            content={"error": decision.reason,
+                                     "pair_at": "/login"})
+
+    response = await call_next(request)
+    if decision.set_cookie and decision.cookie_value:
+        _set_access_cookie(response, decision.cookie_value)
+    return response
+
+
+def _set_access_cookie(response: Response, value: str) -> None:
+    """Persist a proven credential for this browser.
+
+    ``samesite=lax`` rather than ``none``: the dashboard is served by this
+    same server, so lax covers it, and ``none`` would require Secure —
+    which over plain http on a LAN means the cookie is silently dropped.
+    A cross-origin client (the static site on :4321) authenticates with
+    the token header or query instead, which needs no cookie at all.
+    """
+    response.set_cookie(remote.COOKIE_NAME, value, httponly=True,
+                        samesite="lax", max_age=60 * 60 * 24 * 30, path="/")
+
+
+def _quote(value: str) -> str:
+    from urllib.parse import quote
+    return quote(value, safe="")
+
+
+# Registration order decides nesting: Starlette wraps the LAST-added
+# middleware outermost, so CORS must be added after the access check for
+# a 401 to still carry CORS headers.
+app.add_middleware(BaseHTTPMiddleware, dispatch=_access_middleware)
+
+# Same-origin needs no CORS at all; this exists for the static site on
+# :4321 and for a phone hitting the site's own host. The regex is bounded
+# to loopback, RFC1918/CGNAT literals and tailnet names — never a
+# wildcard, because credentials are allowed through it.
+_ORIGIN_RE = (
+    r"^https?://("
+    r"localhost|127(\.\d{1,3}){3}|\[::1\]"
+    r"|10(\.\d{1,3}){3}"
+    r"|192\.168(\.\d{1,3}){2}"
+    r"|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}"
+    r"|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])(\.\d{1,3}){2}"
+    r"|[a-zA-Z0-9-]+\.ts\.net"
+    r"|[a-zA-Z0-9-]+\.trycloudflare\.com"
+    r")(:\d+)?$"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4321", "http://127.0.0.1:4321",
-                   "http://localhost:8770", "http://127.0.0.1:8770",
-                   "http://localhost:8000", "http://127.0.0.1:8000"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_origin_regex=_ORIGIN_RE,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["X-Strip-Columns", "X-Strip-Tile-W", "X-Strip-Tile-H",
+                    "X-Strip-Duration"],
 )
 
 
@@ -151,12 +285,30 @@ class BackgroundTask:
     status: str = "running"
     output_lines: list[str] = field(default_factory=list)
     return_code: int | None = None
+    #: Set the instant the run stops, so elapsed freezes. Without it a
+    #: finished card kept counting up forever — "196.2s elapsed · exit 1"
+    #: on a task that died two minutes ago.
+    finished_at: float | None = None
+    #: Set BEFORE the kill. The drain thread reads it to decide what the
+    #: exit code means: TerminateProcess reports 1 on Windows, so a
+    #: cancelled run was being relabelled "failed · exit 1" and the
+    #: operator could not tell a cancel from a crash.
+    cancelled: bool = False
+    #: Windows job object owning the whole child tree. `terminate()` only
+    #: reaps the direct child; the pipeline's ffmpeg/yt-dlp/torch children
+    #: survived it and kept the GPU busy, which is why Cancel appeared to
+    #: do nothing at all.
+    guard: Any = None
+    progress: Any = None
 
     def elapsed_s(self) -> float:
-        return time.time() - self.started_at
+        return (self.finished_at or time.time()) - self.started_at
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, estimator: Any = None) -> dict[str, Any]:
         tail = self.output_lines[-30:]
+        prog = (self.progress.as_dict(estimator)
+                if self.progress is not None and self.status == "running"
+                else None)
         return {
             "task_id": self.task_id,
             # The dashboard reads `id` and `log`; the API only ever sent
@@ -171,11 +323,72 @@ class BackgroundTask:
             "return_code": self.return_code,
             "output": tail,
             "log": "\n".join(tail),
+            "progress": prog,
         }
 
 
 _tasks: dict[str, BackgroundTask] = {}
 _tasks_lock = threading.Lock()
+_estimator: Any = None
+
+
+def _stage_estimator():
+    """Per-stage medians from this machine's own run history."""
+    global _estimator
+    from clipforge.progress import StageEstimator
+
+    ws = _workspace()
+    if _estimator is None or Path(_estimator.state_db) != Path(ws.state_db):
+        _estimator = StageEstimator(ws.state_db)
+    return _estimator
+
+
+def kill_process_tree(proc: subprocess.Popen | None, guard: Any = None) -> str:
+    """Kill a spawned run and everything it started. Returns what worked.
+
+    Three mechanisms, tried in order, because each covers a case the
+    others miss:
+
+    * the job object, which the kernel applies to the whole tree at once
+      and is the only one that catches a grandchild spawned microseconds
+      before the kill;
+    * ``taskkill /T /F``, which walks the tree by parent id on Windows;
+    * ``terminate()``, which is all that exists if the first two are
+      unavailable, and which was — measurably — leaving ffmpeg running.
+    """
+    if proc is None:
+        return "no process"
+    used: list[str] = []
+    if guard is not None:
+        try:
+            guard.close()
+            used.append("job object")
+        except Exception as exc:  # noqa: BLE001 - fall through to the rest
+            log.warning("web.guard_close_failed", error=str(exc)[:200])
+
+    if sys.platform == "win32" and proc.poll() is None:
+        try:
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           capture_output=True, timeout=15)
+            used.append("taskkill /T")
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning("web.taskkill_failed", error=str(exc)[:200])
+
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+            used.append("terminate")
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            used.append("kill")
+        except OSError:
+            pass
+    return ", ".join(used) or "already exited"
 
 
 def _bta_cmd() -> list[str]:
@@ -189,16 +402,31 @@ def _spawn_task(kind: str, description: str, args: list[str]) -> str:
     cmd = _bta_cmd() + args
     log.info("web.spawn_task", task_id=task_id, kind=kind, cmd=" ".join(cmd))
 
+    from clipforge.ingest.procguard import ProcessGuard
+    from clipforge.progress import RunProgress
+
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        # errors='replace': the pipeline prints filenames and yt-dlp
+        # prints stream titles, both of which carry characters that the
+        # console codepage cannot decode. A UnicodeDecodeError in here
+        # kills the drain thread and the task's log stops mid-run.
+        errors="replace",
         cwd=str(Path(".")),
         # Prevent the child from inheriting the server's signal handlers
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
         if sys.platform == "win32" else 0,
     )
+
+    # Enroll the child in a kill-on-close job object. This is the same
+    # mechanism the chunker uses on its streamlink/ffmpeg pair, and for the
+    # same reason: killing the process we can see does not kill the ones it
+    # started, and those are the ones holding the GPU.
+    guard = ProcessGuard()
+    guard.assign(proc)
 
     task = BackgroundTask(
         task_id=task_id,
@@ -206,6 +434,8 @@ def _spawn_task(kind: str, description: str, args: list[str]) -> str:
         description=description,
         started_at=time.time(),
         process=proc,
+        guard=guard,
+        progress=RunProgress(kind=kind, started_at=time.time()),
     )
     with _tasks_lock:
         _tasks[task_id] = task
@@ -215,13 +445,25 @@ def _spawn_task(kind: str, description: str, args: list[str]) -> str:
         for line in proc.stdout:
             stripped = line.rstrip("\n\r")
             task.output_lines.append(stripped)
+            if task.progress is not None:
+                task.progress.feed(stripped)
             # Cap stored output at 500 lines
             if len(task.output_lines) > 500:
                 task.output_lines = task.output_lines[-300:]
         proc.wait()
         task.return_code = proc.returncode
-        task.status = "completed" if proc.returncode == 0 else "failed"
-        log.info("web.task_finished", task_id=task_id, code=proc.returncode)
+        task.finished_at = time.time()
+        # A cancelled run exits non-zero by construction — TerminateProcess
+        # reports 1 — so the exit code alone cannot distinguish it from a
+        # crash. The flag set by the cancel endpoint can.
+        task.status = ("cancelled" if task.cancelled else
+                       "completed" if proc.returncode == 0 else "failed")
+        try:
+            guard.close()
+        except Exception:  # noqa: BLE001 - teardown must not raise
+            pass
+        log.info("web.task_finished", task_id=task_id, code=proc.returncode,
+                 status=task.status)
 
     t = threading.Thread(target=_drain, daemon=True)
     t.start()
@@ -386,6 +628,97 @@ def delete_clip(req: DeleteRequest) -> dict[str, Any]:
     return {"status": "trashed", "files": moved, "trash": str(trash)}
 
 
+class BulkDeleteRequest(BaseModel):
+    filenames: list[str]
+    rejected: bool = False
+
+
+@app.post("/api/clips/delete-many")
+def delete_clips(req: BulkDeleteRequest) -> dict[str, Any]:
+    """Trash several clips in one call.
+
+    A loop in the browser would do the same thing, but not atomically from
+    the operator's point of view: a failure halfway leaves the gallery
+    showing some clips gone and some not, with no statement of which. This
+    reports every outcome, and a failure on one clip does not abandon the
+    rest.
+    """
+    if not req.filenames:
+        raise HTTPException(400, "nothing selected")
+    if len(req.filenames) > 500:
+        raise HTTPException(400, "too many at once (limit 500)")
+    trashed: list[str] = []
+    failed: list[dict[str, str]] = []
+    for name in req.filenames:
+        try:
+            delete_clip(DeleteRequest(filename=name, rejected=req.rejected))
+            trashed.append(name)
+        except HTTPException as exc:
+            failed.append({"filename": name, "error": str(exc.detail)})
+    log.info("web.bulk_trashed", ok=len(trashed), failed=len(failed))
+    return {"status": "done", "trashed": trashed, "failed": failed,
+            "count": len(trashed)}
+
+
+@app.post("/api/clips/empty-quarantine")
+def empty_quarantine() -> dict[str, Any]:
+    """Trash everything QA rejected.
+
+    Still a move to trash, not an unlink — a quarantined clip is the
+    evidence for why QA failed, and the operator who empties the folder in
+    frustration is exactly the one who wants it back an hour later.
+    """
+    from clipforge import clipmeta
+
+    ws = _workspace()
+    names = [m.filename for m in clipmeta.list_clips(ws) if m.rejected]
+    if not names:
+        return {"status": "done", "trashed": [], "count": 0,
+                "note": "quarantine is already empty"}
+    return delete_clips(BulkDeleteRequest(filenames=names, rejected=True))
+
+
+class GeneratedDeleteRequest(BaseModel):
+    slug: str
+
+
+@app.post("/api/generated/delete")
+def delete_generated(req: GeneratedDeleteRequest) -> dict[str, Any]:
+    """Trash one generated piece — the sequence and all of its shots.
+
+    Generated pieces had no delete path at all: the gallery could show a
+    forty-shot experiment and offer no way to remove it, so the folder
+    grew until someone went to Explorer. Same rule as clips: it moves to
+    workspace/trash rather than being unlinked.
+    """
+    ws = _workspace()
+    gen_root = (Path(ws.root) / "generated").resolve()
+    target = (gen_root / req.slug).resolve()
+    # Resolve, then prove containment — never validate the string.
+    if not target.is_relative_to(gen_root) or target == gen_root:
+        log.warning("web.generated_escape_blocked", requested=req.slug[:200])
+        raise HTTPException(400, "invalid piece name")
+    if not target.is_dir():
+        raise HTTPException(404, "no such generated piece")
+
+    trash = Path(ws.root) / "trash" / "generated"
+    trash.mkdir(parents=True, exist_ok=True)
+    dest = trash / target.name
+    # Never clobber a previous trashing of the same slug.
+    n = 1
+    while dest.exists():
+        dest = trash / f"{target.name} ({n})"
+        n += 1
+    try:
+        target.replace(dest)
+    except OSError as exc:
+        log.error("web.generated_delete_failed", slug=req.slug,
+                  error=str(exc)[:200])
+        raise HTTPException(500, f"could not move it: {exc}") from exc
+    log.info("web.generated_trashed", slug=req.slug, dest=str(dest))
+    return {"status": "trashed", "slug": req.slug, "trash": str(dest)}
+
+
 @app.get("/api/clips/stream/{filename}")
 def stream_clip(filename: str, rejected: bool = False) -> FileResponse:
     """Stream one clip.
@@ -541,6 +874,8 @@ def clip_detail(filename: str, rejected: bool = False) -> dict[str, Any]:
     """
     from clipforge import clipmeta
 
+    from clipforge.pacing import MIN_DURATION_S
+
     ws = _workspace()
     meta = clipmeta.resolve_clip(ws, filename, rejected=rejected)
     if meta is None:
@@ -550,6 +885,9 @@ def clip_detail(filename: str, rejected: bool = False) -> dict[str, Any]:
         "transcript": clipmeta.transcript_for(ws, filename,
                                               rejected=rejected),
         "campath": clipmeta.campath_for(ws, filename, rejected=rejected),
+        # Sent rather than mirrored in the page, so the editor's trim
+        # limits cannot drift from the renderer's actual floor.
+        "limits": {"min_clip_s": MIN_DURATION_S},
     }
 
 
@@ -684,9 +1022,37 @@ def generation_status() -> list[dict[str, Any]]:
 
 @app.get("/api/tasks")
 def list_tasks() -> list[dict[str, Any]]:
-    """All tracked background tasks."""
+    """All tracked background tasks, with live progress for running ones."""
+    est = _stage_estimator()
     with _tasks_lock:
-        return [t.to_dict() for t in _tasks.values()]
+        return [t.to_dict(est) for t in _tasks.values()]
+
+
+@app.get("/api/estimates")
+def stage_estimates() -> dict[str, Any]:
+    """What each stage has actually taken on this machine.
+
+    Exposed because an ETA with no visible basis is indistinguishable from
+    a made-up one. The dashboard shows these under Studio, so the estimate
+    on a running job can be checked against the history it came from.
+    """
+    from clipforge.progress import CLIP_STAGES, humanize
+
+    est = _stage_estimator()
+    medians = est.all_medians()
+    return {
+        "stages": [
+            {"stage": name, "label": label,
+             "median_s": round(medians[name], 1) if name in medians else None,
+             "human": humanize(medians.get(name)),
+             "measured": name in medians}
+            for name, label in CLIP_STAGES
+        ],
+        # Only meaningful once every stage has run at least once; said
+        # plainly rather than summing the ones that happen to be known.
+        "total_s": (round(sum(medians[n] for n, _ in CLIP_STAGES), 1)
+                    if all(n in medians for n, _ in CLIP_STAGES) else None),
+    }
 
 
 # ================================================ CONTROL ENDPOINTS
@@ -704,6 +1070,13 @@ class GenerateRequest(BaseModel):
     #: them in rather than leaving a control that does nothing.
     niche: str | None = None
     clip: bool | None = None
+    #: Same flag as the storyboard preview, so what was previewed is what
+    #: gets generated.
+    screenplay: bool = False
+    #: Post-layer text. Both optional: a screenplay carries its own hook
+    #: in the title page, and the handle falls back to [genvideo] handle.
+    hook: str | None = None
+    handle: str | None = None
 
     def resolved_preset(self) -> str:
         return (self.niche or self.preset or "documentary").strip()
@@ -716,6 +1089,27 @@ class StoryboardRequest(BaseModel):
     brief: str
     preset: str = "documentary"
     shots: int = 6
+    #: Read the brief as Fountain: one beat per SCENE, and dialogue kept
+    #: out of the picture prompt.
+    screenplay: bool = False
+
+
+class ScreenplayRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/screenplay")
+def parse_screenplay(req: ScreenplayRequest) -> dict[str, Any]:
+    """Typed blocks, shots and speakers for the editor's live formatting.
+
+    Parsed on the SERVER even though it is only formatting, so the editor
+    and the generator cannot disagree about where a shot begins — a second
+    parser in JavaScript is a second answer to that question, and the one
+    the operator sees would be the one that is wrong.
+    """
+    from clipforge import screenplay
+
+    return screenplay.summary(req.text or "")
 
 
 @app.post("/api/storyboard")
@@ -730,8 +1124,10 @@ def preview_storyboard(req: StoryboardRequest) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    shots = build_storyboard(req.brief, preset, req.shots)
-    return {"brief": req.brief, "preset": req.preset, "shots": shots}
+    shots = build_storyboard(req.brief, preset, req.shots,
+                             screenplay=req.screenplay)
+    return {"brief": req.brief, "preset": req.preset,
+            "screenplay": req.screenplay, "shots": shots}
 
 
 @app.post("/api/generate")
@@ -751,8 +1147,15 @@ def start_generation(req: GenerateRequest) -> dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
     if not 1 <= req.shots <= 64:
         raise HTTPException(400, "shots must be 1-64")
-    if req.aspect_ratio not in ("9:16", "16:9"):
-        raise HTTPException(400, "aspect_ratio must be 9:16 or 16:9")
+    # Validated against the map generation actually uses, not a copy of
+    # it: the two-value tuple here 400'd every request from the niche
+    # picker the moment a niche declared 3:4, while the dashboard was
+    # sending exactly what the niche asked for.
+    from clipforge.genvideo.providers import _ASPECT_RATIOS
+
+    if req.aspect_ratio not in _ASPECT_RATIOS:
+        raise HTTPException(
+            400, f"aspect_ratio must be one of {', '.join(_ASPECT_RATIOS)}")
 
     clip_it = req.resolved_clip()
     args = [
@@ -762,6 +1165,12 @@ def start_generation(req: GenerateRequest) -> dict[str, Any]:
         "--aspect", req.aspect_ratio,
         "--clip" if clip_it else "--no-clip",
     ]
+    if req.screenplay:
+        args.append("--screenplay")
+    if (req.hook or "").strip():
+        args += ["--hook", req.hook.strip()]
+    if (req.handle or "").strip():
+        args += ["--handle", req.handle.strip()]
     task_id = _spawn_task(
         "generate",
         f"Generate {req.shots} shot(s) · {preset} · {req.brief[:60]}",
@@ -846,6 +1255,93 @@ def start_grab(req: GrabRequest) -> dict[str, Any]:
     return {"task_id": task_id, "status": "started"}
 
 
+class LiveRequest(BaseModel):
+    target: str
+    platform: str = "youtube"
+    clips: int = 0
+    quality: str = ""
+    #: Seconds of stream per clipping window. Shorter means the first clip
+    #: lands sooner, which is the whole point of watching a capture.
+    segment_s: float = 300.0
+
+
+@app.get("/api/live/check")
+def check_live(url: str = Query(..., min_length=3, max_length=500)) -> dict[str, Any]:
+    """Is this URL broadcasting right now?
+
+    The dashboard asks before offering a Capture button, because the two
+    paths are genuinely different: a live stream is captured as it runs, a
+    finished video is downloaded and clipped. Guessing from the URL shape
+    gets that wrong for exactly the case people care about — a /watch?v=
+    link is both, depending on the minute.
+    """
+    from clipforge.ingest import youtube
+
+    target = url.strip()
+    if not target:
+        raise HTTPException(400, "no url given")
+    try:
+        state = youtube.is_live(target)
+    except Exception as exc:  # noqa: BLE001 - reported, never fatal
+        log.info("web.live_probe_failed", error=str(exc)[:200])
+        return {"live": None, "reason": f"could not check: {exc}"[:200],
+                "target": target}
+    title = youtube.live_title(target) if state else ""
+    return {
+        "live": state,
+        "title": title,
+        "target": target,
+        "url": youtube.live_url(target),
+        # None is not False, and the UI must not render it as "offline":
+        # a probe that could not reach YouTube is a different answer.
+        "reason": ("" if state is True else
+                   "not broadcasting right now" if state is False else
+                   "could not determine — the capture will end on its own "
+                   "if there is no stream"),
+    }
+
+
+@app.post("/api/live/start")
+def start_live(req: LiveRequest) -> dict[str, Any]:
+    """Capture a live stream and clip it while it runs.
+
+    Distinct from /api/grab, which downloads a finished video first. This
+    segments the broadcast as it arrives and clips each segment, so the
+    gallery fills during the stream instead of after it.
+    """
+    target = req.target.strip()
+    if not target:
+        raise HTTPException(400, "target is required")
+    if req.platform not in ("youtube", "twitch", "kick"):
+        raise HTTPException(400, "platform must be youtube, twitch or kick")
+    if not 0 <= req.clips <= 20:
+        raise HTTPException(400, "clips must be 0-20 (0 = the configured default)")
+
+    # One capture at a time: the chunker takes the workspace lock, so a
+    # second one would fail with a lock error the operator has to decode.
+    with _tasks_lock:
+        for t in _tasks.values():
+            if t.kind in ("live", "watch") and t.status == "running":
+                raise HTTPException(
+                    409, f"already capturing ({t.description}). Stop that "
+                         f"first — one capture owns the workspace.")
+
+    if not 30.0 <= req.segment_s <= 3600.0:
+        raise HTTPException(400, "segment_s must be between 30 and 3600")
+
+    args = ["live", target, "--platform", req.platform,
+            "--segment", str(req.segment_s)]
+    if req.clips:
+        args.extend(["--clips", str(req.clips)])
+    if req.quality.strip():
+        args.extend(["--quality", req.quality.strip()])
+
+    task_id = _spawn_task("live", f"Capture live · {target[:70]}", args)
+    return {"task_id": task_id, "status": "started",
+            "note": f"capturing — the first clip lands about "
+                    f"{req.segment_s/60:.0f} min in, then one per window"}
+
+
 class RerunRequest(BaseModel):
     """Re-run the pipeline on the source a clip came from.
 
@@ -900,6 +1396,94 @@ def rerun_clip(req: RerunRequest) -> dict[str, Any]:
         "process", f"Re-run {Path(meta.source_path).name} · {flags}", args)
     return {"task_id": task_id, "status": "started",
             "source": meta.source_path, "args": args}
+
+
+class CamPathRequest(BaseModel):
+    """A director-camera move, authored in the editor."""
+
+    filename: str
+    rejected: bool = False
+    #: [{t, cx, cy, h, easing}] in SOURCE pixels, clip-relative seconds.
+    keyframes: list[dict[str, Any]]
+
+
+@app.get("/api/clips/{filename}/campath")
+def get_campath(filename: str, rejected: bool = False) -> dict[str, Any]:
+    """The camera the renderer followed, plus a starting path to edit.
+
+    Returns S4's tracked frames so the editor can DRAW what happened, and
+    a default keyframe set so the operator starts from a real camera
+    rather than an empty canvas.
+    """
+    from clipforge import clipmeta
+    from clipforge.campath_edit import default_keyframes
+
+    ws = _workspace()
+    meta = clipmeta.resolve_clip(ws, filename, rejected=rejected)
+    if meta is None:
+        raise HTTPException(404, "clip not found")
+    tracked = clipmeta.campath_for(ws, filename, rejected=rejected)
+
+    # Source geometry comes from the tracked artifact when there is one —
+    # authoring against the wrong frame size puts every crop in the wrong
+    # place, so this refuses rather than assuming 1920x1080.
+    src_w = tracked.get("src_width") or meta.source_width
+    src_h = tracked.get("src_height") or meta.source_height
+    if not src_w or not src_h:
+        raise HTTPException(
+            409, "this clip has no recorded source dimensions, so a camera "
+                 "path cannot be authored against it")
+    duration = float(meta.duration_s or 0.0)
+    return {
+        "tracked": tracked,
+        "src_width": int(src_w),
+        "src_height": int(src_h),
+        "duration_s": duration,
+        "keyframes": [k.as_dict() for k in default_keyframes(
+            src_width=int(src_w), src_height=int(src_h),
+            duration_s=duration)],
+    }
+
+
+@app.post("/api/clips/recam")
+def start_recam(req: CamPathRequest) -> dict[str, Any]:
+    """Re-render a clip with an operator-authored camera move.
+
+    Same shape as /api/clips/recut: the browser cannot re-frame video, the
+    pipeline can, and it already takes a camera path as an artifact. The
+    keyframes are validated HERE, before a GPU minute is spent, because a
+    malformed path that fails after S1-S4 costs the whole run.
+    """
+    from clipforge import clipmeta
+    from clipforge.campath_edit import CamPathError, parse_keyframes
+
+    ws = _workspace()
+    _confined_clip(ws, req.filename, rejected=req.rejected)
+    meta = clipmeta.resolve_clip(ws, req.filename, rejected=req.rejected)
+    if meta is None:
+        raise HTTPException(404, "clip not found")
+    if not meta.source_path or not meta.source_exists:
+        raise HTTPException(
+            409, "the source this clip came from is no longer on disk, so it "
+                 "cannot be re-framed")
+    try:
+        keys = parse_keyframes(req.keyframes)
+    except CamPathError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    tmp = Path(ws.tmp)
+    tmp.mkdir(parents=True, exist_ok=True)
+    path_file = tmp / f"campath_{uuid.uuid4().hex[:12]}.json"
+    path_file.write_text(
+        _json.dumps({"keyframes": [k.as_dict() for k in keys]}, indent=1),
+        encoding="utf-8")
+
+    args = ["process", meta.source_path, "--clips", "1",
+            "--campath-file", str(path_file)]
+    task_id = _spawn_task(
+        "recam", f"Re-frame {req.filename[:32]} ({len(keys)} keyframe(s))",
+        args)
+    return {"task_id": task_id, "status": "started", "keyframes": len(keys)}
 
 
 class ClipTextRequest(BaseModel):
@@ -1205,6 +1789,14 @@ class RecutRequest(BaseModel):
     cut_words: list[float] = []
     #: Start times of words whose PRECEDING pause was marked.
     cut_gaps: list[float] = []
+    #: Keep only [trim_start, trim_end], clip-relative seconds. Expressed
+    #: as a KEEP range rather than two cuts because that is what the
+    #: operator dragged, and converting it here means the endpoint can
+    #: check it against the clip's real duration — a browser that
+    #: mis-measures the timeline cannot silently ask for a trim past the
+    #: end of the video.
+    trim_start: float | None = None
+    trim_end: float | None = None
 
 
 @app.post("/api/clips/recut")
@@ -1222,7 +1814,8 @@ def start_recut(req: RecutRequest) -> dict[str, Any]:
     """
     from clipforge import clipmeta
 
-    if not req.cut_words and not req.cut_gaps:
+    trimming = req.trim_start is not None or req.trim_end is not None
+    if not req.cut_words and not req.cut_gaps and not trimming:
         raise HTTPException(400, "nothing marked to cut")
 
     ws = _workspace()
@@ -1235,6 +1828,55 @@ def start_recut(req: RecutRequest) -> dict[str, Any]:
         raise HTTPException(
             409, "the source this clip came from is no longer on disk, so it "
                  "cannot be re-rendered")
+
+    spans: list[tuple[float, float]] = []
+
+    # ---- trim: a KEEP range becomes the two cuts around it -------------
+    if trimming:
+        duration = float(meta.duration_s or 0.0)
+        if duration <= 0:
+            raise HTTPException(
+                409, "this clip's duration was never recorded, so a trim "
+                     "cannot be checked against it")
+        start = float(req.trim_start or 0.0)
+        end = float(req.trim_end if req.trim_end is not None else duration)
+        if not 0.0 <= start < end <= duration + 0.05:
+            raise HTTPException(
+                400, f"trim must satisfy 0 <= start < end <= {duration:.2f}s; "
+                     f"got {start:.2f}–{end:.2f}")
+        end = min(end, duration)
+        # The pipeline will not render below its duration floor: the
+        # renderer restores the smallest cuts until the clip fits again
+        # (pacing.enforce_floor_on_frames), so a trim under the floor
+        # silently produces a FULL-LENGTH duplicate that passes QA and
+        # looks like success. Measured 2026-08-12: trimming a 34.7s clip
+        # to 15s logged "editor cuts: 2 span(s), 19.65s removed" and then
+        # rendered 34.688s. Refusing here is the difference between an
+        # error and a lie.
+        from clipforge.pacing import MIN_DURATION_S
+
+        kept = end - start
+        if kept < MIN_DURATION_S:
+            raise HTTPException(
+                400,
+                f"keeping {kept:.1f}s would fall below this pipeline's "
+                f"{MIN_DURATION_S:.1f}s minimum, and the renderer restores "
+                f"cuts until a clip fits again — so the trim would silently "
+                f"produce a full-length copy. Keep at least "
+                f"{MIN_DURATION_S:.1f}s, or re-run the source with different "
+                f"settings to get a shorter clip.")
+        if start > 0.01:
+            spans.append((0.0, start))
+        if end < duration - 0.01:
+            spans.append((end, duration))
+        if not spans:
+            raise HTTPException(
+                400, "that trim keeps the whole clip — nothing to re-render")
+
+    if not req.cut_words and not req.cut_gaps:
+        # Trim-only: no transcript needed. Requiring one would block a
+        # perfectly ordinary trim on a clip whose ASR artifact is missing.
+        return _spawn_recut(ws, meta, req, spans)
 
     tr = clipmeta.transcript_for(ws, req.filename, rejected=req.rejected)
     if not tr.get("available"):
@@ -1252,7 +1894,8 @@ def start_recut(req: RecutRequest) -> dict[str, Any]:
                      "before re-cutting")
         return hit
 
-    spans: list[tuple[float, float]] = []
+    # EXTENDS the trim spans rather than rebinding — a rebind here would
+    # silently drop a trim whenever words were marked in the same edit.
     for start in req.cut_words:
         w = words[_index(start, "a marked word")]
         spans.append((float(w["start"]), float(w["end"])))
@@ -1269,10 +1912,25 @@ def start_recut(req: RecutRequest) -> dict[str, Any]:
     if not spans:
         raise HTTPException(400, "the marked items have no measurable length")
 
+    return _spawn_recut(ws, meta, req, spans)
+
+
+def _spawn_recut(ws: Workspace, meta: Any, req: RecutRequest,
+                 spans: list[tuple[float, float]]) -> dict[str, Any]:
+    """Write the cut plan and start the re-render.
+
+    Shared by the trim-only path and the marked-words path so the two
+    cannot drift apart in how they spell the command — the trim route
+    needs no transcript, which is the only thing that differs.
+    """
+    spans = [(a, b) for a, b in sorted(spans) if b > a]
+    if not spans:
+        raise HTTPException(400, "nothing measurable to cut")
+
     tmp = Path(ws.tmp)
     tmp.mkdir(parents=True, exist_ok=True)
     cut_file = tmp / f"recut_{uuid.uuid4().hex[:12]}.json"
-    cut_file.write_text(_json.dumps([[a, b] for a, b in sorted(spans)]),
+    cut_file.write_text(_json.dumps([[a, b] for a, b in spans]),
                         encoding="utf-8")
 
     args = ["process", meta.source_path, "--clips", "1",
@@ -1424,7 +2082,17 @@ def get_task_logs(task_id: str) -> dict[str, Any]:
 
 @app.post("/api/tasks/{task_id}/cancel")
 def cancel_task(task_id: str) -> dict[str, Any]:
-    """Cancel a running task."""
+    """Stop a running task and everything it started.
+
+    The previous version called ``terminate()`` on the tracked process and
+    declared victory. Two measured problems with that: on Windows the
+    child's own children (ffmpeg, yt-dlp, the torch worker) survive it and
+    keep running — so the render carried on and the GPU stayed busy — and
+    the drain thread then overwrote ``cancelled`` with ``failed · exit 1``,
+    because TerminateProcess reports 1. Both are fixed here: the whole tree
+    goes, and the intent is recorded before the kill so the exit code
+    cannot be misread as a crash.
+    """
     with _tasks_lock:
         task = _tasks.get(task_id)
         if not task:
@@ -1432,10 +2100,192 @@ def cancel_task(task_id: str) -> dict[str, Any]:
         if task.status != "running":
             return {"task_id": task_id, "status": task.status,
                     "note": "not running"}
-        if task.process:
-            task.process.terminate()
+        task.cancelled = True
+        proc, guard = task.process, task.guard
+
+    # Outside the lock: killing a tree takes seconds, and holding the lock
+    # would stall every dashboard poll for the duration.
+    how = kill_process_tree(proc, guard)
+    with _tasks_lock:
         task.status = "cancelled"
-        return {"task_id": task_id, "status": "cancelled"}
+        if task.finished_at is None:
+            task.finished_at = time.time()
+    log.info("web.task_cancelled", task_id=task_id, method=how)
+    return {"task_id": task_id, "status": "cancelled", "stopped_via": how}
+
+
+@app.post("/api/tasks/clear")
+def clear_finished_tasks() -> dict[str, Any]:
+    """Drop finished tasks from the Activity list.
+
+    Only finished ones: a running task is not a list entry to tidy away,
+    and removing it here would orphan the process it tracks — invisible
+    and uncancellable, the exact failure the task registry exists to
+    prevent.
+    """
+    with _tasks_lock:
+        stale = [tid for tid, t in _tasks.items() if t.status != "running"]
+        for tid in stale:
+            _tasks.pop(tid, None)
+        left = len(_tasks)
+    return {"cleared": len(stale), "running": left}
+
+
+# ============================================== PAIRING A SECOND DEVICE
+
+@app.get("/api/access")
+def access_info(request: Request) -> dict[str, Any]:
+    """Where this server can be reached, and how exposed it currently is.
+
+    Only an already-authorized caller sees this — it hands back the token,
+    which is the entire point: the desktop dashboard renders a link that a
+    phone can open, instead of the operator hunting for a file.
+    """
+    port = request.url.port or int(os.environ.get("BTA_WEB_PORT") or 8765)
+    token = _policy.token
+    urls = remote.access_urls(port, token)
+    public = (os.environ.get(remote.ENV_PUBLIC_URL) or "").strip()
+    if public:
+        urls["public"] = [f"{public.rstrip('/')}/?{remote.TOKEN_QUERY}={token}"
+                          if token else public]
+    return {
+        "auth_enforced": _policy.enforced,
+        "trust_loopback": _policy.trust_loopback,
+        "token": token,
+        "urls": urls,
+        "port": port,
+        "pairing_active": _pairing.active(),
+        # Said plainly rather than implied, because "it works from my
+        # phone" and "it is on the internet" are very different states.
+        "exposure": ("public tunnel" if public else
+                     "tailnet" if urls.get("tailscale") else
+                     "local network" if urls.get("lan") else
+                     "this machine only"),
+    }
+
+
+@app.post("/api/pair")
+def issue_pairing_code() -> dict[str, Any]:
+    """Mint a short code for a second device.
+
+    Callable only by something already trusted (loopback or a paired
+    device), because the middleware ran first. That is what makes six
+    digits acceptable: an attacker cannot ask for a code, only guess at
+    one that an operator deliberately created moments ago.
+    """
+    if not _policy.enforced:
+        return {"pairing": False,
+                "note": "auth is disabled on this server — any device on the "
+                        "network can already control it, so there is nothing "
+                        "to pair"}
+    code, ttl = _pairing.issue()
+    return {"pairing": True, "code": code, "expires_in_s": ttl,
+            "attempts": _pairing.max_attempts}
+
+
+class RedeemRequest(BaseModel):
+    code: str
+    next: str = "/"
+
+
+@app.post("/login/redeem")
+def redeem_pairing_code(req: RedeemRequest) -> JSONResponse:
+    """Trade a pairing code for the access cookie.
+
+    Deliberately open (the middleware skips /login*): a device with no
+    credential is exactly who needs this. The code's own limits — one
+    use, minutes of life, five wrong guesses — are the protection.
+    """
+    if not _policy.enforced:
+        return JSONResponse({"status": "ok", "note": "auth disabled"})
+    decision = remote.decide(
+        remote.Presented(client_host=None, pairing_code=req.code),
+        _policy, pairing=_pairing)
+    if not decision.allowed:
+        return JSONResponse(status_code=401, content={"error": decision.reason})
+    resp = JSONResponse({"status": "paired"})
+    _set_access_cookie(resp, decision.cookie_value or "")
+    return resp
+
+
+_LOGIN_PAGE = """<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>BTA — pair this device</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;min-height:100dvh;display:grid;place-items:center;background:#0a0a0b;
+  color:#f2f2f5;font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",system-ui,sans-serif;
+  padding:24px calc(24px + env(safe-area-inset-left)) calc(24px + env(safe-area-inset-bottom))}
+.card{width:100%;max-width:380px;background:#151517;border:1px solid #26262b;
+  border-radius:16px;padding:24px}
+h1{font-size:19px;margin:0 0 6px;letter-spacing:-.2px}
+p{color:#9a9aa3;font-size:13.5px;margin:0 0 20px}
+label{display:block;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:#6c6c76;font-weight:650;margin-bottom:8px}
+input{width:100%;background:#1c1c1f;border:1px solid #33333a;color:#f2f2f5;
+  border-radius:10px;padding:14px;font:inherit;font-size:24px;letter-spacing:.28em;
+  text-align:center;outline:none;min-height:56px}
+input:focus{border-color:#b4f22e}
+button{width:100%;margin-top:14px;background:#fff;color:#0a0a0b;border:0;
+  border-radius:10px;padding:15px;font:inherit;font-weight:650;font-size:15px;
+  cursor:pointer;min-height:52px}
+button:disabled{opacity:.5}
+.err{color:#ff6b6b;font-size:13px;margin-top:12px;min-height:19px}
+.hint{color:#6c6c76;font-size:12px;margin-top:18px;line-height:1.6}
+code{background:#1c1c1f;padding:1px 5px;border-radius:4px;font-size:11.5px}
+</style>
+<div class="card">
+  <h1>Pair this device</h1>
+  <p>On the machine running BTA, open <b>Connect a device</b> in the sidebar
+     and type the six digits it shows.</p>
+  <label for="c">Pairing code</label>
+  <input id="c" inputmode="numeric" autocomplete="one-time-code" maxlength="7"
+         pattern="[0-9]*" placeholder="000000" autofocus>
+  <button id="go">Pair</button>
+  <div class="err" id="err"></div>
+  <div class="hint">No code? Open the link with the token in it, or run
+     <code>bta web --lan</code> again to print one.</div>
+</div>
+<script>
+const q=new URLSearchParams(location.search), next=q.get('next')||'/';
+const inp=document.getElementById('c'), btn=document.getElementById('go'),
+      err=document.getElementById('err');
+inp.addEventListener('input',()=>{
+  inp.value=inp.value.replace(/\\D/g,'').slice(0,6);
+  if(inp.value.length===6) submit();
+});
+inp.addEventListener('keydown',e=>{if(e.key==='Enter')submit()});
+btn.onclick=submit;
+async function submit(){
+  const code=inp.value.replace(/\\D/g,'');
+  if(code.length!==6){err.textContent='Six digits.';return}
+  btn.disabled=true; err.textContent='';
+  try{
+    const r=await fetch('/login/redeem',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({code,next})});
+    if(!r.ok){const d=await r.json().catch(()=>({}));
+      throw new Error(d.error||('HTTP '+r.status))}
+    location.replace(next);
+  }catch(e){ err.textContent=e.message; btn.disabled=false; inp.select() }
+}
+</script>
+"""
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = "/") -> Response:
+    """The pairing page, or a straight-through if the URL carries a token."""
+    if not _policy.enforced:
+        return RedirectResponse(next or "/", status_code=303)
+    supplied = request.query_params.get(remote.TOKEN_QUERY)
+    if supplied and _policy.token and secrets.compare_digest(
+            supplied.strip(), _policy.token):
+        resp = RedirectResponse(next or "/", status_code=303)
+        _set_access_cookie(resp, _policy.token)
+        return resp
+    return HTMLResponse(_LOGIN_PAGE)
 
 
 # ========================================== DASHBOARD + ERROR HANDLER

@@ -103,7 +103,7 @@ use_cloud = false
 # long-running-operation polling, identical download path, lower cost.
 # Switch to "veo-3.1-generate-preview" for full quality.
 cloud_model = "veo-3.1-fast-generate-preview"
-local_model_id = "Lightricks/LTX-Video"
+local_model_id = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
 local_steps = 30
 preset = "documentary"
 shots = 6

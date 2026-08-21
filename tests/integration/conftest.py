@@ -32,7 +32,9 @@ def _cuda_available() -> bool:
 #: and two CP2 neutralizations were caught ONLY by gpu-marked tests, so on a
 #: CPU-only machine those fixes silently become revert-safe while the gate
 #: still says PASSED. Pinning the count makes the shrinkage visible.
-EXPECTED_GPU_TESTS = 5
+# 2026-08-18: 5 -> 8 with the real-weights NF4 checks. The count only
+# has teeth if it tracks what actually exists.
+EXPECTED_GPU_TESTS = 8
 
 
 def pytest_collection_modifyitems(config: pytest.Config,

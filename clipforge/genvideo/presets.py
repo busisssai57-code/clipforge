@@ -15,6 +15,10 @@ is also how the human job is actually done.
 
 from __future__ import annotations
 
+from clipforge.log import get_logger
+
+log = get_logger(__name__)
+
 from dataclasses import dataclass, field
 
 
@@ -177,14 +181,38 @@ def split_into_beats(brief: str, shots: int) -> list[str]:
     return [sentences[i % len(sentences)] for i in range(shots)]
 
 
-def build_storyboard(brief: str, preset: Preset, shots: int | None = None) -> list[dict[str, Any]]:
+def build_storyboard(brief: str, preset: Preset, shots: int | None = None,
+                     *, screenplay: bool = False) -> list[dict[str, Any]]:
     """Build a structured storyboard for the piece.
 
     Returns a list of shot specifications with beats, full prompts, durations,
     and frame rates — enabling UI preview & editing before generation.
+
+    ``screenplay=True`` reads the brief as Fountain and takes one beat per
+    SCENE instead of per sentence. That is the difference between the
+    writer deciding where a shot begins and punctuation deciding — and
+    dialogue is routed to the voice rather than into the picture prompt,
+    where spoken words render as subtitles and mouth artefacts.
     """
     count = int(shots or preset.default_shots)
-    beats = split_into_beats(brief, count)
+    if screenplay:
+        from clipforge.screenplay import synopsis, to_beats  # noqa: PLC0415
+
+        beats = to_beats(brief, count)
+        if beats:
+            # Same leak as the router's: the brief is appended to every
+            # shot prompt as context, and in screenplay mode the brief is
+            # the script - dialogue included.
+            brief = synopsis(brief)
+        if not beats:
+            # An empty parse means the text had no usable blocks; falling
+            # back is better than emitting a storyboard of blank shots,
+            # and it is said out loud rather than silently substituted.
+            log.info("storyboard.screenplay_empty",
+                     note="no scenes parsed; falling back to sentence beats")
+            beats = split_into_beats(brief, count)
+    else:
+        beats = split_into_beats(brief, count)
     storyboard: list[dict[str, Any]] = []
 
     for i in range(count):

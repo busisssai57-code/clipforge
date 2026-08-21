@@ -559,8 +559,16 @@ class S6Render(Stage[ClipArtifact]):
                 f"S6 wrote {out_path.name} but cannot probe it back "
                 f"({type(exc).__name__}: {exc}); the render is not trusted",
                 stage=self.name) from exc
+        # PROBED, not `duration`. The artifact three lines down already
+        # records the measured value — but this log line reported the
+        # pre-splice window length, so a spliced clip logged 34.688s for a
+        # file that is 31.1s. The comment above this block exists to forbid
+        # exactly that substitution, and the logging was doing it: reading
+        # the log, a working trim looked like a trim that had done nothing
+        # (measured while adding the editor's trim, 2026-08-12).
         log.info("s6.render_complete", path=str(out_path), encoder=used,
-                 duration_s=round(duration, 3),
+                 duration_s=round(probed_duration, 3),
+                 planned_duration_s=round(render_duration, 3),
                  loudness_i=measured_i, loudness_tp=measured_tp)
         # The artifact records what was MEASURED; this says out loud when
         # that misses what was ASKED FOR. A silent 3 LU miss is the kind of

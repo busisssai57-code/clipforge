@@ -65,6 +65,13 @@ class Niche:
     #: Speech cleanup mode passed to S6.
     enhance_speech: str
     keywords: tuple[str, ...] = field(default_factory=tuple)
+    #: Whether this look wants the post layer at all — hook card, emoji
+    #: punchline stickers, handle. Off for every existing niche, because
+    #: stamping a hook card on a documentary would be a change of format,
+    #: not of style.
+    post_layer: bool = False
+    #: How long a hook card holds, when there is one.
+    hook_seconds: float = 2.0
 
 
 #: Small, quiet, centred type. The reference piece sets its line in modest
@@ -169,8 +176,62 @@ CINEMATIC_DOC = Niche(
     keywords=("documentary", "story", "essay"),
 )
 
+#: Big bold caps, high on the frame. Only used when a sketch is subtitled
+#: for silent viewing — the format's own text lives in the hook card, and
+#: burned dialogue would fight it.
+_SKETCH_CAPS = CaptionStyle(
+    font="Arial Black", size=72, primary="&H00FFFFFF",
+    outline_colour="&H00000000", outline=5.0, shadow=1.2,
+    alignment=8, margin_v=190, uppercase=True, animation="pop",
+    max_words=5,
+)
+
+GEEL_SKETCH = Niche(
+    name="geel_sketch",
+    label="Geel Sketch",
+    summary=("Somali animal sketch comedy: photoreal camels and llamas "
+             "living human lives, fast cuts, a hook question on frame one "
+             "and emoji stamped on the punchlines."),
+    gen_style=(
+        "photorealistic anthropomorphic camel and llama characters with "
+        "expressive human-like faces and gestures, Somali setting - open "
+        "market stalls, acacia scrub, small shop interiors, hand-woven "
+        "beadwork and bright patterned cloth, strong warm East African "
+        "midday sun, saturated colour, crisp close-up portrait framing at "
+        "eye level, one clear comic action per shot, subtle handheld "
+        "weight"),
+    gen_avoid=(
+        "cartoon, flat illustration, plush toy, cute stylised big-eye "
+        "character, text, subtitles, watermark, logo, dull grey light, "
+        "wide empty establishing shot with no character, motion blur "
+        "smear, melted faces, extra limbs"),
+    #: 1.9s is the reference piece's MEDIAN shot, measured off 35 cuts in
+    #: 65.1s. It is the load-bearing number of the format: this comedy
+    #: works by cutting on every reaction, and the same shots at 5s read
+    #: as an animation reel.
+    shot_seconds=1.9,
+    fps=30,
+    #: The reference runs 35 shots. This defaults lower because each shot
+    #: is a generation and an operator who types no number should not
+    #: start a forty-minute local render by accident; --shots 35 is the
+    #: faithful length and the rhythm is what the preset actually fixes.
+    default_shots=12,
+    #: 3:4, the reference's own frame. TikTok pillarboxes it and the
+    #: extra height buys room for the hook card above the faces.
+    aspect="3:4",
+    grade="eq=saturation=1.16:contrast=1.07,unsharp=5:5:0.5",
+    caption=_SKETCH_CAPS,
+    #: A sketch is dialogue with comic pauses. Cutting the silences out
+    #: removes the timing the joke is built on.
+    jumpcut=False,
+    enhance_speech="gentle",
+    keywords=("comedy", "sketch", "character", "photoreal", "animal",
+              "human", "detail"),
+    post_layer=True,
+)
+
 NICHES: dict[str, Niche] = {
-    n.name: n for n in (ASCENDRO_MIND, VIRAL_CLIPS, CINEMATIC_DOC)
+    n.name: n for n in (ASCENDRO_MIND, VIRAL_CLIPS, CINEMATIC_DOC, GEEL_SKETCH)
 }
 
 
@@ -199,8 +260,37 @@ def niche_as_preset(niche: Niche):
         name=niche.name, summary=niche.summary, style=niche.gen_style,
         avoid=niche.gen_avoid, shot_seconds=niche.shot_seconds,
         fps=niche.fps, narrated=True, default_shots=niche.default_shots,
-        cut_style="medium", keywords=niche.keywords,
+        # Derived, not hardcoded: a niche whose shots are 1.9s long is a
+        # fast cut by definition, and the constant that used to sit here
+        # described every niche as medium regardless of its own pacing.
+        cut_style=("fast" if niche.shot_seconds <= 2.5
+                   else "slow" if niche.shot_seconds >= 6.0 else "medium"),
+        keywords=niche.keywords,
     )
+
+
+def niche_aspect(name: str) -> str | None:
+    """The aspect a niche declares, or None if ``name`` is not a niche.
+
+    `Niche.aspect` existed and reached nothing but a dashboard summary:
+    generation read the config value, so a niche shot in 3:4 rendered
+    9:16 and only the label said otherwise. Every niche before this one
+    declared the config default, which is exactly why nobody saw it.
+    """
+    n = NICHES.get(name)
+    return n.aspect if n else None
+
+
+def resolve_aspect(explicit: str | None, preset_name: str,
+                   config_default: str) -> str:
+    """The frame this run renders in: flag, then niche, then config.
+
+    A function rather than an inline `or` chain because the ORDER is the
+    decision. The operator saying --aspect wins over everything; a niche
+    that declares its own frame beats the global default, which is what
+    makes 3:4 a property of the format instead of a thing to remember.
+    """
+    return explicit or niche_aspect(preset_name) or config_default
 
 
 def resolve_preset(name: str):

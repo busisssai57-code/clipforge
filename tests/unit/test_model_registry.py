@@ -9,15 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from clipforge.genvideo.models import (LTX_VIDEO, REGISTRY, WAN22_TI2V_5B,
+from clipforge.genvideo import models
+from clipforge.genvideo.models import (ModelSpec, REGISTRY, WAN22_TI2V_5B,
                                        describe_registry, select_model)
-
-
-def test_the_measured_ltx_envelope_is_recorded():
-    """460k px is the bisected boundary: 512x896 renders, 704x1280 is
-    blank. If this creeps up, blank videos come back."""
-    assert LTX_VIDEO.max_pixels == 460_000
-    assert LTX_VIDEO.max_pixels < 704 * 1280
 
 
 def test_the_oversized_wan_variant_is_not_registered():
@@ -29,12 +23,6 @@ def test_the_oversized_wan_variant_is_not_registered():
 def test_every_model_fits_the_card_it_is_registered_for():
     for m in REGISTRY.values():
         assert m.vram_gb <= 24.0, f"{m.label} cannot fit a 24 GB card"
-
-
-def test_supports_rejects_over_budget_sizes():
-    assert LTX_VIDEO.supports(480, 896)
-    assert not LTX_VIDEO.supports(704, 1280), (
-        "the size that produced blank frames must be refused")
 
 
 def test_supports_rejects_off_grid_sizes():
@@ -55,18 +43,65 @@ def test_photoreal_work_prefers_the_higher_fidelity_model():
     assert _pick({"photoreal", "human"}).key == "wan22"
 
 
-@pytest.mark.skipif(not describe_registry()[0]["installed"],
-                    reason="no weights installed")
-def test_atmospheric_landscape_prefers_the_fast_model():
-    assert _pick({"atmospheric", "landscape"}).key == "ltx"
+#: Synthetic registry for the selection tests. They used to assert
+#: `.key == "ltx"`, which broke the moment LTX 0.9 was retired even though
+#: the SELECTION logic had not changed at all. What matters is that needs
+#: win, that cost breaks ties, and that a refusal names its reason — none
+#: of which is a fact about the shipped registry.
+_FAST = ModelSpec(
+    key="fake_fast", model_id="test/fast", label="Fast",
+    max_pixels=460_000, vram_gb=8.0, steps=20, guidance_scale=3.0, cost=1.0,
+    strengths=frozenset({"fast", "atmospheric", "landscape", "draft"}))
+_RICH = ModelSpec(
+    key="fake_rich", model_id="test/rich", label="Rich",
+    max_pixels=720 * 1280, vram_gb=18.0, steps=40, guidance_scale=5.0,
+    cost=4.0, strengths=frozenset({"photoreal", "human", "cinematic"}))
 
 
-@pytest.mark.skipif(not describe_registry()[0]["installed"],
-                    reason="no weights installed")
-def test_no_needs_falls_back_to_the_cheapest_that_fits():
+@pytest.fixture()
+def two_models(monkeypatch):
+    """A registry with exactly two installed, verified models."""
+    monkeypatch.setattr(models, "REGISTRY",
+                        {m.key: m for m in (_FAST, _RICH)})
+    monkeypatch.setattr(models, "weights_present", lambda spec: True)
+    return _FAST, _RICH
+
+
+def test_needs_choose_the_model_that_claims_them(two_models):
+    fast, rich = two_models
+    assert models.select_model(needs={"atmospheric", "landscape"},
+                               width=480, height=896).key == fast.key
+    assert models.select_model(needs={"photoreal", "human"},
+                               width=480, height=896).key == rich.key
+
+
+def test_no_needs_falls_back_to_the_cheapest_that_fits(two_models):
     """With nothing to match on, cost decides — not alphabetical order or
     dict insertion, both of which would be accidental."""
-    assert _pick(set()).key == "ltx"
+    fast, _rich = two_models
+    assert models.select_model(needs=set(), width=480,
+                               height=896).key == fast.key
+
+
+def test_a_size_outside_every_envelope_is_refused(two_models):
+    """And the message must say which constraint failed: "no model fits"
+    sends an operator looking for a bigger GPU when the real problem is
+    that 704x1280 is past the envelope."""
+    with pytest.raises(ValueError) as err:
+        models.select_model(needs=set(), width=4096, height=4096)
+    assert "px" in str(err.value) or "exceeds" in str(err.value)
+
+
+def test_forcing_a_model_that_cannot_render_the_size_says_why(two_models):
+    fast, _rich = two_models
+    with pytest.raises(ValueError) as err:
+        models.select_model(needs=set(), width=704, height=1280,
+                            prefer=fast.key)
+    assert "px" in str(err.value) or "cannot render" in str(err.value)
+
+
+@pytest.mark.skipif(not describe_registry()[0]["installed"],
+                    reason="no weights installed")
 
 
 @pytest.mark.skipif(not describe_registry()[0]["installed"],
@@ -92,10 +127,6 @@ def test_an_unknown_forced_model_is_rejected():
     assert "nope" in str(err.value)
 
 
-def test_forcing_a_model_that_cannot_render_the_size_says_why():
-    with pytest.raises(ValueError) as err:
-        _pick(set(), w=704, h=1280, prefer="ltx")
-    assert "px" in str(err.value) or "cannot render" in str(err.value)
 
 
 def test_registry_description_is_dashboard_shaped():

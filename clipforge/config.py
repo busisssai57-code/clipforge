@@ -257,9 +257,16 @@ class GenVideoConfig(_StrictModel):
         description="Veo model id; overridable so an API revision needs no "
                     "code change")
     #: Local open-source fallback. Any diffusers text-to-video pipeline.
+    #: The FALLBACK id, used only when the registry cannot select a model
+    #: (nothing downloaded, or the requested size is outside every
+    #: envelope). LTX-Video 0.9 was retired 2026-08-13 in favour of
+    #: LTX-2.5; this points at the one local model that is both present
+    #: and measured, so the fallback branch cannot name a model that is
+    #: not there.
     local_model_id: str = Field(
-        "Lightricks/LTX-Video",
-        description="diffusers pipeline id used when the cloud quota is out")
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        description="diffusers pipeline id used when the registry cannot "
+                    "select a model")
     local_steps: int = Field(30, ge=1, le=200)
     #: Classifier-free guidance strength for the local model. LTX-Video
     #: needs 3.0; higher than ~4.0 over-saturates into brown fills, lower
@@ -304,10 +311,24 @@ class GenVideoConfig(_StrictModel):
     #: for a given threshold — but CHANGING it changes output, which is
     #: why it is part of the params digest like every other knob.
     step_cache_threshold: float = Field(0.0, ge=0.0, le=1.0)
-    #: Quantize the transformer to 8-bit to fit a smaller card. Wan2GP's
-    #: reason for existing; here it buys headroom under the 24 GB ceiling
-    #: for the larger models.
-    quantize: Literal["none", "int8"] = "none"
+    #: Quantize the TRANSFORMER's weights. Wan2GP's reason for existing;
+    #: here it is what decides whether a large model runs at all.
+    #:
+    #: This was accepted, stored and never applied until 2026-08-13 — the
+    #: provider held it on `self.quantize` and no code read it back. It is
+    #: load-bearing now: a 22B transformer is ~38 GB at bf16 and does not
+    #: fit 24 GB, while "nf4" brings it to roughly 11 GB.
+    #:
+    #: On Ampere (RTX 3090, sm_86) there are no native FP4/FP8 tensor
+    #: cores, so this is a STORAGE format dequantized per layer — it buys
+    #: VRAM, not speed. Needs bitsandbytes; without it the provider logs
+    #: that it is running unquantized rather than pretending.
+    quantize: Literal["none", "int8", "nf4"] = "none"
+    #: Your own handle, stamped bottom-centre by the post layer on niches
+    #: that use it. Empty by default and deliberately not pre-filled:
+    #: copying a format is fair, shipping someone else's mark on your
+    #: video is not.
+    handle: str = ""
 
     #: Default creative mode.
     preset: Literal["documentary", "storytelling", "explainer",
@@ -316,7 +337,7 @@ class GenVideoConfig(_StrictModel):
                        description="Shots per piece; models lose coherence "
                                    "past a few seconds, so length comes from "
                                    "CUTTING shots, not one long generation")
-    aspect_ratio: Literal["9:16", "16:9"] = "9:16"
+    aspect_ratio: Literal["9:16", "16:9", "3:4", "4:5", "1:1"] = "9:16"
 
 
 class OrchestrationConfig(_StrictModel):

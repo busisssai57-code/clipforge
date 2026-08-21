@@ -486,7 +486,10 @@ def test_the_gpu_test_count_is_pinned():
     while the gate still reports PASSED."""
     from tests.integration import conftest as integration_conftest
 
-    assert integration_conftest.EXPECTED_GPU_TESTS == 5, (
+    # 5 -> 8 on 2026-08-18 (real-weights NF4 checks). Equality, not >=:
+    # the ratchet only works if RAISING it is also a deliberate edit, made
+    # in the same change that adds the tests it claims to count.
+    assert integration_conftest.EXPECTED_GPU_TESTS == 8, (
         "the expected real-engine test count changed; lowering it hides "
         "deleted GPU coverage behind an unchanged headline number")
 

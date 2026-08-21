@@ -91,3 +91,30 @@ def test_process_defaults_are_still_sentinels():
     leaving it to rot."""
     sig = inspect.signature(cli.process)
     assert isinstance(sig.parameters["jumpcut"].default, OptionInfo)
+
+
+def test_verify_help_names_only_modules_that_exist():
+    """A help string is a promise about what the gate can run.
+
+    `verify`'s argument advertised "all | skeleton | ingestion | ai |
+    compositing | orchestration" while `clipforge/verify/` held four
+    modules; `clipforge verify compositing` answered "unknown verify
+    module". Nothing failed, which is the point — an operator reading the
+    help would believe two more gates existed and had passed.
+
+    Read out of the signature rather than hardcoded, so the test fails on
+    the next module named in help and never written.
+    """
+    import importlib
+
+    param = inspect.signature(cli.verify).parameters["module"]
+    named = [m.strip() for m in param.default.help.split("|")]
+    missing = []
+    for name in named:
+        if name == "all":
+            continue
+        try:
+            importlib.import_module(f"clipforge.verify.{name}")
+        except ImportError:
+            missing.append(name)
+    assert not missing, f"help offers verify modules that do not exist: {missing}"

@@ -79,6 +79,10 @@ VEO_ENDPOINT = os.environ.get(
     "https://generativelanguage.googleapis.com/v1beta")
 VEO_MODEL = os.environ.get("CLIPFORGE_VEO_MODEL", "veo-3.1-generate-preview")
 
+#: Weight-quantization modes this provider can actually apply.
+#: "nf4" is what makes a 22B transformer fit a 24 GB card.
+_QUANT_MODES = frozenset({"int8", "nf4"})
+
 #: HTTP statuses that mean "metered out" rather than "broken".
 _QUOTA_STATUSES = {429}
 _QUOTA_MARKERS = ("RESOURCE_EXHAUSTED", "quota", "QUOTA", "rate limit",
@@ -312,6 +316,79 @@ class LocalDiffusersProvider:
         self.step_cache_threshold = step_cache_threshold
         self.quantize = quantize
 
+    def _quantization_config(self) -> Any:
+        """Weight quantization for the transformer, or None.
+
+        This knob was DEAD: `quantize` came in from
+        ``[genvideo] quantize``, was stored on ``self.quantize``, and was
+        never read again — the config said "quantize the transformer to
+        8-bit to fit a smaller card" and nothing quantized anything. Same
+        shape as the `enhance` module that had no caller and the split
+        screen that advertised itself LIVE.
+
+        It matters more now than when it was written. MEASURED on the real
+        LTX-2.5 checkpoint on 2026-08-18: the 22B transformer is 35.37 GB
+        at bf16, which does not fit a 24 GB card at all, and 9.13 GB under
+        this config (3.87x), which does with 14.9 GB to spare. The earlier
+        "~38 GB -> roughly 11 GB" here was an estimate off the repo file
+        listing; both halves were pessimistic. See
+        `tests/integration/test_nf4_22b_real_weights.py`, which also
+        records why that measurement had to be taken one layer below
+        `from_pretrained`.
+
+        The transformer alone is not always the whole answer. LTX-2.5
+        rendered on 2026-08-20 only with the text encoder (23.92 GB bf16)
+        and connectors (6.34 GB) quantized as well — transformer-only
+        leaves ~30 GB of bf16 companions for a 24 GB card. This mapping
+        is right for the models the pipeline can actually select today
+        (Wan 2.2, whose text encoder is offloaded); widening it is part
+        of whatever wires LTX-2.5 up, not a change to make speculatively.
+
+        Returns None when quantization is off or unavailable, and says
+        which — an operator who asked for int8 and silently got bf16 has
+        no way to tell why they are out of memory.
+        """
+        mode = (self.quantize or "none").strip().lower()
+        if mode in ("", "none", "off", "false"):
+            return None
+        if mode not in _QUANT_MODES:
+            log.warning("genvideo.quantize_unknown", requested=mode,
+                        known=sorted(_QUANT_MODES),
+                        note="running unquantized")
+            return None
+        try:
+            import importlib.util  # noqa: PLC0415
+
+            if importlib.util.find_spec("bitsandbytes") is None:
+                raise ImportError("bitsandbytes is not installed")
+            from diffusers import (BitsAndBytesConfig,  # noqa: PLC0415
+                                   PipelineQuantizationConfig)
+        except ImportError as exc:
+            log.warning("genvideo.quantize_unavailable", requested=mode,
+                        error=str(exc)[:200],
+                        note="running unquantized; pip install bitsandbytes")
+            return None
+
+        import torch  # noqa: PLC0415
+
+        if mode == "int8":
+            bnb = BitsAndBytesConfig(load_in_8bit=True)
+        else:  # nf4
+            bnb = BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                # Compute stays bf16: the 3090 is Ampere (sm_86) and has
+                # no native FP8/FP4 tensor cores, so 4-bit here is a
+                # STORAGE format that is dequantized per-layer. It buys
+                # VRAM, not speed.
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True)
+        # Only the transformer. Quantizing the VAE is how the brown-frame
+        # class of bug comes back — it already has to run in fp32 (FIX 1
+        # below), and the text encoder is offloaded anyway.
+        log.info("genvideo.quantize", mode=mode, component="transformer")
+        return PipelineQuantizationConfig(
+            quant_mapping={"transformer": bnb})
+
     def _apply_loras(self, pipe: Any) -> None:
         """Load LoRA weights, Wan2GP's main customisation surface.
 
@@ -406,8 +483,7 @@ class LocalDiffusersProvider:
         # Generate INSIDE the model's trained envelope, deliver at the
         # short-form size. See MAX_GEN_PIXELS: 704x1280 came back blank.
         width, height = _generation_dims(aspect_ratio)
-        deliver = (DELIVERY_PORTRAIT if aspect_ratio == "9:16"
-                   else DELIVERY_LANDSCAPE)
+        deliver = delivery_dims(aspect_ratio)
         frames = _latent_frames(seconds, fps)
         models: dict[str, Any] = {}
         try:
@@ -418,8 +494,12 @@ class LocalDiffusersProvider:
                 # bfloat16, not float16: measured on LTX-Video, and it is
                 # the dtype these video transformers are trained in — fp16
                 # overflows in the VAE decode on some prompts.
+                load_kw: dict[str, Any] = {"torch_dtype": torch.bfloat16}
+                qcfg = self._quantization_config()
+                if qcfg is not None:
+                    load_kw["quantization_config"] = qcfg
                 models["pipe"] = DiffusionPipeline.from_pretrained(
-                    self.model_id, torch_dtype=torch.bfloat16)
+                    self.model_id, **load_kw)
 
                 # ---- FIX 1: VAE must run in float32 ----
                 # The transformer trains in bf16 but the VAE decoder
@@ -596,27 +676,96 @@ MAX_GEN_PIXELS = 460_000
 #: Delivery size for 9:16 short-form. Generation is scaled up to this.
 DELIVERY_PORTRAIT = (1080, 1920)
 DELIVERY_LANDSCAPE = (1920, 1080)
+#: Long edge of a delivered frame. 1920 keeps 9:16 at its familiar
+#: 1080x1920 and gives 3:4 a clean 1440x1920 - exactly 2x the reference
+#: piece's own 720x960.
+DELIVERY_LONG_EDGE = 1920
+
+
+def delivery_dims(aspect_ratio: str) -> tuple[int, int]:
+    """The size a shot is DELIVERED at, for any accepted aspect.
+
+    The second half of the same bug as `_generation_dims`: this was
+    `DELIVERY_PORTRAIT if aspect == "9:16" else DELIVERY_LANDSCAPE`, so a
+    3:4 render generated at 576x768 and was then scaled into a 1920x1080
+    landscape frame - a portrait picture squashed sideways, and nothing
+    in the run said so. Fixing generation alone left the squash in place,
+    which is why both halves are now driven off one ratio map.
+
+    Dimensions are even: H.264 chroma subsampling requires it, and an odd
+    one is rejected by the encoder after the render.
+    """
+    ratio = _ASPECT_RATIOS.get(aspect_ratio)
+    if ratio is None:
+        log.warning("genvideo.unknown_delivery_aspect", requested=aspect_ratio,
+                    known=sorted(_ASPECT_RATIOS), note="delivering 9:16")
+        return DELIVERY_PORTRAIT
+    if ratio >= 1.0:
+        w, h = DELIVERY_LONG_EDGE, round(DELIVERY_LONG_EDGE / ratio)
+    else:
+        w, h = round(DELIVERY_LONG_EDGE * ratio), DELIVERY_LONG_EDGE
+    return (w - w % 2, h - h % 2)
+
+
+#: width / height for every aspect the pipeline accepts. 3:4 is the frame
+#: the sketch format uses (720x960 on the reference piece); 4:5 and 1:1
+#: are what the same cut is reposted as elsewhere.
+_ASPECT_RATIOS: dict[str, float] = {
+    "9:16": 9.0 / 16.0,
+    "16:9": 16.0 / 9.0,
+    "3:4": 3.0 / 4.0,
+    "4:5": 4.0 / 5.0,
+    "1:1": 1.0,
+}
 
 
 def _generation_dims(aspect_ratio: str, *, budget: int = MAX_GEN_PIXELS,
                      multiple: int = 32) -> tuple[int, int]:
-    """Largest on-grid size matching ``aspect_ratio`` within the budget.
+    """Best on-grid size matching ``aspect_ratio`` within the budget.
 
-    Returns (width, height). Both snap to ``multiple`` because the
-    transformer patches a latent grid and rejects off-grid sizes outright.
+    Both dimensions snap to ``multiple`` because the transformer patches a
+    latent grid and rejects off-grid sizes outright.
+
+    SEARCHED rather than computed. The previous version solved for the
+    ideal height and then floored each dimension to the grid
+    independently, which distorts the ratio by however much each one lost:
+    16:9 came out 896x480 (1.87, not 1.78) and 9:16 came out 480x896 -
+    smaller than the 512x896 this module's own measurements call the
+    proven-good portrait size. Searching the grid costs a few hundred
+    integer comparisons once per run and gets both right.
+
+    Ranked by AREA among the sizes whose ratio is within a few percent,
+    not by ratio error alone. Ranking on error first picks 288x512 for
+    9:16 - an exactly-correct ratio at a third of the budget, upscaled to
+    1080x1920 from a frame with no detail in it. The tolerance is what
+    lets the grid trade a 1.6% ratio error for 3x the pixels; outside it
+    the closest ratio wins, because a visibly squashed picture is worse
+    than a soft one.
     """
-    ratio = (9.0 / 16.0) if aspect_ratio == "9:16" else (16.0 / 9.0)
-    # width = ratio * height, and width * height <= budget
-    height = (budget / ratio) ** 0.5
-    width = ratio * height
-    w = max(multiple, int(width // multiple) * multiple)
-    h = max(multiple, int(height // multiple) * multiple)
-    while w * h > budget and (w > multiple or h > multiple):
-        if w >= h:
-            w -= multiple
-        else:
-            h -= multiple
-    return w, h
+    ratio = _ASPECT_RATIOS.get(aspect_ratio)
+    if ratio is None:
+        log.warning("genvideo.unknown_aspect", requested=aspect_ratio,
+                    known=sorted(_ASPECT_RATIOS),
+                    note="falling back to 9:16")
+        ratio = _ASPECT_RATIOS["9:16"]
+
+    #: How far a frame's ratio may sit from the requested one before the
+    #: difference is visible as a stretch rather than a crop-safe margin.
+    tolerance = 0.03
+    limit = int(budget ** 0.5 * max(ratio, 1.0 / ratio)) + multiple
+    grid = [(w, h)
+            for w in range(multiple, limit + 1, multiple)
+            for h in range(multiple, limit + 1, multiple)
+            if w * h <= budget]
+    if not grid:
+        return (multiple, multiple)
+    close = [(w, h) for w, h in grid
+             if abs((w / h) - ratio) / ratio <= tolerance]
+    if close:
+        return max(close, key=lambda wh: (wh[0] * wh[1], -abs(
+            (wh[0] / wh[1]) - ratio)))
+    return min(grid, key=lambda wh: (abs((wh[0] / wh[1]) - ratio),
+                                     -(wh[0] * wh[1])))
 
 
 def last_frame(video: Path, dest: Path) -> Path | None:
@@ -686,10 +835,56 @@ def _first_video(result: Any) -> Any:
     return None
 
 
+def _write_audio_wav(audio: Any, sample_rate: int, frames: int,
+                     fps: int, dest: Path) -> None:
+    """Model audio -> a 16-bit wav ffmpeg can take as a second input.
+
+    LTX-2.5 generates sound WITH the picture — the pipeline returns
+    ``(video, audio)`` and the first version of this provider read only
+    the frames, which is why the first pieces were silent.
+
+    Length is matched here rather than with ``-shortest``: the audio came
+    back 2.010 s against 2.042 s of video, and letting ffmpeg trim to the
+    shorter stream would silently drop a video frame. Padding with
+    silence (or trimming a tail) keeps the picture whole and is
+    deterministic, which the same operation inside a filter graph is not.
+    """
+    import wave  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+
+    arr = np.asarray(audio, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr[None, :]
+    if arr.shape[0] > arr.shape[1]:          # (samples, channels) -> (c, s)
+        arr = arr.T
+    want = int(round(frames / float(fps) * sample_rate))
+    if arr.shape[1] < want:
+        arr = np.pad(arr, ((0, 0), (0, want - arr.shape[1])))
+    elif arr.shape[1] > want:
+        arr = arr[:, :want]
+    # Interleave, then int16. Clipping is explicit: these models can come
+    # back at full scale, and wrapping instead of clamping turns a loud
+    # mix into a buzz.
+    inter = np.clip(arr.T.reshape(-1), -1.0, 1.0)
+    pcm = (inter * 32767.0).astype("<i2")
+    with wave.open(str(dest), "wb") as wav:
+        wav.setnchannels(int(arr.shape[0]))
+        wav.setsampwidth(2)
+        wav.setframerate(int(sample_rate))
+        wav.writeframes(pcm.tobytes())
+
+
 def _write_video(frames: Any, out_path: Path, fps: int,
-                 deliver: tuple[int, int] | None = None) -> None:
+                 deliver: tuple[int, int] | None = None,
+                 audio: tuple[Any, int] | None = None) -> None:
     """Frames -> mp4 through ffmpeg, so the output matches what the rest
     of the DAG expects (yuv420p h264 the QA gate can probe).
+
+    ``audio`` is ``(samples, sample_rate)`` from a model that generates
+    sound as well as picture. Muxed in the SAME encode as the video
+    rather than a second pass, so there is one place where a generated
+    shot becomes a file.
 
     Accepts what diffusers actually returns, which is a LIST OF PIL
     IMAGES for the video pipelines — not the float array the first
@@ -737,9 +932,19 @@ def _write_video(frames: Any, out_path: Path, fps: int,
     count, height, width = arr.shape[0], arr.shape[1], arr.shape[2]
     out_path.parent.mkdir(parents=True, exist_ok=True)
     partial = out_path.with_suffix(out_path.suffix + ".partial")
+    # INPUTS FIRST, all of them. ffmpeg reads options positionally: an
+    # output option (`-vf`) between two `-i` flags is applied to the
+    # second input's decoder instead of the encode, and the run fails.
+    # The audio input therefore goes here, not next to `-c:a` where it
+    # reads more naturally.
+    wav = out_path.with_suffix(".gen-audio.wav") if audio is not None else None
+    if wav is not None:
+        _write_audio_wav(audio[0], int(audio[1]), count, fps, wav)
     cmd = [str(require_binary("ffmpeg")), "-nostdin", "-hide_banner", "-y",
            "-f", "rawvideo", "-pix_fmt", "rgb24",
            "-s", f"{width}x{height}", "-r", str(fps), "-i", "-"]
+    if wav is not None:
+        cmd += ["-i", str(wav)]
     if deliver and (deliver[0], deliver[1]) != (width, height):
         # Generation runs inside the model's trained envelope; delivery is
         # the short-form size. lanczos + a light sharpen, because a clean
@@ -747,9 +952,16 @@ def _write_video(frames: Any, out_path: Path, fps: int,
         cmd += ["-vf", (f"scale={deliver[0]}:{deliver[1]}:flags=lanczos,"
                         "unsharp=5:5:0.6:5:5:0.0,setsar=1")]
     cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18",
-            "-pix_fmt", "yuv420p", "-f", "mp4", str(partial)]
-    proc = subprocess.run(cmd, input=arr.tobytes(), capture_output=True,
-                          timeout=600)
+            "-pix_fmt", "yuv420p"]
+    if wav is not None:
+        cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+    cmd += ["-f", "mp4", str(partial)]
+    try:
+        proc = subprocess.run(cmd, input=arr.tobytes(), capture_output=True,
+                              timeout=600)
+    finally:
+        if wav is not None:
+            wav.unlink(missing_ok=True)
     if proc.returncode != 0 or not partial.exists():
         partial.unlink(missing_ok=True)
         raise ProviderError(

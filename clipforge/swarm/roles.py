@@ -160,6 +160,12 @@ class Generator:
                 argv += ["--shots", str(int(p["shots"]))]
             if p.get("aspect"):
                 argv += ["--aspect", str(p["aspect"])]
+            if p.get("model"):
+                # The board has carried this key from `swarm plan --model`
+                # through two payloads since the day it was added, and
+                # this is where it stopped: the argv was built without it,
+                # so every swarm piece used whatever the registry picked.
+                argv += ["--model", str(p["model"])]
             out = _run(argv, timeout_s=self.timeout_s, board=self.board,
                        task_id=task.id)
             outputs = _read_manifest(manifest)

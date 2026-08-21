@@ -8,6 +8,10 @@ workspace/
 
 # Python
 .venv/
+# LTX-2.5 needs diffusers 0.40 + transformers 5.x, which whisperx's
+# huggingface-hub<1.0 pin keeps out of .venv. Second interpreter, not
+# a second copy of the project.
+.venv-ltx25/
 __pycache__/
 *.pyc
 *.egg-info/

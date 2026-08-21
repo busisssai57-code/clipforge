@@ -1,5 +1,11 @@
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- viewport-fit=cover lets the layout paint under a notch and a home
+     indicator; every edge that matters then pads itself back out with
+     env(safe-area-inset-*). Without it the page is letterboxed on an
+     iPhone and the bottom tab bar sits above a dead grey strip. -->
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0b">
+<meta name="mobile-web-app-capable" content="yes">
 <title>BTA — Studio</title>
 <!-- No external requests: no CDN fonts, no remote scripts, no analytics.
      The premise of this tool is that nothing leaves the machine, and a
@@ -20,7 +26,10 @@
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--ink);overflow:hidden;
   font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Inter,system-ui,sans-serif;
-  -webkit-font-smoothing:antialiased}
+  -webkit-font-smoothing:antialiased;
+  /* A tap that lands on a button should not also select the label under
+     it, and a double-tap should not zoom the app shell. */
+  -webkit-tap-highlight-color:transparent;touch-action:manipulation}
 button{font:inherit;color:inherit}
 ::-webkit-scrollbar{width:9px;height:9px}
 ::-webkit-scrollbar-thumb{background:#2c2c33;border-radius:8px}
@@ -29,9 +38,14 @@ svg{display:block;flex:0 0 auto}
 .hide{display:none!important}
 
 /* ============================================================ app shell */
-.app{display:grid;grid-template-columns:232px 1fr;height:100vh}
+/* 100vh is wrong on a phone: it measures the viewport with the browser
+   chrome retracted, so the bottom of the app sits under the URL bar until
+   you scroll. dvh tracks the chrome as it moves. vh stays as the fallback
+   for anything that does not know dvh. */
+.app{display:grid;grid-template-columns:232px 1fr;height:100vh;height:100dvh}
 aside.rail{background:var(--rail);border-right:1px solid var(--line);
-  display:flex;flex-direction:column;padding:14px 10px;gap:2px;overflow:auto}
+  display:flex;flex-direction:column;padding:14px 10px;gap:2px;overflow:auto;
+  overscroll-behavior:contain}
 .who{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:9px;cursor:pointer}
 .who:hover{background:var(--panel)}
 .avatar{width:30px;height:30px;border-radius:50%;flex:0 0 auto;
@@ -93,6 +107,10 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint
   border:1px solid var(--line);border-radius:9px;padding:11px 12px}
 .linkin input{all:unset;flex:1;font-size:13.5px;color:var(--ink);min-width:0}
 .linkin input::placeholder{color:var(--faint)}
+.livehint{display:flex;align-items:center;gap:9px;margin-top:9px;padding:9px 10px;
+  background:var(--panel2);border:1px solid var(--line2);border-radius:9px;
+  font-size:12px;color:var(--dim)}
+.livehint .wbtn{padding:6px 11px;font-size:12px;flex:0 0 auto}
 .droprow{display:flex;gap:18px;justify-content:center;padding:12px 0 14px}
 .droprow button{all:unset;display:flex;align-items:center;gap:7px;font-size:12.5px;
   color:var(--dim);cursor:pointer}
@@ -135,6 +153,13 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint
 .proj:hover .shot{border-color:var(--line2)}
 .proj .badges{position:absolute;top:8px;left:8px;right:8px;display:flex;gap:6px}
 .proj .badges .pill{background:rgba(10,10,11,.78);backdrop-filter:blur(6px)}
+.projdel{all:unset;position:absolute;top:7px;right:7px;width:28px;height:28px;
+  border-radius:7px;display:flex;align-items:center;justify-content:center;
+  background:rgba(8,8,10,.72);color:#d4d4da;cursor:pointer;opacity:0;
+  transition:.14s;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.proj:hover .projdel{opacity:1}
+.projdel:hover{background:rgba(60,20,20,.92);color:#ffb3b3}
+@media (hover:none){.projdel{opacity:1}}
 .proj .foot{position:absolute;left:0;right:0;bottom:0;padding:7px 9px;font-size:11px;
   color:#d6d6dc;background:linear-gradient(180deg,transparent,rgba(4,4,6,.9))}
 .proj b{display:block;font-size:13px;font-weight:550;margin-top:9px;overflow:hidden;
@@ -239,8 +264,35 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint
    unreachable on a phone. Show them permanently instead. */
 @media (hover:none){.cl .tools,.cl .rate{opacity:1}}
 
+/* --- bulk selection */
+.selbar{display:none;align-items:center;gap:12px;margin-bottom:14px;padding:10px 12px;
+  background:var(--panel2);border:1px solid var(--line2);border-radius:10px;
+  font-size:12.5px;color:var(--dim);position:sticky;top:0;z-index:5}
+.selbar.on{display:flex}
+.wbtn.danger{border-color:#5a2a2a;color:#ffb3b3}
+.wbtn.danger:hover{background:#2a1414}
+.wbtn.danger[disabled]{opacity:.45;cursor:not-allowed}
+.wbtn.danger[disabled]:hover{background:var(--panel2)}
+/* In select mode the whole card is the target — a tick box small enough
+   to miss is the thing that makes bulk delete feel dangerous. */
+.cl.picking .frame{cursor:pointer}
+.cl.picking .tools,.cl.picking .rate,.cl.picking .play{display:none}
+.cl.picked .frame{outline:2px solid var(--score);outline-offset:2px}
+.cl.picking .frame::after{content:"";position:absolute;top:8px;left:8px;
+  width:22px;height:22px;border-radius:50%;border:2px solid rgba(255,255,255,.8);
+  background:rgba(8,8,10,.55);z-index:3}
+.cl.picked .frame::after{background:var(--score);border-color:var(--score)}
+.cl.picked .frame::before{content:"";position:absolute;top:14px;left:13px;z-index:4;
+  width:11px;height:6px;border-left:2.4px solid #0a0a0b;border-bottom:2.4px solid #0a0a0b;
+  transform:rotate(-45deg)}
+
 /* =============================================================== modal */
-.mask{position:fixed;inset:0;background:rgba(6,6,8,.86);z-index:60;display:none;
+/* Above the nav drawer (120) and its backdrop (110), not below them. At
+   z-index 60 a sheet opened FROM the drawer rendered under that backdrop:
+   visible, and every tap on it swallowed — including the one on its own
+   close button. A modal must always outrank the navigation it was opened
+   from. */
+.mask{position:fixed;inset:0;background:rgba(6,6,8,.86);z-index:130;display:none;
   align-items:center;justify-content:center;padding:26px;backdrop-filter:blur(3px)}
 .mask.on{display:flex}
 /* Four columns, matching the reference: score · preview · scene · actions.
@@ -250,6 +302,8 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint
   max-width:1060px;width:100%;max-height:90vh;padding:16px;display:grid;
   grid-template-columns:142px 232px minmax(0,1fr) 172px;gap:16px;
   box-shadow:0 30px 90px rgba(0,0,0,.7);position:relative;overflow:auto}
+.dlg.sheet{grid-template-columns:minmax(0,1fr);max-width:620px;padding:20px}
+.dlg.sheet .dlgnav{position:static;justify-content:flex-end;margin-bottom:2px}
 .dlgnav{position:absolute;top:-46px;right:0;display:flex;gap:7px}
 .dlgnav button{all:unset;width:30px;height:30px;border-radius:8px;background:var(--panel2);
   border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;
@@ -322,7 +376,11 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint
    declared, the implicit column is `auto` = max-content, so the editor
    grid sized itself to its widest child and handed .ework more width than
    the window had — pushing the right tab strip off screen. */
-.editor{position:fixed;inset:0;background:var(--bg);z-index:90;display:none;
+/* 140: above the modal layer (130), because the editor is a full-screen
+   surface the operator navigates INTO, not a sheet over the gallery. The
+   whole stack, in order: page < drawer backdrop 110 < drawer 120 <
+   modals 130 < editor 140 < toasts 200. */
+.editor{position:fixed;inset:0;background:var(--bg);z-index:140;display:none;
   grid-template-columns:minmax(0,1fr);grid-template-rows:52px auto 1fr auto}
 .editor.on{display:grid}
 .ebar{display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line)}
@@ -490,6 +548,77 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint
 .cmd button{all:unset;color:var(--faint);display:flex;flex:0 0 auto;cursor:pointer}
 .cmd:hover button{color:var(--ink)}
 
+
+/* --- director camera
+   The box IS the shot: what is inside it is what the renderer crops to.
+   Drag the middle to move, a corner to push in. Outside it dims, so the
+   framing reads at a glance rather than having to be inferred from four
+   numbers. */
+.dcam{position:absolute;z-index:5;border:2px solid var(--score);
+  box-shadow:0 0 0 9999px rgba(4,4,6,.55);cursor:move;touch-action:none}
+.dcam.hide{display:none}
+.dcam .g{position:absolute;width:22px;height:22px;background:transparent;
+  cursor:nwse-resize;touch-action:none}
+.dcam .g::after{content:"";position:absolute;inset:7px;border-radius:50%;
+  background:var(--score);box-shadow:0 0 0 1px rgba(0,0,0,.5)}
+.dcam .g.tl{left:-11px;top:-11px} .dcam .g.tr{right:-11px;top:-11px}
+.dcam .g.bl{left:-11px;bottom:-11px} .dcam .g.br{right:-11px;bottom:-11px}
+.dcam .g.tr,.dcam .g.bl{cursor:nesw-resize}
+/* A pushed-in shot on a wide source renders a box a few pixels across
+   — smaller than the four 22px grips sitting on it, which then cover
+   the body and swallow every pan. Measured: a 2560x880 source pushed
+   to the 0.25 floor drew a 14x24px box. Below that size the grips go
+   away and the wheel handles zoom instead. */
+.dcam.small .g{display:none}
+.dcam.small{border-width:1px}
+.dcam .lab{position:absolute;left:0;top:-20px;font-size:10px;color:var(--score);
+  white-space:nowrap;font-variant-numeric:tabular-nums}
+.dcambar{display:flex;align-items:center;gap:8px;padding:8px 12px;flex:0 0 auto;
+  border-bottom:1px solid var(--line);background:var(--bg2);flex-wrap:wrap}
+.dcambar.hide{display:none}
+/* Keyframe markers on the ruler. */
+.kfm{position:absolute;top:2px;width:9px;height:9px;margin-left:-4.5px;
+  background:var(--score);transform:rotate(45deg);z-index:6;cursor:pointer;
+  border:1px solid #0a0a0b}
+@media(max-width:980px){
+  .dcam .g{width:30px;height:30px}
+  .dcam .g.tl{left:-15px;top:-15px} .dcam .g.tr{right:-15px;top:-15px}
+  .dcam .g.bl{left:-15px;bottom:-15px} .dcam .g.br{right:-15px;bottom:-15px}
+  .dcambar{padding:8px 10px}
+}
+
+
+/* --- screen script
+   A screenplay is read by its SHAPE — a slugline, an indented speech, a
+   centred transition — and that shape is what tells you where a shot
+   begins. The overlay mirrors the textarea line for line so the writer
+   sees the structure while typing, without a contenteditable (which
+   fights every mobile keyboard and loses the undo stack). */
+.spwrap{position:relative}
+.spwrap textarea,.spmirror{font:13.5px/1.62 ui-monospace,Consolas,monospace;
+  padding:12px 13px;white-space:pre-wrap;overflow-wrap:break-word;
+  letter-spacing:0;margin:0;border:0}
+.spwrap textarea{position:relative;z-index:2;background:transparent;
+  color:transparent;caret-color:var(--ink);width:100%;min-height:190px;
+  resize:vertical;outline:none;display:block}
+.spmirror{position:absolute;inset:0;z-index:1;pointer-events:none;
+  overflow:hidden;color:var(--dim)}
+.spmirror .h{color:var(--score);font-weight:700;text-transform:uppercase}
+.spmirror .c{color:var(--bolt);font-weight:700;padding-left:6ch}
+.spmirror .d{color:var(--ink);padding-left:4ch}
+.spmirror .p{color:var(--faint);font-style:italic;padding-left:5ch}
+.spmirror .t{color:var(--hot1);text-align:right;font-weight:600}
+.spmirror .a{color:var(--dim)}
+.spbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:8px 2px 0;font-size:11.5px;color:var(--faint)}
+.spchip{background:var(--panel2);border:1px solid var(--line);
+  border-radius:999px;padding:3px 9px;color:var(--dim)}
+.spchip b{color:var(--ink);font-weight:600}
+@media(max-width:980px){
+  .spwrap textarea,.spmirror{font-size:16px}
+  .spmirror .c{padding-left:3ch} .spmirror .d{padding-left:2ch}
+}
+
 /* --- timeline */
 .tl{border-top:1px solid var(--line);background:var(--bg2);flex:0 0 auto}
 .tlbar{display:flex;align-items:center;gap:9px;padding:8px 14px}
@@ -522,6 +651,27 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint
   background:var(--score);transform:rotate(45deg)}
 .tlhit{position:absolute;inset:0;z-index:4;cursor:pointer}
 
+/* --- trim
+   z-index 6: above the seek layer (4) and the playhead (5), so a drag
+   that starts on a grip is a trim rather than a scrub. The grips are
+   28px wide with the visible bar centred inside — a 4px handle is
+   unhittable with a thumb, and this editor is used on a phone. */
+.trim{position:absolute;left:0;right:0;top:0;bottom:0;z-index:6;pointer-events:none}
+.trim.hide{display:none}
+.trimout{position:absolute;top:0;bottom:0;background:rgba(6,6,8,.72);
+  border-radius:6px;pointer-events:none}
+.trimband{position:absolute;top:0;bottom:0;border-top:2px solid var(--score);
+  border-bottom:2px solid var(--score);pointer-events:none}
+.trimgrip{position:absolute;top:-4px;bottom:-4px;width:28px;
+  transform:translateX(-50%);
+  display:flex;align-items:center;justify-content:center;cursor:ew-resize;
+  pointer-events:auto;touch-action:none}
+.trimgrip i{display:block;width:6px;height:100%;border-radius:3px;
+  background:var(--score);box-shadow:0 0 0 1px rgba(0,0,0,.5)}
+.trimgrip:active i{background:#d9ff6b;width:8px}
+.trimlabel{position:absolute;top:-20px;font-size:10px;color:var(--score);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+
 /* ============================================================== shared */
 .toast{position:fixed;right:18px;bottom:18px;background:#17171b;border:1px solid var(--line2);
   border-radius:11px;padding:12px 15px;z-index:200;max-width:390px;font-size:13px;
@@ -552,18 +702,206 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
   font:11.5px/1.65 ui-monospace,Consolas,monospace;color:#b0b6c4;max-height:250px;
   overflow:auto;white-space:pre-wrap;word-break:break-word}
 .bar{height:4px;background:var(--panel3);border-radius:99px;overflow:hidden}
-.bar i{display:block;height:100%;background:var(--score)}
+.bar i{display:block;height:100%;background:var(--score);transition:width .4s ease}
+/* Indeterminate: a moving stripe, never a number. The old bar sat at a
+   hardcoded 55%, which claimed a measurement nobody had taken. */
+.bar.indet i{background:repeating-linear-gradient(115deg,var(--scoreDim) 0 10px,
+  transparent 10px 22px);animation:barslide 1.1s linear infinite}
+@keyframes barslide{to{background-position:26px 0}}
 .meter{height:5px;background:var(--panel3);border-radius:99px;overflow:hidden}
 .meter i{display:block;height:100%;background:var(--score)}
 .meter i.heur{background:var(--faint)}
 
+/* =========================================================== responsive
+   One layout, three widths. The breakpoints are where the CONTENT breaks,
+   not where a device happens to be: the editor's four columns stop fitting
+   around 1200px, the sidebar stops earning its 232px around 980px, and the
+   card grids stop holding two columns around 560px.
+
+   Nothing here is a separate mobile page. A second page is a second thing
+   to keep true, and the two always drift — the phone build ends up missing
+   the control that was added last week. */
+
+/* --- drawer + bottom bar exist only in the narrow layout */
+.railmask{position:fixed;inset:0;background:rgba(4,4,6,.62);z-index:110;
+  opacity:0;pointer-events:none;transition:opacity .18s;
+  -webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+.railmask.on{opacity:1;pointer-events:auto}
+.tabbar{display:none}
+#tbNav{display:none}
+/* The editor's phone-only region switcher. Declared hidden here rather
+   than only shown in the narrow query, or it would default to visible on
+   a desktop and add a dead strip of buttons under the title bar. */
+.emtabs{display:none}
+
 @media(max-width:1200px){
-  .ework{grid-template-columns:320px minmax(0,1fr) 268px 58px}}
+  .ework{grid-template-columns:320px minmax(0,1fr) 268px 58px}
+  .ework.railshut{grid-template-columns:320px minmax(0,1fr) 0 58px}
+}
+
 @media(max-width:980px){
-  .app{grid-template-columns:1fr}
-  aside.rail{display:none}
-  .ework{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto}
-  .rtabs{flex-direction:row;overflow-x:auto}
+  .app{grid-template-columns:minmax(0,1fr)}
+
+  /* The sidebar becomes a drawer rather than disappearing. It used to be
+     `display:none` at this width, which took Studio, Publishing, Models
+     and the Learning centre with it — on a phone those views existed and
+     were unreachable. */
+  aside.rail{position:fixed;top:0;bottom:0;left:0;width:min(84vw,300px);
+    z-index:120;transform:translateX(-100%);transition:transform .2s ease;
+    box-shadow:0 0 60px rgba(0,0,0,.6);
+    padding-top:calc(14px + env(safe-area-inset-top));
+    padding-left:calc(10px + env(safe-area-inset-left));
+    padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  aside.rail.open{transform:translateX(0)}
+  #tbNav{display:flex}
+
+  .topbar{padding:0 10px;padding-left:calc(10px + env(safe-area-inset-left));
+    padding-right:calc(10px + env(safe-area-inset-right));gap:6px}
+  .topbar .iconbtn{width:40px;height:40px}
+  .topbar .iconbtn.wide{width:auto;padding:0 12px;height:40px}
+
+  /* Primary destinations get a thumb-reachable bar. Five is the limit
+     that still leaves each target ~20% of the width; everything else
+     lives in the drawer. */
+  .tabbar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:100;
+    background:rgba(12,12,14,.96);-webkit-backdrop-filter:blur(12px);
+    backdrop-filter:blur(12px);border-top:1px solid var(--line);
+    padding-bottom:env(safe-area-inset-bottom)}
+  .tabbar button{all:unset;flex:1;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:3px;padding:9px 2px 8px;
+    min-height:52px;color:var(--faint);font-size:10px;cursor:pointer;
+    text-align:center}
+  .tabbar button.on{color:var(--ink)}
+  .tabbar button.on svg{color:var(--score)}
+  .tabbar button .lab{letter-spacing:.01em}
+
+  /* Clear the bar, or the last row of every view sits under it. */
+  .pad{padding:18px 16px calc(96px + env(safe-area-inset-bottom))}
+  .homewrap{padding:26px 16px calc(96px + env(safe-area-inset-bottom))}
+  .view{-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain}
+
+  /* Home reads as a hero on a 27" monitor and as a wall of type on a
+     phone; the wordmark and the headline scale with the viewport. */
+  .wordmark{font-size:clamp(64px,22vw,150px);letter-spacing:-.04em;top:14px}
+  .dropcard{margin-top:14px;max-width:none}
+  .tools{margin-top:30px;gap:2px}
+  .tool{width:78px}
+  .projhead{margin:30px 0 12px;flex-wrap:wrap;gap:10px}
+  .projmeta{margin-left:0}
+  .hero{padding-top:14px}
+  .hero h1{font-size:clamp(22px,6.4vw,33px)}
+  .composer{flex-direction:column}
+  .cchips{width:100%}
+  .cchip{flex:1;width:auto}
+  .cchip s{max-width:none}
+  .inspire{margin-top:32px}
+
+  /* The editor stops being four columns and becomes one thing at a time,
+     chosen from a strip under the title bar. Stacking all four instead
+     (what this used to do) left the preview about 90px tall between two
+     scrolling panels, which is not an editor. */
+  .ework{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr);
+    position:relative}
+  .ework.railshut{grid-template-columns:minmax(0,1fr)}
+  .tpanel,.rpanel{border:0;grid-area:1/1;min-height:0}
+  .stage{grid-area:1/1;min-height:0}
+  .editor[data-mtab="preview"] .tpanel,
+  .editor[data-mtab="preview"] .rpanel,
+  .editor[data-mtab="script"] .stage,
+  .editor[data-mtab="script"] .rpanel,
+  .editor[data-mtab="tools"] .stage,
+  .editor[data-mtab="tools"] .tpanel{display:none}
+  .editor[data-mtab="tools"] .rtabs{display:flex;flex-direction:row;
+    grid-area:auto;border-left:0;border-bottom:1px solid var(--line);
+    overflow-x:auto;padding:6px 4px;gap:4px;flex:0 0 auto}
+  .editor:not([data-mtab="tools"]) .rtabs{display:none}
+  .rtab{min-width:62px;padding:8px 6px}
+  .emtabs{display:flex;gap:4px;padding:7px 10px;border-bottom:1px solid var(--line);
+    background:var(--bg2);overflow-x:auto;flex:0 0 auto}
+  .emtabs button{all:unset;flex:1;text-align:center;white-space:nowrap;
+    padding:9px 12px;min-height:40px;border-radius:8px;font-size:12.5px;
+    color:var(--dim);cursor:pointer;background:var(--panel);
+    border:1px solid var(--line)}
+  .emtabs button.on{color:var(--ink);background:var(--panel3);border-color:var(--line2)}
+  .editor{grid-template-rows:52px auto auto minmax(0,1fr) auto}
+  .ebar{padding:0 10px;padding-top:env(safe-area-inset-top);height:auto;min-height:52px}
+  .ebar .ttl{max-width:38vw}
+  .tl{padding-bottom:env(safe-area-inset-bottom)}
+  .vlane{height:44px} .alane{height:26px}
+  .tlbody{padding:0 10px 8px}
+
+  /* A modal at phone width is a sheet: full-bleed, and tall enough to
+     scroll rather than a 26px-margined card with its own scrollbar. */
+  .mask{padding:0;align-items:flex-end}
+  .dlg{max-height:92dvh;border-radius:16px 16px 0 0;padding:14px;
+    padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  .dlgnav{position:static;justify-content:flex-end;margin-bottom:2px}
+  .dlgvid{max-width:min(62vw,260px);margin:0 auto;width:100%}
+  .scene{max-height:38vh}
+  .submenu{max-width:calc(100vw - 24px)}
+
+  /* Toast clears the tab bar instead of covering it. */
+  .toast{left:12px;right:12px;max-width:none;
+    bottom:calc(70px + env(safe-area-inset-bottom))}
+
+  /* A table cannot reflow; it can scroll. `display:block` on a phone is
+     the one trick that keeps the columns intact instead of crushing
+     them into unreadable slivers. */
+  .pad table{display:block;overflow-x:auto;white-space:nowrap}
+
+  /* iOS zooms the whole page when a focused input is under 16px. Every
+     form control in this UI was 12.5–13.5px, so every tap on a field
+     yanked the layout sideways. */
+  input.fi,select.fi,textarea.fi,.field textarea,.field select,
+  .field input[type=text],.linkin input,.cbody textarea{font-size:16px}
+  .linkin{padding:12px}
+  .bigbtn{padding:14px;min-height:50px}
+
+  /* Touch targets. 24px icon buttons are hit-or-miss with a thumb. */
+  .cl .tools button,.cl .rate button{width:32px;height:32px}
+  .act{padding:11px 12px}
+  .rrow{padding:11px 10px}
+  .nav button{padding:11px 10px;font-size:14px}
+  .minichip{padding:8px 11px}
+  .mode{padding:10px 14px}
+}
+
+@media(max-width:560px){
+  .projgrid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+  .clipgrid{grid-template-columns:repeat(auto-fill,minmax(144px,1fr));gap:16px 10px}
+  .wall{grid-template-columns:repeat(auto-fill,minmax(136px,1fr));gap:9px}
+  .g2,.g3{grid-template-columns:minmax(0,1fr)}
+  .pgrid,.tgrid{grid-template-columns:1fr 1fr}
+  .dlg{grid-template-columns:minmax(0,1fr)}
+  .dlgacts{flex-direction:column}
+  .dlgacts .act{flex:none}
+  .tabs{gap:12px;overflow-x:auto;flex:1}
+  .tabs button{white-space:nowrap}
+  .cl .sc{font-size:18px}
+  h1{font-size:20px}
+  .card{padding:13px}
+}
+
+/* Landscape phone: the tab bar and the drawer both cost vertical space
+   that a 380px-tall viewport does not have, so the editor drops its
+   timeline and the bar shrinks to icons. */
+@media(max-width:980px) and (max-height:460px) and (orientation:landscape){
+  .tabbar button .lab{display:none}
+  .tabbar button{min-height:42px}
+  .pad,.homewrap{padding-bottom:calc(62px + env(safe-area-inset-bottom))}
+  .wordmark{display:none}
+}
+
+/* A trackpad-free device gets no :hover, so anything revealed by hover is
+   invisible. These are shown outright instead. */
+@media (hover:none){
+  .cl .play,.card9 .acts{opacity:1}
+  .cl .play i{width:38px;height:38px;opacity:.86}
+}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition-duration:.01ms!important;
+    animation-duration:.01ms!important}
 }
 </style>
 
@@ -637,8 +975,11 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
 </defs></svg>
 
 <div class="app">
+<!-- Tapping outside the drawer closes it. It sits before the rail so the
+     rail's own z-index puts it on top without a stacking context fight. -->
+<div class="railmask" id="railMask"></div>
 <!-- ============================================================ sidebar -->
-<aside class="rail">
+<aside class="rail" id="rail">
   <div class="who" id="who">
     <div class="avatar" id="avatarInitial">B</div>
     <div style="min-width:0">
@@ -674,13 +1015,19 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
       <button data-v="help"><svg width="17" height="17"><use href="#i-help"/></svg>Help center</button>
     </div>
     <div class="dotline" id="conn"><span class="dot"></span>connected</div>
-    <div class="dotline" style="padding-top:0">nothing leaves this machine</div>
+    <!-- Unconditional again: Google Flow was removed on 2026-08-20, and
+         the only remaining way out is [genvideo] use_cloud, which the
+         cloud chokepoint gates. -->
+    <div class="dotline" id="privacyLine" style="padding-top:0">
+      <span class="dot"></span>nothing leaves this machine</div>
   </div>
 </aside>
 
 <div class="main">
   <!-- top bar changes per view -->
   <div class="topbar">
+    <button class="iconbtn" id="tbNav" title="Menu" aria-label="Open menu"
+            aria-expanded="false"><svg width="18" height="18"><use href="#i-menu"/></svg></button>
     <button class="iconbtn" id="tbGrid" title="Grid / list"><svg width="17" height="17"><use href="#i-grid"/></svg></button>
     <button class="iconbtn" id="tbMenu" title="Sections"><svg width="17" height="17"><use href="#i-menu"/></svg></button>
     <div class="crumb grow" id="crumb">Home</div>
@@ -700,6 +1047,10 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
           <svg width="16" height="16" style="color:var(--faint)"><use href="#i-link"/></svg>
           <input id="srcUrl" placeholder="Drop a video link or paste a file path">
         </div>
+        <!-- Appears only when the pasted link is actually broadcasting.
+             A live stream is captured as it runs; a finished video is
+             downloaded first. Same box, different pipeline. -->
+        <div class="livehint hide" id="liveHint"></div>
         <div class="droprow">
           <button id="btnPickFile"><svg width="15" height="15"><use href="#i-upload"/></svg>Local file</button>
           <button id="btnWatch"><svg width="15" height="15"><use href="#i-target"/></svg>Watch channels</button>
@@ -744,7 +1095,16 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
           </div>
           <div class="cbody">
             <textarea id="brief" rows="2" placeholder="Describe your video idea. Each sentence becomes a shot — write them as beats, not a paragraph."></textarea>
+            <!-- Screen Script. Same field, read as a screenplay: the
+                 writer decides where a shot begins instead of a full
+                 stop deciding for them. -->
+            <div class="spwrap hide" id="spWrap">
+              <div class="spmirror" id="spMirror"></div>
+              <textarea id="spText" spellcheck="false" placeholder="INT. TEA SHOP - NIGHT&#10;&#10;Smoke hangs under a dead fluorescent tube.&#10;&#10;WAXAR&#10;You never pay.&#10;&#10;EXT. STREET - CONTINUOUS&#10;&#10;He storms out into the rain."></textarea>
+            </div>
+            <div class="spbar hide" id="spBar"></div>
             <div class="crow">
+              <button class="minichip" id="chScript"><svg width="13" height="13"><use href="#i-text"/></svg>Screen Script</button>
               <button class="minichip" id="chBoard"><svg width="13" height="13"><use href="#i-layout"/></svg>Storyboard</button>
               <button class="minichip" id="chAspect"><svg width="13" height="13"><use href="#i-phone"/></svg><span id="chAspectV">9:16</span></button>
               <button class="minichip" id="chModel"><svg width="13" height="13"><use href="#i-spark"/></svg><span id="chModelV">AI model</span></button>
@@ -777,6 +1137,20 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
       <div class="gridhead">
         <span class="t" id="clipsTitle">Everything this machine has produced</span>
         <span class="n" id="clipsCount">(0)</span>
+        <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="wbtn" id="btnPick">Select</button>
+          <button class="wbtn" id="btnEmptyQ">Empty quarantine</button>
+        </div>
+      </div>
+      <!-- Only visible in select mode. Everything it does is a move to
+           workspace/trash, never an unlink — a clip is twenty minutes of
+           GPU time and QA already quarantines rather than deletes. -->
+      <div class="selbar" id="selBar">
+        <span id="selCount">Tap clips to select them</span>
+        <div style="margin-left:auto;display:flex;gap:8px">
+          <button class="wbtn" id="btnPickAll">Select all</button>
+          <button class="wbtn danger" id="btnDelPicked" disabled>Delete</button>
+        </div>
       </div>
       <div class="clipgrid" id="clipGrid"></div>
       <h2 id="rejHead" class="hide">Quarantined by QA</h2>
@@ -825,10 +1199,23 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
   <!-- ======================================================== ACTIVITY -->
   <section class="pane hide" id="v-activity">
     <div class="pad">
-      <h1>Activity</h1>
-      <div class="sub">Running work and recent pipeline stages, straight from the
-        state database.</div>
+      <div class="row" style="justify-content:space-between;align-items:flex-start">
+        <div>
+          <h1>Activity</h1>
+          <div class="sub" style="margin-bottom:8px">Running work and recent
+            pipeline stages, straight from the state database.</div>
+        </div>
+        <button class="wbtn" id="btnClearTasks">Clear finished</button>
+      </div>
       <div id="taskList"></div>
+      <h2>How long each stage takes on this machine</h2>
+      <div class="sub" style="margin-bottom:10px">Medians from runs that
+        actually happened here — this is what every estimate above is built
+        from. A stage with no measurement yet contributes nothing to an ETA
+        rather than a guess.</div>
+      <div class="card"><table>
+        <thead><tr><th>Stage</th><th>Typical</th><th>Basis</th></tr></thead>
+        <tbody id="estBody"></tbody></table></div>
       <h2>Recent stages</h2>
       <div class="card"><table>
         <thead><tr><th>Stage</th><th>Status</th><th>Job</th><th>Artifact</th></tr></thead>
@@ -888,6 +1275,17 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
   </section>
 
   </div><!-- /view -->
+
+  <!-- The five destinations worth a thumb. Everything else is one tap
+       further into the drawer — same views, same code, no phone-only
+       build to keep in sync. -->
+  <nav class="tabbar" id="tabBar" aria-label="Primary">
+    <button data-v="home"><svg width="19" height="19"><use href="#i-home"/></svg><span class="lab">Home</span></button>
+    <button data-v="generate"><svg width="19" height="19"><use href="#i-spark"/></svg><span class="lab">Create</span></button>
+    <button data-v="clips"><svg width="19" height="19"><use href="#i-grid"/></svg><span class="lab">Clips</span></button>
+    <button data-v="activity"><svg width="19" height="19"><use href="#i-chart"/></svg><span class="lab">Activity</span></button>
+    <button data-v="studio"><svg width="19" height="19"><use href="#i-cpu"/></svg><span class="lab">Studio</span></button>
+  </nav>
 </div><!-- /main -->
 </div><!-- /app -->
 
@@ -931,8 +1329,16 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
   <div class="dlgacts" id="dlgActs"></div>
 </div></div>
 
+<!-- Single-column sheet for content that is prose, not a clip: Connect a
+     device, and anything else that needs a modal without the four-column
+     grid. Separate element so neither can clobber the other's nodes. -->
+<div class="mask" id="sheetMask"><div class="dlg sheet" id="sheet"></div></div>
+
 <!-- ============================================================= editor -->
-<div class="editor" id="editor">
+<!-- data-mtab is set in the markup, not only by script: the narrow-layout
+     rules key off it, and an unset attribute would stack all three regions
+     in the same grid cell. -->
+<div class="editor" id="editor" data-mtab="preview">
   <div class="ebar">
     <button class="iconbtn" id="edBack"><svg width="17" height="17"><use href="#i-back"/></svg></button>
     <span class="ttl" id="edTitle">Clip</span>
@@ -949,6 +1355,14 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
   <div class="notice" id="edNotice">
     <span id="edNoticeText">Edits here are a plan, not a re-render.</span>
     <button class="wbtn" id="edNoticeAct">Apply with the pipeline</button>
+  </div>
+
+  <!-- Narrow-layout only (CSS hides it above 980px): the editor's three
+       regions do not fit side by side on a phone, so they take turns. -->
+  <div class="emtabs" id="edMTabs">
+    <button data-mtab="preview" class="on">Preview</button>
+    <button data-mtab="script">Script</button>
+    <button data-mtab="tools">Tools</button>
   </div>
 
   <div class="ework" id="ework">
@@ -972,11 +1386,33 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
         <button class="sbchip" id="sbAspect"><svg width="14" height="14"><use href="#i-phone"/></svg><span>9:16</span></button>
         <button class="sbchip" id="sbLayout"><svg width="14" height="14"><use href="#i-expand"/></svg><span>Layout: Fit</span></button>
         <button class="sbchip" id="sbTracker"><svg width="14" height="14"><use href="#i-target"/></svg><span>Tracker: OFF</span></button>
+        <button class="sbchip" id="sbDirector"><svg width="14" height="14"><use href="#i-crop"/></svg><span>Director cam</span></button>
+      </div>
+      <div class="dcambar hide" id="dcamBar">
+        <button class="wbtn" id="dcamKey">Set keyframe</button>
+        <select class="fi" id="dcamEase" style="width:auto;padding:6px 8px;font-size:12px">
+          <option value="ease_in_out">Ease in-out</option>
+          <option value="linear">Linear</option>
+          <option value="ease_in">Ease in</option>
+          <option value="ease_out">Ease out</option>
+          <option value="hold">Hold</option>
+        </select>
+        <span class="faint" id="dcamCount">0 keyframes</span>
+        <div class="grow" style="flex:1"></div>
+        <button class="wbtn" id="dcamClear">Clear</button>
+        <button class="wbtn solid" id="dcamApply">Apply camera</button>
       </div>
       <div class="canvas">
         <div class="frame916" id="frame916">
           <video id="edVideo" preload="metadata" playsinline></video>
           <div class="crop hide" id="edCrop"><i></i><i></i><i></i><i></i></div>
+          <!-- Director camera. Drag the box to move the shot, drag a
+               corner to push in or pull out; each keyframe you set is a
+               point on the move the renderer will follow. -->
+          <div class="dcam hide" id="dcamBox">
+            <i class="g tl"></i><i class="g tr"></i><i class="g bl"></i><i class="g br"></i>
+            <span class="lab" id="dcamLab"></span>
+          </div>
           <div class="croptool hide" id="edCropTool">
             <button title="Crop"><svg width="15" height="15"><use href="#i-crop"/></svg></button>
             <button title="Background"><svg width="15" height="15"><use href="#i-img"/></svg></button>
@@ -997,6 +1433,8 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
   <div class="tl" id="timeline">
     <div class="tlbar">
       <button class="wbtn" id="tlToggle" style="padding:5px 10px;font-size:11.5px">Hide timeline</button>
+      <button class="wbtn" id="tlTrimBtn" style="padding:5px 10px;font-size:11.5px">Trim</button>
+      <button class="wbtn solid hide" id="edTrimApply" style="padding:5px 10px;font-size:11.5px">Apply trim</button>
       <button class="iconbtn" id="tlSplit" title="Split at playhead"><svg width="16" height="16"><use href="#i-split"/></svg></button>
       <button class="iconbtn" id="tlDel" title="Cut selection"><svg width="16" height="16"><use href="#i-trash"/></svg></button>
       <button class="iconbtn" id="tlMute" title="Mute preview"><svg width="16" height="16"><use href="#i-mute"/></svg></button>
@@ -1018,6 +1456,18 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
           <div class="lanewrap">
             <div class="vlane" id="tlVideo"><div class="fitmarks" id="tlFit"></div></div>
             <div class="alane"><canvas id="tlWave"></canvas></div>
+            <!-- Trim. The two handles bracket what is KEPT; everything
+                 outside them is dimmed, because "what survives" is the
+                 question being answered. Drawn above the hit layer so a
+                 drag on a handle is a trim and a tap anywhere else is
+                 still a seek. -->
+            <div class="trim hide" id="tlTrimBox">
+              <div class="trimout" id="trimOutL"></div>
+              <div class="trimout" id="trimOutR"></div>
+              <div class="trimband" id="trimBand"></div>
+              <div class="trimgrip l" id="trimL"><i></i></div>
+              <div class="trimgrip r" id="trimR"><i></i></div>
+            </div>
             <div class="playhead" id="tlHead"><b></b></div>
             <div class="tlhit" id="tlHit"></div>
           </div>
@@ -1038,7 +1488,7 @@ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 /* ---------------------------------------------------------------- state */
 let NICHES=[],MODELS=[],CAPS=[],CLIPS=[],REJECTED=[],PIECES=[],TASKS=[];
 let SEL=null, VIEW='home', PROJTAB='all', busy=false, GRIDLIST=false;
-let SORT='new', FILTER='all';
+let SORT='new', FILTER='all', EST_AT=0;
 let DLG=null, DLGLIST=[];
 const LIKED=new Set(), HIDDEN=new Set();
 
@@ -1049,6 +1499,11 @@ const LIKED=new Set(), HIDDEN=new Set();
 const ED={open:false,clip:null,detail:null,tab:'enhance',layout:'Fit',
   tracker:false,zoom:1,strip:null,peaks:null,playing:false,
   cutWords:new Set(),cutGaps:new Set(),hist:[],undone:[],preset:'karaoke',
+  //: Trim is a KEEP range in clip-relative seconds, or null when off.
+  //: Held here rather than read off the DOM so a re-render of the
+  //: timeline (zoom, a reloaded filmstrip) cannot lose the operator's
+  //: drag.
+  trim:null,
   toggles:{emoji:true,keywords:true,transitions:true,speakers:false,
            filler:false,pauses:false,speech:false},
   highlight:{keywords:true,lowconf:true}};
@@ -1123,12 +1578,57 @@ async function upscaleClip(clip,height){
   }catch(e){ toast(e.message,1) }
 }
 
+/* ------------------------------------------------------------ viewport
+   Layout is CSS's job; this only handles the behaviour that cannot be
+   expressed in a media query — a drawer that must close when you navigate,
+   and controls that should not be focusable while they are off screen.
+
+   The same query string drives both, so the JS can never disagree with the
+   stylesheet about where "narrow" starts. */
+const NARROW=matchMedia('(max-width:980px)');
+const COARSE=matchMedia('(pointer:coarse)');
+const isNarrow=()=>NARROW.matches;
+
+function setDrawer(open){
+  const on=!!open && isNarrow();
+  $('#rail').classList.toggle('open',on);
+  $('#railMask').classList.toggle('on',on);
+  $('#tbNav').setAttribute('aria-expanded',String(on));
+  // A drawer that is open on a phone owns the screen; letting the view
+  // behind it scroll under your thumb is how you lose your place.
+  $('#view').style.overflow=on?'hidden':'';
+}
+function applyLayout(){
+  document.body.dataset.layout=isNarrow()?'narrow':'wide';
+  document.body.dataset.pointer=COARSE.matches?'coarse':'fine';
+  if(!isNarrow()) setDrawer(false);
+}
+/* addEventListener, not onchange: Safari below 14 only has the deprecated
+   addListener, and this page is expected to open on whatever phone the
+   operator has. */
+(NARROW.addEventListener?NARROW.addEventListener.bind(NARROW,'change')
+  :NARROW.addListener.bind(NARROW))(applyLayout);
+(COARSE.addEventListener?COARSE.addEventListener.bind(COARSE,'change')
+  :COARSE.addListener.bind(COARSE))(applyLayout);
+addEventListener('orientationchange',()=>setTimeout(applyLayout,60));
+applyLayout();
+
+$('#tbNav').onclick=()=>setDrawer(!$('#rail').classList.contains('open'));
+$('#railMask').onclick=()=>setDrawer(false);
+addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&$('#rail').classList.contains('open')) setDrawer(false);
+});
+
 /* ------------------------------------------------------------ navigation */
 function go(v){
   VIEW=v;
   $$('.pane').forEach(p=>p.classList.add('hide'));
   const pane=$('#v-'+v); if(pane) pane.classList.remove('hide');
   $$('.rail .nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  // The bottom bar shows five of the eight views. When you are in one of
+  // the other three nothing is lit, which is the truth — highlighting the
+  // nearest tab would claim you are somewhere you are not.
+  $$('#tabBar button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   const isClips=v==='clips';
   $('#tbFilter').classList.toggle('hide',!isClips);
   $('#tbSort').classList.toggle('hide',!isClips);
@@ -1137,8 +1637,10 @@ function go(v){
     assets:'Asset library',studio:'Studio',activity:'Activity',
     publish:'Publishing',help:'Learning center'}[v]||v;
   $('#view').scrollTop=0;
+  setDrawer(false);
 }
 $$('.rail .nav button').forEach(b=>b.onclick=()=>go(b.dataset.v));
+$$('#tabBar button').forEach(b=>b.onclick=()=>go(b.dataset.v));
 $('#tbGrid').onclick=()=>{GRIDLIST=!GRIDLIST;
   $('#clipGrid').classList.toggle('list',GRIDLIST);
   $('#tbGrid').classList.toggle('on',GRIDLIST)};
@@ -1154,6 +1656,334 @@ $('#tbFilter').onclick=()=>{
     scored:'model-scored only'}[FILTER]+'.');
   renderClips();
 };
+
+
+/* ============================================================ DIRECTOR CAM
+   S4 picks the shot by tracking whoever is speaking. That is the right
+   default and it is wrong often enough to need an override, and there was
+   no way to say "push in here, then drift left" from the outside.
+
+   The box on the preview is authored in SOURCE pixels — the same space the
+   campath artifact uses — so what is dragged here is literally what the
+   renderer crops. Nothing is re-encoded in the browser: Apply re-runs the
+   pipeline with the authored path, exactly like the trim and the word
+   cuts. */
+const DC={on:false,src:null,keys:[],box:null,dur:0,
+  //: True while a grip is held, and true after a drag until the
+  //: adjustment is committed with Set keyframe. Both exist because
+  //: the box is driven from TWO places — the operator's hand and the
+  //: playhead — and without a flag the second silently wins: every
+  //: `timeupdate` re-sampled the keyframes and snapped the box back
+  //: to centre, so dragging appeared to do nothing at all.
+  dragging:false,dirty:false};
+
+function dcSrc(){
+  const c=ED.clip||{};
+  return {w:DC.src?DC.src.w:(c.source_width||0),
+          h:DC.src?DC.src.h:(c.source_height||0)};
+}
+/* The video's DISPLAYED rectangle inside the 9:16 preview — the source is
+   letterboxed under Fit, so screen space and source space differ by an
+   offset as well as a scale. */
+function dcGeom(){
+  const s=dcSrc(); if(!s.w||!s.h) return null;
+  const host=$('#frame916').getBoundingClientRect();
+  const scale=Math.min(host.width/s.w,host.height/s.h);
+  return {scale,ox:(host.width-s.w*scale)/2,oy:(host.height-s.h*scale)/2,
+          sw:s.w,sh:s.h};
+}
+async function toggleDirector(){
+  if(!ED.clip) return toast('Open a clip first.',1);
+  if(DC.on){ dcOff(); return }
+  try{
+    const info=await api('/api/clips/'+encodeURIComponent(ED.clip.filename)
+      +'/campath?rejected='+(!!ED.clip.rejected));
+    DC.src={w:info.src_width,h:info.src_height};
+    DC.dur=info.duration_s||edDur();
+    DC.keys=(info.keyframes||[]).map(k=>Object.assign({},k));
+  }catch(e){ return toast(e.message,1) }
+  DC.on=true;
+  // The box starts where the camera already is at the playhead, so the
+  // first drag adjusts a real shot rather than starting from the frame.
+  DC.box=dcSampleAt($('#edVideo').currentTime||0);
+  $('#dcamBox').classList.remove('hide');
+  $('#dcamBar').classList.remove('hide');
+  $('#sbDirector').classList.add('on');
+  dcDraw(); dcMarks();
+  toast('Drag the box to move the shot, a corner to push in. Set a keyframe '
+    +'at each point of the move, then Apply.');
+}
+function dcOff(){
+  DC.on=false;
+  $('#dcamBox').classList.add('hide');
+  $('#dcamBar').classList.add('hide');
+  $('#sbDirector').classList.remove('on');
+  $$('.kfm').forEach(el=>el.remove());
+}
+/* Interpolate exactly as the server does. Divergence here would mean the
+   preview shows one move and the render produces another. */
+function dcEase(name,u){
+  u=clamp(u,0,1);
+  if(name==='linear') return u;
+  if(name==='hold') return 0;
+  if(name==='ease_in') return u*u;
+  if(name==='ease_out') return 1-(1-u)*(1-u);
+  return u<0.5 ? 2*u*u : 1-Math.pow(-2*u+2,2)/2;
+}
+function dcSampleAt(t){
+  const s=dcSrc();
+  if(!DC.keys.length) return {cx:s.w/2,cy:s.h/2,h:s.h};
+  const K=DC.keys.slice().sort((a,b)=>a.t-b.t);
+  if(t<=K[0].t) return {cx:K[0].cx,cy:K[0].cy,h:K[0].h};
+  const last=K[K.length-1];
+  if(t>=last.t) return {cx:last.cx,cy:last.cy,h:last.h};
+  for(let i=0;i<K.length-1;i++){
+    const a=K[i],b=K[i+1];
+    if(t>=a.t&&t<=b.t){
+      const span=b.t-a.t, u=span<=0?0:(t-a.t)/span, e=dcEase(a.easing,u);
+      return {cx:a.cx+(b.cx-a.cx)*e,cy:a.cy+(b.cy-a.cy)*e,h:a.h+(b.h-a.h)*e};
+    }
+  }
+  return {cx:last.cx,cy:last.cy,h:last.h};
+}
+function dcDraw(){
+  if(!DC.on||!DC.box) return;
+  const g=dcGeom(); if(!g) return;
+  const w=DC.box.h*9/16;
+  const x=DC.box.cx-w/2, y=DC.box.cy-DC.box.h/2;
+  const el=$('#dcamBox');
+  el.style.left=(g.ox+x*g.scale)+'px';
+  el.style.top=(g.oy+y*g.scale)+'px';
+  el.style.width=(w*g.scale)+'px';
+  el.style.height=(DC.box.h*g.scale)+'px';
+  // Rendered size decides whether the grips can coexist with the body.
+  el.classList.toggle('small', Math.min(w,DC.box.h)*g.scale<44);
+  const zoom=g.sh/Math.max(1,DC.box.h);
+  $('#dcamLab').textContent=Math.round(w)+'x'+Math.round(DC.box.h)
+    +' \u00b7 '+zoom.toFixed(2)+'x';
+  $('#dcamCount').textContent=DC.keys.length
+    +(DC.keys.length===1?' keyframe':' keyframes');
+}
+/* Keep the box legal in the same order the server does: clamp the SIZE
+   first, then the position. The other order lets an oversized box hang off
+   the edge wherever it is put. */
+function dcClamp(){
+  const s=dcSrc();
+  const maxH=Math.min(s.h,s.w*16/9), minH=Math.max(2,0.25*s.h);
+  DC.box.h=clamp(DC.box.h,minH,maxH);
+  const w=DC.box.h*9/16;
+  DC.box.cx=clamp(DC.box.cx,w/2,s.w-w/2);
+  DC.box.cy=clamp(DC.box.cy,DC.box.h/2,s.h-DC.box.h/2);
+}
+function dcDrag(el,mode){
+  if(!el) return;
+  el.addEventListener('pointerdown',e=>{
+    if(!DC.on||!DC.box) return;
+    e.preventDefault(); e.stopPropagation();
+    el.setPointerCapture(e.pointerId);
+    const g=dcGeom(); if(!g) return;
+    DC.dragging=true; DC.dirty=true;
+    const start={x:e.clientX,y:e.clientY,box:Object.assign({},DC.box)};
+    const move=ev=>{
+      const dx=(ev.clientX-start.x)/g.scale, dy=(ev.clientY-start.y)/g.scale;
+      if(mode==='move'){
+        DC.box.cx=start.box.cx+dx; DC.box.cy=start.box.cy+dy;
+      }else{
+        // Corner drag = push in/out about the box centre. Driving it from
+        // the diagonal keeps 9:16 without the operator managing width.
+        const sign=(mode==='br'||mode==='tr')?1:-1;
+        DC.box.h=start.box.h+sign*dy*2;
+      }
+      dcClamp(); dcDraw();
+    };
+    const up=()=>{ DC.dragging=false;
+      el.removeEventListener('pointermove',move);
+      el.removeEventListener('pointerup',up);
+      el.removeEventListener('pointercancel',up); };
+    el.addEventListener('pointermove',move);
+    el.addEventListener('pointerup',up);
+    el.addEventListener('pointercancel',up);
+  });
+}
+function dcMarks(){
+  $$('.kfm').forEach(el=>el.remove());
+  if(!DC.on) return;
+  const dur=DC.dur||edDur()||1, ruler=$('#tlRuler');
+  if(!ruler) return;
+  DC.keys.forEach((k,i)=>{
+    const m=document.createElement('div');
+    m.className='kfm'; m.style.left=(clamp(k.t/dur,0,1)*100)+'%';
+    m.title=k.t.toFixed(2)+'s \u00b7 '+k.easing
+      +' — click to go there, shift-click to delete';
+    m.onclick=ev=>{
+      if(ev.shiftKey){
+        if(DC.keys.length<=1) return toast('A camera path needs a keyframe.',1);
+        DC.keys.splice(i,1); dcMarks(); dcDraw(); return;
+      }
+      DC.dirty=false;
+      $('#edVideo').currentTime=k.t;
+      DC.box=dcSampleAt(k.t); dcDraw();
+    };
+    ruler.appendChild(m);
+  });
+}
+function dcSetKey(){
+  if(!DC.on||!DC.box) return;
+  const t=Math.max(0,$('#edVideo').currentTime||0);
+  const ease=$('#dcamEase').value;
+  // Replace rather than stack: two keyframes at one instant is an
+  // ambiguous instruction, and the server refuses it outright.
+  const at=DC.keys.findIndex(k=>Math.abs(k.t-t)<0.02);
+  const kf={t:+t.toFixed(3),cx:Math.round(DC.box.cx),cy:Math.round(DC.box.cy),
+            h:Math.round(DC.box.h),easing:ease};
+  if(at>=0) DC.keys[at]=kf; else DC.keys.push(kf);
+  DC.keys.sort((a,b)=>a.t-b.t);
+  // The adjustment is now part of the path, so the playhead may drive
+  // the box again.
+  DC.dirty=false;
+  dcMarks(); dcDraw();
+  toast('Keyframe at '+mmss(t)+' — '+DC.keys.length+' on this move.');
+}
+async function dcApply(){
+  if(!DC.on||!DC.keys.length) return;
+  if(DC.dirty && !confirm('The box has been moved since the last keyframe. '
+      + 'Apply without it?\n\nPress Cancel, then "Set keyframe", to keep '
+      + 'the adjustment you just made.')) return;
+  const btn=$('#dcamApply'); btn.disabled=true; btn.textContent='Starting…';
+  try{
+    const r=await post('/api/clips/recam',{
+      filename:ED.clip.filename, rejected:!!ED.clip.rejected,
+      keyframes:DC.keys});
+    toast('Re-framing with '+r.keyframes+' keyframe(s). The browser cannot '
+      +'re-crop video — this re-runs the pipeline and lands as a new clip. '
+      +'Follow it under Activity.');
+    go('activity'); refresh();
+  }catch(e){ toast(e.message,1) }
+  finally{ btn.disabled=false; btn.textContent='Apply camera' }
+}
+$('#sbDirector').onclick=toggleDirector;
+$('#dcamKey').onclick=dcSetKey;
+$('#dcamApply').onclick=dcApply;
+$('#dcamClear').onclick=()=>{
+  const s=dcSrc();
+  DC.keys=[{t:0,cx:s.w/2,cy:s.h/2,h:Math.min(s.h,s.w*16/9),
+            easing:'ease_in_out'}];
+  DC.dirty=false;
+  DC.box=dcSampleAt(0); dcMarks(); dcDraw();
+  toast('Camera reset to a centred, locked-off shot.');
+};
+/* Zoom without the grips: the wheel (and a trackpad pinch, which
+   Chromium delivers as a ctrl-wheel) drives the crop height about the
+   box centre. This is the only way to pull back out once the box is
+   small enough to have dropped its grips. */
+$('#dcamBox').addEventListener('wheel',e=>{
+  if(!DC.on||!DC.box) return;
+  e.preventDefault();
+  DC.dirty=true;
+  DC.box.h*=(e.deltaY>0?1.08:0.92);
+  dcClamp(); dcDraw();
+},{passive:false});
+dcDrag($('#dcamBox'),'move');
+['tl','tr','bl','br'].forEach(c=>dcDrag($('#dcamBox .g.'+c),c));
+// Following the playhead is what makes the move readable: scrub, and the
+// box walks the path that was authored.
+$('#edVideo').addEventListener('timeupdate',()=>{
+  // Never while the operator is holding the box, and never on top of an
+  // uncommitted adjustment — the playhead is the SECOND author here, and
+  // it must not overwrite the first.
+  if(DC.on&&DC.keys.length&&!DC.dragging&&!DC.dirty){
+    DC.box=dcSampleAt($('#edVideo').currentTime||0); dcDraw();
+  }
+});
+addEventListener('resize',()=>{ if(DC.on) dcDraw() });
+
+
+/* ============================================================ SCREEN SCRIPT
+   The composer used to hand the brief to `split_into_beats`, which cuts on
+   sentence boundaries. That predicts where a shot starts only for a
+   one-line idea: the moment a brief contains dialogue, a full stop lands
+   mid-speech and the character cue ends up INSIDE the picture prompt,
+   where a video model renders it as subtitles and mouth artefacts.
+
+   In script mode the blocks the writer typed are the beats. Parsing runs
+   on the SERVER — a second parser here would be a second answer to "where
+   does this shot begin", and the one on screen would be the wrong one. */
+let SP={on:false,summary:null,timer:null};
+
+function spLineClass(blocks,i){
+  const b=blocks.find(x=>x.line_no===i);
+  if(!b) return 'a';
+  return {heading:'h',character:'c',dialogue:'d',parenthetical:'p',
+          transition:'t',action:'a'}[b.type]||'a';
+}
+function spPaint(){
+  const text=$('#spText').value;
+  const blocks=(SP.summary&&SP.summary.blocks)||[];
+  const lines=text.split('\n');
+  $('#spMirror').innerHTML=lines.map((ln,i)=>
+    `<div class="${spLineClass(blocks,i)}">${esc(ln)||'&nbsp;'}</div>`).join('');
+  $('#spMirror').scrollTop=$('#spText').scrollTop;
+}
+async function spParse(){
+  const text=$('#spText').value;
+  if(!text.trim()){ SP.summary=null; spPaint(); $('#spBar').innerHTML=''; return }
+  try{ SP.summary=await post('/api/screenplay',{text}) }
+  catch(e){ return }
+  spPaint();
+  const s=SP.summary, c=s.counts||{};
+  // The shot count is the number that matters: it is what the generator
+  // bills for, and in script mode it comes from the writing, not a picker.
+  $('#spBar').innerHTML=
+    `<span class="spchip"><b>${s.shot_count}</b> shot${s.shot_count===1?'':'s'}</span>`
+    +`<span class="spchip"><b>${c.heading||0}</b> scenes</span>`
+    +`<span class="spchip"><b>${c.dialogue||0}</b> dialogue</span>`
+    +(s.speakers&&s.speakers.length
+        ? `<span class="spchip">${s.speakers.map(esc).join(' · ')}</span>` : '')
+    +`<span class="spchip"><b>${s.word_count}</b> words</span>`
+    +`<span>Dialogue is spoken, not drawn — it never enters the picture prompt.</span>`;
+}
+function spSchedule(){ clearTimeout(SP.timer); SP.timer=setTimeout(spParse,220) }
+
+function toggleScript(){
+  SP.on=!SP.on;
+  $('#chScript').classList.toggle('on',SP.on);
+  $('#spWrap').classList.toggle('hide',!SP.on);
+  $('#spBar').classList.toggle('hide',!SP.on);
+  $('#brief').classList.toggle('hide',SP.on);
+  if(SP.on){
+    // Carry the prose across so switching modes never loses what was typed.
+    if(!$('#spText').value.trim()&&$('#brief').value.trim())
+      $('#spText').value=$('#brief').value;
+    $('#spText').focus(); spParse();
+  }else{
+    if($('#spText').value.trim()) $('#brief').value=$('#spText').value;
+  }
+}
+/* The one piece of real screenplay behaviour worth automating: TAB after
+   a blank line starts a character cue, which is the keystroke a writer
+   actually repeats a hundred times. Everything else is left alone —
+   auto-formatting that fights the typist is worse than none. */
+$('#spText').addEventListener('keydown',e=>{
+  if(e.key!=='Tab') return;
+  e.preventDefault();
+  const ta=e.target, at=ta.selectionStart;
+  const before=ta.value.slice(0,at), line=before.split('\n').pop();
+  const ins=line.trim()?'':'\n';
+  ta.setRangeText(ins,at,ta.selectionEnd,'end');
+  spSchedule();
+});
+$('#spText').addEventListener('input',()=>{spPaint();spSchedule()});
+$('#spText').addEventListener('scroll',()=>{
+  $('#spMirror').scrollTop=$('#spText').scrollTop;
+});
+$('#chScript').onclick=toggleScript;
+/* The brief the rest of the composer reads. In script mode it is the
+   screenplay text, and `screenplay:true` tells the server to parse it
+   rather than cutting it on full stops. */
+function composerBrief(){
+  return SP.on ? $('#spText').value : $('#brief').value;
+}
+function composerIsScript(){ return !!SP.on }
 
 /* ================================================================= HOME */
 /* The tool row gates on real capabilities: a tile that this machine cannot
@@ -1215,7 +2045,7 @@ function projectCards(){
       return `<div class="proj" data-open="${esc(c.filename)}">
         <div class="shot">
           ${c.thumb_url?`<img loading="lazy" src="${esc(c.thumb_url)}">`
-                       :`<video preload="metadata" src="${esc(c.url)}#t=1"></video>`}
+                       :`<video preload="metadata" muted playsinline src="${esc(c.url)}#t=1"></video>`}
           <div class="badges">
             <span class="pill">${c.rejected?'quarantined':'clip'}</span>
             ${sc!==null?`<span class="pill" style="color:var(--score)">${sc}</span>`:''}
@@ -1227,8 +2057,10 @@ function projectCards(){
     }
     const p=it.p;
     return `<div class="proj" data-gen="${esc(p.slug)}">
-      <div class="shot"><video preload="metadata" src="${esc(p.url||p.sequence_url||'')}#t=0.5"></video>
+      <div class="shot"><video preload="metadata" muted playsinline src="${esc(p.url||p.sequence_url||'')}#t=0.5"></video>
         <div class="badges"><span class="pill">generated</span></div>
+        <button class="projdel" data-gendel="${esc(p.slug)}"
+          title="Move this piece to trash">${ic('trash',14)}</button>
         <div class="foot">${p.shots||1} shot(s)</div></div>
       <b>${esc(p.slug)}</b><i>${mb(p.size_mb)}</i></div>`;
   }).join('');
@@ -1251,12 +2083,65 @@ function bindOpeners(root){
   root.querySelectorAll('[data-open]').forEach(el=>el.onclick=e=>{
     e.stopPropagation();openDetail(el.dataset.open)});
   root.querySelectorAll('[data-gen]').forEach(el=>el.onclick=()=>go('assets'));
+  // Generated pieces had no delete path anywhere in the UI, so a
+  // forty-shot experiment could only be removed in Explorer.
+  root.querySelectorAll('[data-gendel]').forEach(el=>el.onclick=async e=>{
+    e.stopPropagation();
+    const slug=el.dataset.gendel;
+    if(!confirm(`Move the generated piece "${slug}" to workspace/trash?\n\n`
+      +`Its sequence and every shot go with it. This is a move, not a `
+      +`delete.`)) return;
+    el.disabled=true;
+    try{ await post('/api/generated/delete',{slug});
+      toast(`Moved "${slug}" to workspace/trash/generated.`); refresh() }
+    catch(err){ el.disabled=false; toast(err.message,1) }
+  });
 }
 function openNewest(tab){
   const c=CLIPS[0];
   if(!c) return toast('No clip to edit yet — run the pipeline first.',1);
   openEditor(c.filename,tab);
 }
+
+/* Is what was pasted broadcasting right now? Asked of the server, not
+   guessed from the URL: a /watch?v= link is a live stream or a finished
+   video depending on the minute, and those take completely different
+   paths through this pipeline. */
+let LIVECHK=0;
+async function probeLive(){
+  const src=$('#srcUrl').value.trim();
+  const bar=$('#liveHint');
+  if(!/^https?:\/\//i.test(src)||!/youtu\.?be|youtube\.com/i.test(src)){
+    bar.classList.add('hide'); return;
+  }
+  const mine=++LIVECHK;
+  bar.classList.remove('hide');
+  bar.innerHTML='<span class="dim">checking whether it is live…</span>';
+  let r;
+  try{ r=await api('/api/live/check?url='+encodeURIComponent(src)) }
+  catch(e){ if(mine===LIVECHK) bar.classList.add('hide'); return }
+  if(mine!==LIVECHK) return;   // a newer paste won
+  if(r.live===false){ bar.classList.add('hide'); return }
+  const unsure=r.live===null;
+  bar.innerHTML=`
+    <span class="tag ${unsure?'warn':'ok'}">${unsure?'maybe live':'LIVE'}</span>
+    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+      white-space:nowrap">${esc(r.title||r.reason||'')}</span>
+    <button class="wbtn solid" id="btnCapture">Capture &amp; clip it live</button>`;
+  $('#btnCapture').onclick=async()=>{
+    const b=$('#btnCapture'); b.disabled=true; b.textContent='Starting…';
+    try{
+      const res=await post('/api/live/start',{target:src,platform:'youtube'});
+      toast(res.note||'Capturing — clips appear as each segment finishes.');
+      go('activity'); refresh();
+    }catch(e){ b.disabled=false; b.textContent='Capture & clip it live';
+      toast(e.message,1) }
+  };
+}
+let LIVETIMER=null;
+$('#srcUrl').addEventListener('input',()=>{
+  clearTimeout(LIVETIMER); LIVETIMER=setTimeout(probeLive,700);
+});
 
 $('#btnClip1').onclick=async()=>{
   const src=$('#srcUrl').value.trim();
@@ -1279,9 +2164,111 @@ $('#btnClip1').onclick=async()=>{
 $('#btnPickFile').onclick=()=>pickUpload();
 $('#btnSample').onclick=()=>{const c=CLIPS[0];
   c?openDetail(c.filename):toast('Nothing finished yet.',1)};
-$('#btnShare').onclick=()=>toast('Run `bta web --host 0.0.0.0 --port 8011` to '
-  +'reach this from your phone on the same Wi-Fi. Binding to 0.0.0.0 exposes '
-  +'the control API to your whole network.');
+/* ------------------------------------------------- connect another device
+   This used to be a toast telling the operator to go and run a command.
+   The server already knows every address it answers on and can mint a
+   pairing code, so the button asks it and shows the answer — the same
+   move as the editor's controls: run the thing, do not describe it. */
+async function openConnect(){
+  let info;
+  try{ info=await api('/api/access') }
+  catch(e){ return toast(e.message,1) }
+
+  const lan=(info.urls&&info.urls.lan)||[], ts=(info.urls&&info.urls.tailscale)||[],
+        pub=(info.urls&&info.urls.public)||[];
+  const reachable=pub.concat(ts,lan);
+  const bare=u=>{try{const x=new URL(u);return x.origin+'/'}catch(e){return u}};
+
+  let codeHtml='';
+  if(info.auth_enforced && reachable.length){
+    try{
+      const p=await post('/api/pair',{});
+      if(p.code) codeHtml=`
+        <div style="text-align:center;background:var(--panel2);border:1px solid var(--line2);
+                    border-radius:12px;padding:18px;margin:14px 0">
+          <div class="faint" style="margin-bottom:8px">Type this on the other device</div>
+          <div style="font-size:38px;font-weight:800;letter-spacing:.14em;
+                      color:var(--score);line-height:1">${esc(p.code)}</div>
+          <div class="faint" style="margin-top:9px">
+            Valid ${Math.round((p.expires_in_s||600)/60)} minutes · one device ·
+            ${p.attempts||5} attempts</div>
+        </div>`;
+    }catch(e){ codeHtml=`<div class="faint">Could not mint a pairing code: ${esc(e.message)}</div>` }
+  }
+
+  const list=(title,urls,note)=>!urls.length?'':`
+    <h2 style="margin:18px 0 8px">${esc(title)}</h2>
+    ${note?`<div class="faint" style="margin-bottom:8px">${esc(note)}</div>`:''}
+    ${urls.map(u=>`
+      <div class="cmd" data-copy="${esc(u)}" style="margin-top:6px">
+        <code>${esc(bare(u))}</code>
+        <button title="Copy the full link, token included">${ic('copy',14)}</button>
+      </div>`).join('')}`;
+
+  const body=`
+    <div style="max-width:560px">
+      <h1 style="font-size:19px;margin-bottom:4px">Connect a device</h1>
+      <div class="sub" style="margin-bottom:0">
+        Open the address below on your phone or laptop, then pair it.
+        ${info.auth_enforced
+          ? 'The token stays on this machine — the code is what travels.'
+          : '<b style="color:var(--warn)">This server has no access token,</b> '
+            +'so anything that can reach the address can control it.'}
+      </div>
+      ${codeHtml}
+      ${list('On this network',lan,'Same Wi-Fi as this machine.')}
+      ${list('Over Tailscale',ts,'Works from anywhere, encrypted, nothing public.')}
+      ${list('Public link',pub,'Reachable from the open internet while the tunnel runs.')}
+      ${reachable.length?'':`
+        <div class="warnbox" style="margin:14px 0 0">
+          This server is bound to loopback, so only this machine can reach it.
+          Restart it with <b>bta web --lan</b> for your network, or
+          <b>bta web --tunnel cloudflare</b> to reach it from anywhere.</div>`}
+      <div class="faint" style="margin-top:16px;line-height:1.65">
+        Exposure right now: <b>${esc(info.exposure||'unknown')}</b>.
+        ${info.auth_enforced?'':'Restart with --lan to turn the token on.'}
+      </div>
+    </div>`;
+  openSheet(body);
+}
+
+/* Its own element, not the clip dialog's. Rendering into #dlg would wipe
+   #dlgVideo/#dlgScene/#dlgActs, and the next openDetail() would query for
+   nodes that no longer exist — a sheet that breaks the gallery behind it. */
+function openSheet(html){
+  // These are opened from the drawer. Leaving it standing behind the
+  // sheet means the operator closes the sheet onto a drawer they did not
+  // ask to still be there — and on a phone it also stole every tap.
+  setDrawer(false);
+  const sheet=$('#sheet');
+  sheet.innerHTML=`<div class="dlgnav"><button id="sheetX">${ic('x',16)}</button></div>`+html;
+  $('#sheetMask').classList.add('on');
+  $('#sheetX').onclick=closeSheet;
+  sheet.querySelectorAll('.cmd[data-copy]').forEach(el=>{
+    el.onclick=async()=>{
+      const link=el.dataset.copy;
+      try{
+        // navigator.clipboard is unavailable on plain http from another
+        // device (non-secure context), which is exactly where this sheet
+        // gets used — so failure shows the link instead of swallowing it.
+        if(!navigator.clipboard) throw new Error('no clipboard access');
+        await navigator.clipboard.writeText(link);
+        toast('Link copied. It carries the access token, so treat it like a password.');
+      }catch(e){
+        const box=document.createElement('textarea');
+        box.value=link; box.className='fi'; box.rows=2;
+        box.style.cssText='margin-top:8px;font-size:12px';
+        el.after(box); box.select();
+        toast('Copy is blocked on an insecure connection — select the link below.',1);
+      }
+    };
+  });
+}
+function closeSheet(){
+  $('#sheetMask').classList.remove('on');
+  $('#sheet').innerHTML='';
+}
+$('#btnShare').onclick=openConnect;
 async function startWatch(){
   try{const r=await api('/api/watch/start',{method:'POST'});
     toast(r.status==='already_running'?'Already watching.':'Watching channels.');
@@ -1289,6 +2276,84 @@ async function startWatch(){
   }catch(e){toast(e.message,1)}
 }
 $('#btnWatch').onclick=startWatch;
+
+/* ============================================================= ACTIVITY */
+/* A progress bar that is not measuring anything is worse than no bar: the
+   old one was hardcoded to 55% and animated, so a wedged run and a healthy
+   one looked identical. Everything drawn here comes from the run's own
+   output and from how long these stages have actually taken on this
+   machine — and when there is no measurement yet, it says so. */
+const humanDur=s=>{
+  if(s===null||s===undefined) return '';
+  s=Math.max(0,Number(s)||0);
+  if(s<45) return Math.round(s)+'s';
+  if(s<3600) return Math.round(s/60)+' min';
+  return (s/3600).toFixed(1)+' h';
+};
+const STATUS_TAG={running:'warn',completed:'ok',cancelled:'mut',failed:'bad'};
+
+function taskCard(t){
+  const p=t.progress||null, running=t.status==='running';
+  const pct=p&&p.fraction!==null&&p.fraction!==undefined
+    ? Math.round(p.fraction*100) : null;
+
+  let meter='';
+  if(running){
+    meter=pct===null
+      // Indeterminate, and honest about it — a striped full-width bar
+      // that claims no particular number.
+      ? `<div class="bar indet" style="margin:2px 0 10px"><i style="width:100%"></i></div>`
+      : `<div class="bar" style="margin:2px 0 10px"><i style="width:${pct}%"></i></div>`;
+  }
+
+  let line='';
+  if(running&&p){
+    const bits=[];
+    if(p.label) bits.push(esc(p.label));
+    if(pct!==null) bits.push(pct+'%');
+    if(p.stages_total) bits.push(`stage ${p.stages_done.length}/${p.stages_total}`);
+    if(p.eta_known) bits.push('~'+humanDur(p.eta_s)+' left');
+    else if(p.stages_total) bits.push('no estimate yet — this machine has not '
+      +'finished these stages before');
+    line=`<div class="faint" style="margin:6px 0 2px">${bits.join(' · ')}</div>`;
+  }
+
+  const exit=(t.return_code!==null&&t.return_code!==undefined
+    &&t.status!=='cancelled') ? ' · exit '+t.return_code : '';
+  return `
+    <div class="card" style="margin-bottom:10px">
+      <div class="row" style="justify-content:space-between">
+        <b style="font-size:13.5px">${esc(t.description||t.kind)}</b>
+        <span class="tag ${STATUS_TAG[t.status]||'mut'}">${esc(t.status)}</span></div>
+      <div class="faint" style="margin:6px 0 4px">${humanDur(t.elapsed_s)} elapsed${exit}</div>
+      ${line}${meter}
+      <pre class="log">${esc(t.log||'')||'(no output yet)'}</pre>
+      ${running?`<button class="wbtn" style="margin-top:9px"
+        data-cancel="${esc(t.id)}">Cancel</button>`:''}
+    </div>`;
+}
+
+async function renderEstimates(){
+  try{
+    const e=await api('/api/estimates');
+    $('#estBody').innerHTML=e.stages.map(s=>`<tr>
+      <td><b>${esc(s.label)}</b><div class="faint">${esc(s.stage)}</div></td>
+      <td>${s.measured?esc(s.human):'<span class="dim">not measured yet</span>'}</td>
+      <td class="dim">${s.measured?'median of past runs':'no completed run on this machine'}</td>
+      </tr>`).join('')
+      +(e.total_s?`<tr><td><b>Whole pipeline</b></td><td><b>${esc(humanDur(e.total_s))}</b></td>
+        <td class="dim">sum of the medians above</td></tr>`
+       :`<tr><td colspan="3" class="dim">A full-pipeline estimate needs every
+         stage measured at least once.</td></tr>`);
+  }catch(e){
+    $('#estBody').innerHTML=`<tr><td colspan="3" class="dim">${esc(e.message)}</td></tr>`;
+  }
+}
+$('#btnClearTasks').onclick=async()=>{
+  try{const r=await post('/api/tasks/clear',{});
+    toast(`Cleared ${r.cleared} finished task(s).`);refresh()}
+  catch(e){toast(e.message,1)}
+};
 
 /* ============================================================= GENERATE */
 function nicheSwatch(n){
@@ -1379,7 +2444,7 @@ $('#chAudio').onclick=()=>{
     +'Voiceover hook panel.':'No local voice model installed. See Studio.')};
 
 $('#btnGo').onclick=async()=>{
-  const brief=$('#brief').value.trim();
+  const brief=composerBrief().trim();
   if(!brief) return toast('Write a brief first.',1);
   if(!SEL) return toast('Pick a style first.',1);
   const n=NICHES.find(x=>x.name===SEL)||{};
@@ -1387,20 +2452,22 @@ $('#btnGo').onclick=async()=>{
   try{
     await api('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({brief,niche:SEL,preset:SEL,shots:genShots(),
-        aspect_ratio:genAspect(),clip:false})});
+        aspect_ratio:genAspect(),clip:false,
+        screenplay:composerIsScript()})});
     toast('Generation started — follow it under Activity.');go('activity');
   }catch(e){toast(e.message,1)}
   finally{$('#btnGo').disabled=false;refresh()}
 };
 async function storyboard(){
-  const brief=$('#brief').value.trim();
+  const brief=composerBrief().trim();
   if(!brief) return toast('Write a brief first.',1);
   if(!SEL) return toast('Pick a style first.',1);
   const n=NICHES.find(x=>x.name===SEL)||{};
   try{
     const sb=await api('/api/storyboard',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({brief,preset:SEL,shots:genShots()})});
+      body:JSON.stringify({brief,preset:SEL,shots:genShots(),
+        screenplay:composerIsScript()})});
     const rows=sb.shots||[];
     $('#sbOut').innerHTML='<h2 style="margin:4px 0 10px">Storyboard</h2>'+
       rows.map((s,i)=>`<div class="card" style="margin-bottom:8px">
@@ -1472,6 +2539,12 @@ function clipCard(c,rank){
       ${tags.length?`<div class="tags">${tags.join('')}</div>`:''}
     </div></div>`;
 }
+/* Multi-select for bulk delete. Held here rather than in the DOM so a
+   refresh (one per second) cannot silently drop a selection halfway
+   through choosing forty clips. */
+const PICKED=new Set();
+let PICKING=false;
+
 function renderClips(){
   const shown=sortClips(filterClips(CLIPS)).filter(c=>!HIDDEN.has(c.filename));
   DLGLIST=shown;
@@ -1484,9 +2557,77 @@ function renderClips(){
   const rej=sortClips(REJECTED);
   $('#rejHead').classList.toggle('hide',!rej.length);
   $('#rejGrid').innerHTML=rej.map(clipCard).join('');
+  renderSelectBar(shown.length,rej.length);
   bindClipActions();
 }
+
+/* The select/delete bar. Deliberately not a per-card checkbox that is
+   always visible: selection is a mode you enter, so an ordinary tap on a
+   phone still opens the clip rather than ticking it. */
+function renderSelectBar(nShown,nRejected){
+  const bar=$('#selBar'); if(!bar) return;
+  bar.classList.toggle('on',PICKING);
+  $('#btnPick').classList.toggle('on',PICKING);
+  $('#btnPick').textContent=PICKING?'Done':'Select';
+  $('#selCount').textContent=PICKED.size
+    ? `${PICKED.size} selected` : 'Tap clips to select them';
+  $('#btnDelPicked').disabled=!PICKED.size;
+  $('#btnDelPicked').textContent=PICKED.size
+    ? `Delete ${PICKED.size}` : 'Delete';
+  $('#btnPickAll').textContent=(PICKED.size>=nShown&&nShown)?'Select none'
+                                                            :'Select all';
+  $('#btnEmptyQ').classList.toggle('hide',!nRejected);
+  $('#btnEmptyQ').textContent=`Empty quarantine (${nRejected})`;
+  $$('.cl').forEach(el=>{
+    const fn=el.dataset.fn;
+    el.classList.toggle('picking',PICKING);
+    el.classList.toggle('picked',PICKED.has(fn));
+  });
+}
+
+async function deletePicked(){
+  if(!PICKED.size) return;
+  const names=[...PICKED];
+  // Quarantined clips live in a different directory, so a mixed selection
+  // cannot be one call. Split it rather than silently dropping half.
+  const rejSet=new Set(REJECTED.map(c=>c.filename));
+  const groups=[[names.filter(n=>!rejSet.has(n)),false],
+                [names.filter(n=>rejSet.has(n)),true]];
+  if(!confirm(`Move ${names.length} clip(s) to workspace/trash?\n\n`
+    +`Export packs and thumbnails go with them. This is a move, not a `
+    +`delete — everything is recoverable from workspace/trash.`)) return;
+  let ok=0, bad=[];
+  for(const [list,rejected] of groups){
+    if(!list.length) continue;
+    try{
+      const r=await post('/api/clips/delete-many',
+        {filenames:list,rejected});
+      ok+=r.count; bad=bad.concat(r.failed||[]);
+    }catch(e){ bad.push({filename:`${list.length} clip(s)`,error:e.message}) }
+  }
+  PICKED.clear(); PICKING=false;
+  toast(bad.length
+    ? `Trashed ${ok}. ${bad.length} could not be moved: `
+      +bad.slice(0,3).map(b=>b.filename+' — '+b.error).join('; ')
+    : `Trashed ${ok} clip(s). Recover them from workspace/trash.`, !!bad.length);
+  refresh();
+}
 function bindClipActions(){
+  // Select mode intercepts the card before anything else binds: a tap
+  // must tick the clip, not open it, or bulk-selecting on a phone means
+  // forty modals.
+  if(PICKING){
+    $$('.cl').forEach(el=>{
+      el.onclick=e=>{
+        e.stopPropagation(); e.preventDefault();
+        const fn=el.dataset.fn;
+        PICKED.has(fn)?PICKED.delete(fn):PICKED.add(fn);
+        el.classList.toggle('picked',PICKED.has(fn));
+        renderSelectBar($$('#clipGrid .cl').length,REJECTED.length);
+      };
+    });
+    return;
+  }
   $$('[data-open]').forEach(el=>el.onclick=e=>{e.stopPropagation();openDetail(el.dataset.open)});
   $$('[data-edit]').forEach(el=>el.onclick=e=>{e.stopPropagation();openEditor(el.dataset.edit)});
   $$('[data-dl]').forEach(el=>el.onclick=e=>{e.stopPropagation();window.open(el.dataset.dl,'_blank')});
@@ -1521,6 +2662,27 @@ function bindClipActions(){
     }catch(err){el.disabled=false;toast(err.message,1)}
   });
 }
+
+$('#btnPick').onclick=()=>{
+  PICKING=!PICKING; if(!PICKING) PICKED.clear();
+  renderClips();
+};
+$('#btnPickAll').onclick=()=>{
+  const shown=$$('#clipGrid .cl').map(el=>el.dataset.fn);
+  if(PICKED.size>=shown.length) PICKED.clear();
+  else shown.forEach(f=>PICKED.add(f));
+  renderClips();
+};
+$('#btnDelPicked').onclick=deletePicked;
+$('#btnEmptyQ').onclick=async()=>{
+  if(!REJECTED.length) return toast('Quarantine is already empty.');
+  if(!confirm(`Move all ${REJECTED.length} quarantined clip(s) to `
+    +`workspace/trash?\n\nThese are the ones QA rejected. They are the `
+    +`evidence for why — this moves them, it does not delete them.`)) return;
+  try{const r=await post('/api/clips/empty-quarantine',{});
+    toast(r.note||`Trashed ${r.count} quarantined clip(s).`);refresh()}
+  catch(e){toast(e.message,1)}
+};
 
 /* ========================================================= clip detail */
 const DETAIL_CACHE=new Map();
@@ -1711,6 +2873,10 @@ function closeDetail(){
 }
 $('#dlgClose').onclick=closeDetail;
 $('#mask').onclick=e=>{if(e.target.id==='mask') closeDetail()};
+$('#sheetMask').onclick=e=>{if(e.target.id==='sheetMask') closeSheet()};
+addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&$('#sheetMask').classList.contains('on')) closeSheet();
+});
 $('#dlgTranscriptOnly').onchange=async()=>{
   if(!DLG) return;
   const det=await loadDetail(DLG.filename,DLG.rejected);
@@ -1769,15 +2935,37 @@ async function openEditor(fn,tab){
   const c=CLIPS.concat(REJECTED).find(x=>x.filename===fn);
   if(!c) return toast('Clip not found.',1);
   ED.open=true; ED.clip=c; ED.detail=null; ED.strip=null; ED.peaks=null;
-  ED.cutWords.clear(); ED.cutGaps.clear();
+  ED.cutWords.clear(); ED.cutGaps.clear(); ED.trim=null;
+  $('#tlTrimBox').classList.add('hide');
+  $('#edTrimApply').classList.add('hide');
+  $('#tlTrimBtn').classList.remove('on');
   // History belongs to the clip being edited; carrying it across an
   // openEditor() would let undo remove a mark from a different video.
   ED.hist.length=0; ED.undone.length=0;
   if(tab) ED.tab=tab;
   $('#editor').classList.add('on');
+  // A caller that asked for a specific tool (captions, dubbing, …) wants
+  // that panel; anything else opens on the video. Only the narrow layout
+  // acts on this — wide shows all three regions regardless.
+  setEditorTab(tab?'tools':'preview');
   $('#edTitle').textContent=c.title||c.filename;
   $('#edCredits').textContent='local';
-  const v=$('#edVideo'); v.src=c.url; v.currentTime=0;
+  const v=$('#edVideo');
+  // The poster matters more than it looks. Every rendered clip carries an
+  // edge FADE — added by the renderer to keep the cut transient off the
+  // true peak — so frame 0 is genuinely black, and a paused <video> parked
+  // at 0 shows exactly that. On a phone, where the preview is the whole
+  // screen, the editor read as "the footage failed to load" when in fact
+  // it was fully decoded (readyState 4, videoWidth 1080, no error —
+  // measured 2026-08-12). The thumbnail is the frame the pipeline already
+  // chose as representative, so it stands in until playback starts.
+  // The thumb ENDPOINT, not `c.thumb_url`: that field is null for any clip
+  // whose export pack has no shipped thumbnail (most of them — measured
+  // null on the first clip in this gallery), while the endpoint grabs a
+  // frame on demand and always answers.
+  v.poster=`/api/clips/thumb/${encodeURIComponent(c.filename)}`
+    +(c.rejected?'?rejected=true':'');
+  v.src=c.url; v.currentTime=0;
   $('#frame916').style.setProperty('--none','0');
   renderRTabs(); renderRPanel(); updateStageChips();
   $('#edTranscript').innerHTML='<div class="faint">Loading transcript…</div>';
@@ -1792,10 +2980,27 @@ async function openEditor(fn,tab){
 }
 function closeEditor(){
   ED.open=false;
+  ED.trim=null;
+  $('#tlTrimBox').classList.add('hide');
+  $('#edTrimApply').classList.add('hide');
+  $('#tlTrimBtn').classList.remove('on');
   $('#editor').classList.remove('on');
   const v=$('#edVideo'); v.pause(); v.removeAttribute('src'); v.load();
 }
 $('#edBack').onclick=closeEditor;
+
+/* Which of the editor's three regions the narrow layout is showing. The
+   attribute is what the stylesheet keys off; above 980px the strip is
+   hidden and all three regions are visible at once, so this is inert. */
+function setEditorTab(name){
+  $('#editor').dataset.mtab=name;
+  $$('#edMTabs button').forEach(b=>b.classList.toggle('on',b.dataset.mtab===name));
+  // The transcript and the right rail were laid out while hidden, so the
+  // filmstrip and ruler have no width to measure against. Redraw once the
+  // region is actually on screen.
+  if(name==='preview'){ drawRuler(); syncTime() }
+}
+$$('#edMTabs button').forEach(b=>b.onclick=()=>setEditorTab(b.dataset.mtab));
 /* Applying the cut plan for real. This used to be three separate toasts
    (#edSave, #tlDel, #edNoticeAct) all describing a CLI command for the
    operator to go and run. The plan is still a plan — the browser cannot
@@ -2424,8 +3629,152 @@ function layoutTimeline(){
     lane.style.backgroundSize=`${w}px 100%`;
     lane.style.backgroundRepeat='no-repeat';
   }
-  drawRuler(); drawWave(); syncTime();
+  drawRuler(); drawWave(); syncTime(); drawTrim();
 }
+/* ================================================================ trim
+   The one edit that needed no transcript and did not exist: keep a range,
+   drop the rest. It goes through the same `--cut-file` path the word cuts
+   use — a trim is just the two cuts either side of what you kept — so the
+   browser still never re-encodes anything, and the result lands as a new
+   clip beside the original. */
+function edDur(){
+  return (ED.clip&&ED.clip.duration_s)||$('#edVideo').duration||0;
+}
+function trimOn(){ return !!ED.trim }
+
+function toggleTrim(){
+  if(!ED.clip) return toast('Open a clip first.',1);
+  const dur=edDur();
+  if(!dur) return toast('This clip has no known duration yet — give the '
+    +'preview a moment to load.',1);
+  if(!ED.trim && dur < minClip()+0.5){
+    return toast(`This clip is ${mmss(dur)} and the renderer will not go `
+      +`below ${Math.round(minClip())}s, so there is nothing to trim. To get `
+      +`a shorter piece, re-run the source rather than cutting this one.`,1);
+  }
+  ED.trim=ED.trim?null:{start:0,end:dur};
+  $('#tlTrimBox').classList.toggle('hide',!ED.trim);
+  $('#tlTrimBtn').classList.toggle('on',!!ED.trim);
+  $('#edTrimApply').classList.toggle('hide',!ED.trim);
+  drawTrim();
+  toast(ED.trim
+    ? 'Drag the two green handles to choose what to keep, then press Apply.'
+    : 'Trim off.');
+}
+
+function drawTrim(){
+  if(!ED.trim){ $('#tlTrimBox').classList.add('hide'); return }
+  // PERCENTAGES against the overlay's own parent, exactly like the
+  // playhead. The first version measured `#tlInner` and applied the
+  // result inside `.lanewrap` — which is ~60px narrower because of the
+  // two add-lane buttons — so the right handle landed past the edge of a
+  // 390px screen and could not be touched at all.
+  const dur=edDur()||1;
+  const pc=t=>clamp(t/dur,0,1)*100;
+  const a=pc(ED.trim.start), b=pc(ED.trim.end);
+  $('#trimOutL').style.cssText=`left:0;width:${a}%`;
+  $('#trimOutR').style.cssText=`left:${b}%;width:${Math.max(0,100-b)}%`;
+  $('#trimBand').style.cssText=`left:${a}%;width:${Math.max(0,b-a)}%`;
+  $('#trimL').style.left=a+'%';
+  $('#trimR').style.left=b+'%';
+  const kept=ED.trim.end-ED.trim.start, floor=minClip();
+  const btn=$('#edTrimApply');
+  if(btn){
+    // Below the renderer's floor the pipeline restores the cuts and
+    // produces a full-length copy that passes QA — so the button says
+    // what is wrong instead of offering an edit that cannot happen.
+    if(kept<floor){
+      btn.textContent=`Keep ≥ ${Math.round(floor)}s`;
+      btn.disabled=true;
+      btn.title=`This pipeline renders ${Math.round(floor)}–60s clips. `
+        +`Below that the renderer puts the cuts back.`;
+    }else{
+      btn.textContent=`Keep ${mmss(kept)} (cut ${mmss(dur-kept)})`;
+      btn.disabled=(dur-kept)<0.05;
+      btn.title='Re-render on this machine, keeping only the green range';
+    }
+  }
+}
+
+/* The renderer's duration floor, straight from the server — mirroring the
+   constant here is how the two drift apart. 29.5 only as a last resort
+   when the detail call has not landed yet. */
+function minClip(){
+  const l=ED.detail&&ED.detail.limits;
+  return (l&&Number(l.min_clip_s))||29.5;
+}
+
+/* Pointer events, not mouse events: one code path covers a mouse, a
+   finger and a stylus, and setPointerCapture keeps the drag alive when
+   the finger slides off the 28px grip — which on a phone it always
+   does. */
+function bindTrimGrip(el,which){
+  el.addEventListener('pointerdown',e=>{
+    if(!ED.trim) return;
+    e.preventDefault(); e.stopPropagation();
+    el.setPointerCapture(e.pointerId);
+    // The overlay's own parent — the same box the percentages are
+    // measured against, so a drag lands where the handle is drawn.
+    const lane=el.parentElement.parentElement, dur=edDur()||1;
+    const move=ev=>{
+      const r=lane.getBoundingClientRect();
+      const t=clamp((ev.clientX-r.left)/(r.width||1),0,1)*dur;
+      // The handles may not cross, and a kept range under a second is a
+      // mistake the server would refuse anyway — stop it at the source
+      // so the button never offers an edit that cannot run.
+      // The handles stop at the renderer's floor rather than letting the
+      // operator drag into a trim the pipeline will quietly undo.
+      const floor=minClip();
+      if(which==='l') ED.trim.start=Math.min(t,ED.trim.end-floor);
+      else ED.trim.end=Math.max(t,ED.trim.start+floor);
+      ED.trim.start=Math.max(0,ED.trim.start);
+      ED.trim.end=Math.min(dur,ED.trim.end);
+      drawTrim();
+      // Scrub the preview to the handle being dragged: trimming without
+      // seeing the frame you are trimming to is guesswork.
+      const v=$('#edVideo');
+      if(v.readyState>=1) v.currentTime=(which==='l'?ED.trim.start:ED.trim.end);
+    };
+    const up=ev=>{
+      el.releasePointerCapture(e.pointerId);
+      el.removeEventListener('pointermove',move);
+      el.removeEventListener('pointerup',up);
+      el.removeEventListener('pointercancel',up);
+    };
+    el.addEventListener('pointermove',move);
+    el.addEventListener('pointerup',up);
+    el.addEventListener('pointercancel',up);
+  });
+}
+
+async function applyTrim(){
+  if(!ED.trim||!ED.clip) return;
+  const dur=edDur(), kept=ED.trim.end-ED.trim.start;
+  if(dur-kept<0.05) return toast('That keeps the whole clip.',1);
+  const btn=$('#edTrimApply');
+  if(btn){btn.disabled=true;btn.textContent='Starting…'}
+  try{
+    const r=await post('/api/clips/recut',{
+      filename:ED.clip.filename, rejected:!!ED.clip.rejected,
+      trim_start:ED.trim.start, trim_end:ED.trim.end});
+    toast(`Trimming: ${r.cuts} cut(s), ${r.removed_s}s removed. It re-renders `
+      +`on this machine and lands as a new clip — the one you are looking at `
+      +`is untouched. Follow it under Activity. If QA rejects the result it `
+      +`appears under "Quarantined by QA" in Clips rather than vanishing.`);
+    go('activity'); refresh();
+  }catch(e){ toast(e.message,1) }
+  finally{ drawTrim() }
+}
+
+$('#tlTrimBtn').onclick=toggleTrim;
+$('#edTrimApply').onclick=applyTrim;
+bindTrimGrip($('#trimL'),'l');
+bindTrimGrip($('#trimR'),'r');
+// The overlay is positioned in pixels against the timeline's width, so it
+// has to be redrawn whenever that width changes — zoom, rotation, or the
+// browser chrome retracting on a phone.
+addEventListener('resize',()=>{ if(ED.trim) drawTrim() });
+
 function drawRuler(){
   const dur=(ED.clip&&ED.clip.duration_s)||$('#edVideo').duration||0;
   const r=$('#tlRuler'); if(!dur||!isFinite(dur)){r.innerHTML='';return}
@@ -2472,6 +3821,14 @@ function togglePlay(){
   $('#tlPlay').innerHTML=ic(v.paused?'play':'pause',17);
 }
 $('#tlPlay').onclick=togglePlay;
+/* Tapping the picture plays it. On a phone the timeline's play button is
+   a 32px target below the fold of the preview; the video itself is the
+   thing under your thumb, and every video app on the device works this
+   way. Ignored while the crop overlay is being dragged. */
+$('#frame916').addEventListener('click',e=>{
+  if(e.target.closest('.croptool')||e.target.closest('.crop')) return;
+  togglePlay();
+});
 $('#tlPrev').onclick=()=>{$('#edVideo').currentTime=0};
 $('#tlNext').onclick=()=>{const v=$('#edVideo');
   v.currentTime=(ED.clip&&ED.clip.duration_s)||v.duration||0};
@@ -2708,7 +4065,7 @@ function renderAssets(){
         text-transform:uppercase;letter-spacing:.1em">${k}</i></div>`).join('');
   $('#genGrid').innerHTML=PIECES.length?PIECES.map(p=>`
     <div class="card" style="padding:0;overflow:hidden">
-      <video controls preload="none" style="width:100%;display:block;background:#000;
+      <video controls playsinline preload="none" style="width:100%;display:block;background:#000;
         aspect-ratio:9/16;object-fit:cover" src="${esc(p.url||p.sequence_url||'')}"></video>
       <div style="padding:10px 12px"><b style="font-size:12.5px">${esc(p.slug)}</b>
         <div class="faint">${p.shots||1} shot(s) · ${mb(p.size_mb)}</div></div>
@@ -2729,7 +4086,9 @@ async function refresh(){
     PIECES=pieces; TASKS=tasks; AUTH=auth;
 
     renderHome(); renderClips(); renderAssets(); renderPacks(); renderPublish();
-
+    // The medians move only when a stage finishes, so this does not belong
+    // on the one-second poll — and it is only visible on Activity anyway.
+    if(VIEW==='activity'&&Date.now()-EST_AT>20000){EST_AT=Date.now();renderEstimates()}
     $('#quotaBody').innerHTML=quota.map(q=>`<tr><td><b>${esc(q.name)}</b></td>
       <td><span class="tag ${q.available?'ok':'warn'}">${q.available?'ready'
         :'metered out · '+Math.round(q.available_in_s/60)+' min'}</span></td>
@@ -2740,24 +4099,20 @@ async function refresh(){
     const badge=$('#navRunning');
     badge.classList.toggle('hide',!running.length);
     badge.textContent=running.length;
-    $('#taskList').innerHTML=tasks.length?tasks.slice().reverse().map(t=>`
-      <div class="card" style="margin-bottom:10px">
-        <div class="row" style="justify-content:space-between">
-          <b style="font-size:13.5px">${esc(t.description||t.kind)}</b>
-          <span class="tag ${t.status==='running'?'warn'
-            :(t.status==='completed'?'ok':'bad')}">${esc(t.status)}</span></div>
-        <div class="faint" style="margin:6px 0 9px">${t.elapsed_s}s elapsed${
-          t.return_code!==null&&t.return_code!==undefined
-            ? ' · exit '+t.return_code : ''}</div>
-        ${t.status==='running'?'<div class="bar" style="margin-bottom:10px"><i style="width:55%"></i></div>':''}
-        <pre class="log">${esc(t.log||'')||'(no output yet)'}</pre>
-        ${t.status==='running'?`<button class="wbtn" style="margin-top:9px"
-          data-cancel="${esc(t.id)}">Cancel</button>`:''}
-      </div>`).join('') : '<div class="empty">Nothing running.</div>';
+    $('#taskList').innerHTML=tasks.length?tasks.slice().reverse().map(taskCard)
+      .join('') : '<div class="empty">Nothing running.</div>';
     $$('[data-cancel]').forEach(b=>b.onclick=async()=>{
-      try{await api('/api/tasks/'+b.dataset.cancel+'/cancel',{method:'POST'});
-        toast('Cancelled.');refresh()}
-      catch(e){toast(e.message,1)}});
+      // Killing a process tree takes a moment. Without this the button
+      // stays live and an impatient second click 404s on a task that is
+      // already gone, which reads as "cancel is broken" twice over.
+      b.disabled=true; b.textContent='Stopping…';
+      try{
+        const r=await api('/api/tasks/'+b.dataset.cancel+'/cancel',{method:'POST'});
+        toast('Stopped — '+(r.stopped_via||'process tree killed')
+          +'. Anything it had already rendered is still on disk.');
+      }catch(e){toast(e.message,1); b.disabled=false; b.textContent='Cancel'}
+      refresh();
+    });
 
     $('#stageBody').innerHTML=stages.map(s=>`<tr>
       <td><b>${esc(s.stage)}</b></td>

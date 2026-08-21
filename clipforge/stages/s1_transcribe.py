@@ -53,6 +53,24 @@ log = get_logger(__name__)
 MAX_BATCH_SIZE = 8
 
 
+#: whisperx raises ``ValueError("No default align-model for language: cy")``
+#: when a language has no bundled wav2vec2 aligner. Matched on the message
+#: because whisperx gives it no dedicated type — but matched NARROWLY, so
+#: that a CUDA fault or an OOM during the same call still fails the stage.
+_NO_ALIGNER_MARKERS = (
+    "no default align-model",
+    "no default alignment model",
+    "no align model",
+    "no alignment model",
+)
+
+
+def _is_missing_aligner(exc: BaseException) -> bool:
+    """True only for 'this language has no aligner', never for a fault."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _NO_ALIGNER_MARKERS)
+
+
 def _release_traceback_locals(exc: BaseException) -> None:
     """Drop the frame locals a propagating exception keeps alive.
 
@@ -252,6 +270,8 @@ class S1Transcribe(Stage[TranscriptArtifact]):
 
         self._last_unload_order = []
         diarization_ok = True
+        words_aligned = True
+        no_speech = False
         turns: list[tuple[str, float, float]] = []
 
         try:
@@ -302,17 +322,63 @@ class S1Transcribe(Stage[TranscriptArtifact]):
                     self._unload("asr")
 
                 # ---- Phase 2: forced alignment ---------------------------
-                align_model = None
-                try:
-                    align_model = engine.load_align(detected_lang)
-                    aligned = engine.align(align_model,
-                                           raw.get("segments", []), media_path)
-                except Exception as exc:
-                    _release_traceback_locals(exc)
-                    raise
-                finally:
-                    del align_model
-                    self._unload("align")
+                # Two ways this legitimately does not run, both discovered
+                # by pointing a live capture at a real stream (the ISS
+                # feed, 2026-08-12): a window with no speech in it, and a
+                # language with no alignment model. Neither is a broken
+                # run, and raising on either made every quiet minute of a
+                # broadcast a hard failure.
+                raw_segments = raw.get("segments", []) or []
+                if not raw_segments:
+                    # Silence, music, ambience. The honest artifact is an
+                    # empty transcript flagged as such; S2 then finds no
+                    # candidates and the window is skipped, which is the
+                    # correct outcome rather than an error.
+                    no_speech = True
+                    words_aligned = False
+                    aligned = {"segments": []}
+                    log.info("s1.no_speech", media=str(media_path)[:160],
+                             detected_language=detected_lang,
+                             note="empty transcript emitted; window will "
+                                  "produce no candidates")
+                else:
+                    align_model = None
+                    try:
+                        try:
+                            align_model = engine.load_align(detected_lang)
+                        except Exception as exc:
+                            # NARROW on purpose. Only "there is no aligner
+                            # for this language" degrades — that is a fact
+                            # about the language, and the transcript is
+                            # still worth having without word timings.
+                            #
+                            # Everything else (a CUDA fault, OOM, a
+                            # half-fetched checkpoint) still raises. Those
+                            # mean the machine is in trouble, and emitting
+                            # a wordless transcript would hide a hardware
+                            # problem behind a plausible artifact — which
+                            # is the failure mode this file's own docstring
+                            # exists to forbid.
+                            if not _is_missing_aligner(exc):
+                                raise
+                            words_aligned = False
+                            aligned = {"segments": raw_segments}
+                            log.warning(
+                                "s1.alignment_unavailable",
+                                language=detected_lang,
+                                error=f"{type(exc).__name__}: {exc}"[:300],
+                                note="no aligner for this language; emitting "
+                                     "segment-level times without word "
+                                     "timings, captions degrade accordingly")
+                        if align_model is not None:
+                            aligned = engine.align(align_model, raw_segments,
+                                                   media_path)
+                    except Exception as exc:
+                        _release_traceback_locals(exc)
+                        raise
+                    finally:
+                        del align_model
+                        self._unload("align")
 
                 # ---- Phase 3: diarization (degrades, never fails S1) -----
                 # The handle is bound to None FIRST and the teardown is the
@@ -348,7 +414,8 @@ class S1Transcribe(Stage[TranscriptArtifact]):
 
         return self._build_artifact(cache_key, media_path, abs_offset,
                                     detected_lang, aligned, turns,
-                                    diarization_ok)
+                                    diarization_ok, words_aligned=words_aligned,
+                                    no_speech=no_speech)
 
     def _unload(self, phase: str) -> None:
         """The mandated ritual, executed AFTER the caller's ``del``.
@@ -374,7 +441,9 @@ class S1Transcribe(Stage[TranscriptArtifact]):
     def _build_artifact(self, cache_key: str, media_path: Path,
                         abs_offset: float, language: str, aligned: dict,
                         turns: list[tuple[str, float, float]],
-                        diarization_ok: bool) -> TranscriptArtifact:
+                        diarization_ok: bool, *,
+                        words_aligned: bool = True,
+                        no_speech: bool = False) -> TranscriptArtifact:
         """Pure assembly: shift every time into ABSOLUTE stream time (T1)."""
         segments: list[TranscriptSegment] = []
         for seg in aligned.get("segments", []):
@@ -409,4 +478,5 @@ class S1Transcribe(Stage[TranscriptArtifact]):
             cache_key=cache_key, stage=self.name,
             source_path=str(media_path), abs_offset_s=abs_offset,
             language=language, segments=segments, turns=turn_models,
-            diarization_ok=diarization_ok)
+            diarization_ok=diarization_ok, words_aligned=words_aligned,
+            no_speech=no_speech)

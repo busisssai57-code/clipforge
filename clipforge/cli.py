@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -101,7 +102,14 @@ def doctor(config: Path = CONFIG_OPT) -> None:
 
 
 @app.command()
-def verify(module: str = typer.Argument(..., help="all | skeleton | ingestion | ai | compositing | orchestration")) -> None:
+def verify(module: str = typer.Argument(
+        ...,
+        # The list is what `clipforge/verify/` actually holds. It read
+        # "... | compositing | orchestration" for as long as those
+        # modules were planned; both exit 2 as unknown modules, and a
+        # help string that names a gate nobody can run is the same
+        # false green this gate exists to catch.
+        help="all | skeleton | ingestion | ai")) -> None:
     """Run a module's deterministic self-checks (spec section 8, gate #1)."""
     try:
         mod = importlib.import_module(f"clipforge.verify.{module}")
@@ -275,6 +283,10 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                 False, "--broll/--no-broll",
                 help="Generate B-roll locally from the transcript and cut "
                      "it over the pauses between sentences"),
+            campath_file: Path = typer.Option(
+                None, "--campath-file",
+                help="Operator-authored camera keyframes (JSON). Overrides "
+                     "S4's tracked path for this render."),
             cut_file: Path = typer.Option(
                 None, "--cut-file",
                 help="JSON [[start, end], ...] of WINDOW-relative seconds to "
@@ -302,6 +314,18 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
     niche_name = _cli_value(niche, None)
     manifest = _cli_value(manifest, None)
     broll = bool(_cli_value(broll, False))
+    campath_file = _cli_value(campath_file, None)
+    authored_keys = None
+    if campath_file is not None:
+        from clipforge.campath_edit import CamPathError, load_keyframes
+        try:
+            authored_keys = load_keyframes(campath_file)
+        except CamPathError as exc:
+            console.print(f"[red]--campath-file is not usable:[/] {exc}")
+            raise typer.Exit(2) from exc
+        console.print(f"  director camera: {len(authored_keys)} keyframe(s) "
+                      f"from {Path(campath_file).name}")
+
     cut_file = _cli_value(cut_file, None)
 
     # Read once, here, so a malformed cut file fails before any GPU work
@@ -664,7 +688,26 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                     pose_model_path=(str(pose_model_abs)
                                      if pose_model_abs.exists() else None),
                 )
-                if campath.framing_mode == "center":
+                # The director camera REPLACES the tracked path. S4 still
+                # runs: it establishes the geometry (source dims, exact
+                # fps) the authored keyframes are interpolated against,
+                # and re-deriving that here would be a second source of
+                # truth for the one number the camera is indexed by.
+                cam_digest = None
+                if authored_keys is not None:
+                    from clipforge.campath_edit import build_frames, digest
+                    cam_digest = digest(authored_keys)
+                    campath = campath.model_copy(update={"frames": build_frames(
+                        authored_keys,
+                        duration_s=w_end - w_start,
+                        fps_rational=campath.src_fps_rational,
+                        src_width=campath.src_width,
+                        src_height=campath.src_height)})
+                    console.print(
+                        f"  [bold]director camera:[/] {len(campath.frames)} "
+                        f"frames authored, replacing the tracked path")
+
+                if authored_keys is None and campath.framing_mode == "center":
                     # The centre crop is the documented DEGRADED mode; a
                     # neutral status line here is how fake tracking went
                     # unnoticed for two checkpoints.
@@ -694,7 +737,9 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
 
                 clip = s6.run(input_digest=subs.cache_key, job_id=job_id,
                               params={**s6_params, **overrides,
-                                      "keep_intervals": w_keeps},
+                                      "keep_intervals": w_keeps,
+                                      **({"campath_digest": cam_digest}
+                                         if cam_digest else {})},
                               campath_artifact=campath, subtitle_artifact=subs,
                               video_path=input_path, clips_dir=ws.clips)
                 console.print(
@@ -871,17 +916,43 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
 
 @app.command()
 def generate(
-        brief: str = typer.Argument(..., help="What the piece is about"),
+        brief: str = typer.Argument(
+            None, help="What the piece is about. Optional when --script "
+                       "points at a screenplay file."),
         config: Path = CONFIG_OPT,
         preset: str = typer.Option(None, "--preset", "-p",
                                    help="documentary | storytelling | "
                                         "explainer | motion_graphics"),
         shots: int = typer.Option(None, "--shots", "-s", min=1, max=64),
+        screenplay: bool = typer.Option(
+            False, "--screenplay",
+            help="Read the brief as a Fountain screenplay: one shot per "
+                 "SCENE, and dialogue routed to the voice instead of into "
+                 "the picture prompt."),
+        script: Path = typer.Option(
+            None, "--script",
+            help="Read the screenplay from a .fountain file instead of the "
+                 "argument. Implies --screenplay."),
+        hook: str = typer.Option(
+            None, "--hook",
+            help="Hook card burned over the opening seconds, e.g. "
+                 "\"INTAAN MIDKEE KAA QOSLIYAY\"."),
+        handle: str = typer.Option(
+            None, "--handle",
+            help="Your own handle, stamped bottom-centre on every frame. "
+                 "Defaults to [genvideo] handle."),
         clip_it: bool = typer.Option(
             False, "--clip/--no-clip",
             help="Run the generated piece through the clip DAG"),
-        aspect: str = typer.Option(None, "--aspect",
-                                   help="9:16 or 16:9"),
+        aspect: str = typer.Option(
+            None, "--aspect",
+            help="9:16, 16:9, 3:4, 4:5 or 1:1. Overrides the niche's own "
+                 "declared frame."),
+        model: str = typer.Option(
+            None, "--model",
+            help="Force a generation model by key (see: bta models). "
+                 "Without it the registry picks by the niche's needs, and "
+                 "unverified models are never picked."),
         manifest: Path = typer.Option(
             None, "--manifest",
             help="Write a machine-readable JSON result here. Automation "
@@ -902,9 +973,43 @@ def generate(
 
     preset_name = _cli_value(preset, None)
     shot_count = _cli_value(shots, None)
+    script = _cli_value(script, None)
+    hook = _cli_value(hook, None)
+    handle = _cli_value(handle, None)
+    screenplay = bool(_cli_value(screenplay, False))
     clip_it = bool(_cli_value(clip_it, False))
     aspect_ratio = _cli_value(aspect, None)
     manifest = _cli_value(manifest, None)
+
+    brief = _cli_value(brief, None)
+    if script is None and not (brief or "").strip():
+        console.print("[red]give a brief, or --script pointing at a "
+                      "screenplay file[/]")
+        raise typer.Exit(2)
+    if script is not None:
+        script_path = Path(script)
+        if not script_path.is_file():
+            console.print(f"[red]no screenplay at[/] {script_path}")
+            raise typer.Exit(2)
+        # utf-8 explicitly: a Somali script is Latin-1-safe but an emoji
+        # punchline mark is not, and Windows would otherwise decode this
+        # file as cp1252 and lose the marks that drive the post layer.
+        brief = script_path.read_text(encoding="utf-8")
+        if not brief.strip():
+            console.print(f"[red]{script_path} is empty[/]")
+            raise typer.Exit(2)
+        screenplay = True
+
+    if screenplay and hook is None:
+        # The hook belongs to the piece, so a script carries its own in
+        # the title page (`Hook: ...`). Read for any screenplay, not just
+        # one that arrived as a file: the dashboard sends the same script
+        # as text, and a hook that only worked from disk would be a
+        # feature of the file path rather than of the format. --hook
+        # still wins - that is the operator answering directly.
+        from clipforge.screenplay import title_page
+
+        hook = title_page(brief).get("hook") or None
 
     cfg, ws = _boot(config, sweep_partials=False)
     if not cfg.genvideo.enabled:
@@ -937,8 +1042,24 @@ def generate(
         _needs = set(get_niche(chosen.name).keywords)
     except Exception:  # noqa: BLE001 - a base preset has no niche
         _needs = set(getattr(chosen, "keywords", ()) or ())
+    # A niche DECLARES its frame, and until now nothing read it: the
+    # config value won and a 3:4 format rendered 9:16 with only the
+    # dashboard label saying otherwise. Explicit --aspect still wins over
+    # both - it is the operator answering the question directly.
+    from clipforge.niches import resolve_aspect
+
+    aspect_ratio = resolve_aspect(aspect_ratio, chosen.name,
+                                  cfg.genvideo.aspect_ratio)
+    # `prefer` had been reachable from nowhere: `build_router` took it,
+    # `select_model` implemented it — including the one path that lets an
+    # UNVERIFIED model run, which is how a model gets verified — and no
+    # caller in the product supplied it. `swarm plan --model` carried a
+    # key through two task payloads to a subprocess call that never
+    # passed it on. The registry's own note said "select it explicitly
+    # with --model ltx25"; there was no such flag.
     router = build_router(cfg, ws, api_key=key, needs=_needs,
-                          aspect_ratio=aspect_ratio or cfg.genvideo.aspect_ratio)
+                          aspect_ratio=aspect_ratio,
+                          prefer=_cli_value(model, None))
 
     if cfg.genvideo.use_cloud:
         console.print("[yellow]cloud generation is ON: prompts will be sent "
@@ -949,12 +1070,23 @@ def generate(
                  else f"metered out for {row['available_in_s']:.0f}s")
         console.print(f"  provider {row['name']:6s}: {state}")
 
-    out_dir = ws.root / "generated" / _slug(brief)
+    # A screenplay's folder is named for its TITLE, not for the first 48
+    # characters of the file - which, with a title page at the top, is
+    # "title-geel-suuqa-tegey-credit-bta-draft-date-202". The dashboard
+    # lists these directories by name, so the name is the piece's label.
+    label = brief
+    if screenplay:
+        from clipforge.screenplay import title_page, to_beats
+
+        page = title_page(brief)
+        first = (to_beats(brief, 1) or [""])[0]
+        label = page.get("title") or first or brief
+    out_dir = ws.root / "generated" / _slug(label)
     console.print(f"[green]generating {shot_count or chosen.default_shots} "
                   f"shot(s) - {chosen.name}: {chosen.summary}[/]")
     result = router.generate_sequence(
         brief=brief, preset=chosen, out_dir=out_dir, shots=shot_count,
-        aspect_ratio=aspect_ratio or cfg.genvideo.aspect_ratio)
+        aspect_ratio=aspect_ratio, screenplay=screenplay)
 
     if not result.paths:
         console.print("[red]no shots were generated[/]")
@@ -977,6 +1109,10 @@ def generate(
     except ClipForgeError as exc:
         console.print(f"[red]assembly failed: {exc}[/]")
         raise typer.Exit(1)
+
+    stitched = _apply_post_layer(
+        stitched, result=result, niche_name=chosen.name, hook=hook,
+        handle=handle if handle is not None else cfg.genvideo.handle)
     console.print(f"[bold green]{stitched}[/] "
                   f"({result.ok_count} shot(s), "
                   f"~{result.ok_count * chosen.shot_seconds:.0f}s)")
@@ -1100,6 +1236,120 @@ def _slug(text: str, limit: int = 48) -> str:
     return (out[:limit] or "piece").rstrip("-")
 
 
+def _apply_post_layer(stitched: Path, *, result, niche_name: str,
+                      hook: str | None, handle: str | None) -> Path:
+    """Stamp hook card, punchline stickers and handle — or don't.
+
+    Returns the path to hand on: the stamped file when there was anything
+    to stamp, and the untouched sequence otherwise. Never raises. This is
+    the last step of a run that may already have spent GPU-hours, and a
+    missing emoji font must not turn a finished piece into a failed
+    command.
+    """
+    from clipforge.niches import NICHES
+
+    niche = NICHES.get(niche_name)
+    if niche is None or not niche.post_layer:
+        return stitched
+    ok = [s for s in result.shots if s.ok]
+    marks = [list(s.marks) for s in ok]
+    if not (hook or handle or any(marks)):
+        return stitched
+
+    from clipforge.socialpost import PostError, apply_post, spec_from_shots
+
+    try:
+        # REAL durations, probed, not the preset's nominal shot length. A
+        # provider that returns 1.87s for a 1.9s request drifts by half a
+        # shot over thirty cuts, and the sticker would land on the wrong
+        # face.
+        from clipforge.ffmpeg import probe
+
+        seconds = []
+        for shot in ok:
+            try:
+                seconds.append(float(probe(shot.path).duration_s))
+            except Exception:  # noqa: BLE001 - fall back to the request
+                seconds.append(float(shot.seconds))
+        spec = spec_from_shots(
+            seconds, marks, hook=hook or "", watermark=handle or "",
+            hook_seconds=niche.hook_seconds)
+        # `sequence.mp4` is the FINISHED piece, always. The dashboard
+        # lists `*/sequence.mp4`, so writing the stamped version beside
+        # it under another name would have shown the operator the cut
+        # without its hook or stickers and called that the output. The
+        # un-stamped concat is kept so a different hook can be burned
+        # without regenerating a single shot.
+        dest = stitched.with_name("post.mp4")
+        apply_post(stitched, dest, spec)
+        raw = stitched.with_name("sequence.raw.mp4")
+        raw.unlink(missing_ok=True)
+        stitched.rename(raw)
+        dest.rename(stitched)
+        dest = stitched
+    except (PostError, ClipForgeError) as exc:
+        console.print(f"[yellow]post layer skipped: {exc}[/]")
+        return stitched
+    console.print(f"  [bold]post layer:[/] hook={'yes' if hook else 'no'} "
+                  f"stickers={sum(len(m) for m in marks)} "
+                  f"handle={handle or 'none'}")
+    return dest
+
+
+def _has_audio(path: Path) -> bool:
+    """Whether a file carries an audio stream, asked of ffprobe."""
+    import subprocess
+
+    from clipforge.ffmpeg import require_binary
+
+    proc = subprocess.run(
+        [str(require_binary("ffprobe")), "-v", "error",
+         "-select_streams", "a", "-show_entries", "stream=index",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, timeout=60)
+    return bool((proc.stdout or "").strip())
+
+
+def _with_uniform_audio(paths: list[Path], work_dir: Path) -> list[Path]:
+    """Give silent shots a silent TRACK, so a mixed sequence still concats.
+
+    The concat demuxer needs every input to have the same streams. One
+    sequence can mix providers — that is what the failover is for — and
+    LTX-2.5 generates sound while Wan 2.2 does not, so a piece can arrive
+    half with audio and half without. Dropping the audio would be the easy
+    fix and the wrong one: the model's own sound is the thing being
+    protected here, so the silent shots get silence instead.
+    """
+    import subprocess
+
+    from clipforge.ffmpeg import require_binary
+
+    flags = [_has_audio(p) for p in paths]
+    if not any(flags) or all(flags):
+        return paths
+    out: list[Path] = []
+    for path, has in zip(paths, flags):
+        if has:
+            out.append(path)
+            continue
+        padded = work_dir / f"{path.stem}.silent{path.suffix}"
+        proc = subprocess.run(
+            [str(require_binary("ffmpeg")), "-nostdin", "-hide_banner", "-y",
+             "-i", str(path),
+             "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest",
+             str(padded)],
+            capture_output=True, text=True, timeout=600)
+        # A shot that cannot be padded is still a shot: fall back to the
+        # original and let the concat drop audio rather than lose a beat.
+        out.append(padded if proc.returncode == 0 and padded.is_file()
+                   else path)
+    console.print(f"  [dim]audio: {sum(1 for f in flags if not f)} of "
+                  f"{len(flags)} shot(s) were silent; padded so the "
+                  f"generated sound survives the concat[/]")
+    return out
+
+
 def _concat_shots(paths: list[Path], dest: Path) -> None:
     """Concatenate shots into one piece via the ffmpeg concat demuxer.
 
@@ -1114,6 +1364,7 @@ def _concat_shots(paths: list[Path], dest: Path) -> None:
     from clipforge.ffmpeg import require_binary
 
     dest.parent.mkdir(parents=True, exist_ok=True)
+    paths = _with_uniform_audio(paths, dest.parent)
     listing = dest.with_suffix(".txt")
     listing.write_text(
         "".join(f"file '{p.resolve().as_posix()}'\n" for p in paths),
@@ -1123,7 +1374,12 @@ def _concat_shots(paths: list[Path], dest: Path) -> None:
         [str(require_binary("ffmpeg")), "-nostdin", "-hide_banner", "-y",
          "-f", "concat", "-safe", "0", "-i", str(listing),
          "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-         "-pix_fmt", "yuv420p", "-f", "mp4", str(partial)],
+         "-pix_fmt", "yuv420p",
+         # Named rather than left to the muxer's default: shots now
+         # arrive with sound, and the file the rest of the DAG consumes
+         # should not depend on what ffmpeg happens to pick.
+         "-c:a", "aac", "-b:a", "192k",
+         "-f", "mp4", str(partial)],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=1800)
     if proc.returncode != 0 or not partial.exists():
@@ -1529,17 +1785,149 @@ def upscale(
 
 
 @app.command()
-def web(host: str = "127.0.0.1", port: int = 8000):
-    """Launch the clipforge local FastAPI control bridge."""
+def web(host: str = typer.Option("127.0.0.1", "--host",
+                                 help="Interface to bind. --lan is the "
+                                      "shorthand for 0.0.0.0."),
+        port: int = typer.Option(8000, "--port"),
+        lan: bool = typer.Option(False, "--lan", "-l",
+                                 help="Reachable from other devices on this "
+                                      "network. Requires the access token."),
+        tunnel: str = typer.Option("off", "--tunnel",
+                                   help="off | cloudflare — a public https "
+                                        "URL for reaching it from anywhere."),
+        token: str = typer.Option("", "--token",
+                                  help="Use this access token instead of the "
+                                       "one saved in the workspace."),
+        rotate: bool = typer.Option(False, "--rotate-token",
+                                    help="Mint a new token, unpairing every "
+                                         "device that has the old one."),
+        insecure: bool = typer.Option(False, "--insecure-no-auth",
+                                      help="Bind wide open with NO token. "
+                                           "Every device on the network can "
+                                           "then run this pipeline."),
+        ):
+    """Launch the BTA control API and dashboard.
+
+    Bound to loopback it behaves as it always has: no token, no login,
+    because anything that can reach it could already run the CLI. `--lan`
+    and `--tunnel` change that, so they turn on the access token — this
+    API starts subprocesses on this machine, and an open port that does
+    that is a remote shell with a nicer front end.
+    """
     import uvicorn
-    console.print(f"[bold green]BTA Studio on http://{host}:{port}[/bold green]")
-    # reload=False, deliberately. The dashboard spawns pipeline runs as
-    # subprocesses and tracks them in memory; a reload restarts the app and
-    # empties that registry while the spawned render keeps holding the GPU
-    # — orphaned, uncancellable, and invisible to both /api/tasks and
-    # `bta swarm status`. Auto-reload is a development convenience that
-    # here loses running work.
-    uvicorn.run("clipforge.web:app", host=host, port=port, reload=False)
+
+    from clipforge import remote
+
+    if lan:
+        host = "0.0.0.0"
+    wide = host not in ("127.0.0.1", "localhost", "::1")
+    want_tunnel = (tunnel or "off").strip().lower()
+    if want_tunnel not in ("off", "cloudflare", "cloudflared"):
+        console.print("[red]--tunnel takes 'off' or 'cloudflare'.[/]")
+        raise typer.Exit(2)
+
+    ws_root = Path("workspace")
+    try:
+        ws_root = Path(load_config(Path("config/config.toml")).workspace.root)
+    except Exception:  # noqa: BLE001 - the default is the documented fallback
+        pass
+    ws_root.mkdir(parents=True, exist_ok=True)
+
+    access_token: str | None = None
+    if insecure:
+        if want_tunnel != "off":
+            # A tunnel with no token puts a subprocess-spawning API on the
+            # public internet. There is no operator intent that makes that
+            # the right call, so it is refused rather than warned about.
+            console.print("[red]--insecure-no-auth cannot be combined with "
+                          "--tunnel.[/] A public URL with no token is an open "
+                          "shell.")
+            raise typer.Exit(2)
+        console.print("[bold red]No access token: every device that can reach "
+                      f"{host}:{port} can run this pipeline.[/]")
+    elif wide or want_tunnel != "off":
+        access_token = (token.strip() or None)
+        if access_token is None:
+            access_token = (remote.rotate_token(ws_root) if rotate
+                            else remote.load_or_create_token(ws_root))
+    elif token.strip():
+        access_token = token.strip()
+
+    os.environ[remote.ENV_TOKEN] = access_token or ""
+    os.environ[remote.ENV_REQUIRE_AUTH] = "0" if access_token is None else "1"
+    os.environ["BTA_WEB_PORT"] = str(port)
+
+    live_tunnel = None
+    if want_tunnel != "off":
+        console.print("[dim]starting cloudflared quick tunnel…[/]")
+        try:
+            live_tunnel = remote.start_cloudflare_tunnel(port)
+        except (FileNotFoundError, RuntimeError) as exc:
+            console.print(f"[red]tunnel failed:[/] {exc}")
+            raise typer.Exit(1) from exc
+        os.environ[remote.ENV_PUBLIC_URL] = live_tunnel.url or ""
+
+    _print_access_banner(host, port, access_token,
+                         tunnel_url=(live_tunnel.url if live_tunnel else None))
+
+    try:
+        # reload=False, deliberately. The dashboard spawns pipeline runs as
+        # subprocesses and tracks them in memory; a reload restarts the app and
+        # empties that registry while the spawned render keeps holding the GPU
+        # — orphaned, uncancellable, and invisible to both /api/tasks and
+        # `bta swarm status`. Auto-reload is a development convenience that
+        # here loses running work.
+        uvicorn.run("clipforge.web:app", host=host, port=port, reload=False)
+    finally:
+        if live_tunnel is not None:
+            live_tunnel.stop()
+
+
+def _print_access_banner(host: str, port: int, token: str | None, *,
+                         tunnel_url: str | None = None) -> None:
+    """Print every URL this server is reachable at, and what each costs.
+
+    An operator who cannot find the address types 0.0.0.0 into a phone,
+    fails, and turns auth off. Printing the working links — with the
+    token already in them — is what makes the secure path the easy one.
+    """
+    from clipforge import remote
+
+    console.print()
+    console.print("[bold green]BTA Studio[/bold green]")
+    console.print(f"  [bold]On this machine[/]  http://127.0.0.1:{port}/")
+
+    if host in ("127.0.0.1", "localhost", "::1") and not tunnel_url:
+        console.print("  [dim]Loopback only. Add --lan to reach it from your "
+                      "phone, or --tunnel cloudflare from anywhere.[/]")
+        console.print()
+        return
+
+    urls = remote.access_urls(port, token)
+    if urls["lan"]:
+        console.print("  [bold]On this network[/]")
+        for u in urls["lan"]:
+            console.print(f"    {u}")
+    if urls["tailscale"]:
+        console.print("  [bold]Over Tailscale[/] (works anywhere, encrypted)")
+        for u in urls["tailscale"]:
+            console.print(f"    {u}")
+    if tunnel_url:
+        suffix = f"/?{remote.TOKEN_QUERY}={token}" if token else "/"
+        console.print("  [bold]Public[/] (anywhere, no VPN)")
+        console.print(f"    {tunnel_url.rstrip('/')}{suffix}")
+
+    if token:
+        console.print()
+        console.print(f"  [dim]access token[/] {token}")
+        console.print("  [dim]Or open the bare address on the other device "
+                      "and pair it with the six-digit code from[/] "
+                      "[bold]Connect a device[/] [dim]in the sidebar.[/]")
+    if tunnel_url:
+        console.print("  [yellow]This URL is on the public internet. Anyone "
+                      "with the token can drive this machine — stop the "
+                      "server when you are done.[/]")
+    console.print()
 
 
 @app.command()
@@ -1590,6 +1978,173 @@ def test_render(video: Path, s1_json: Path, s2_json: Path):
     out_path = S6Render().run(video, best_cand, subs_path)
     
     console.print(f"[bold green]Render complete: {out_path.name}! Check your UI dashboard.[/bold green]")
+
+
+@app.command()
+def live(target: str = typer.Argument(..., help="A YouTube live URL, a "
+                                               "channel @handle, or a Twitch "
+                                               "channel name"),
+         quality: str = typer.Option("", "--quality",
+                                     help="streamlink quality; defaults to "
+                                          "[ingest] quality"),
+         clips: int = typer.Option(0, "--clips",
+                                   help="Clips per captured window; defaults "
+                                        "to [orchestration] clips_per_window"),
+         platform: str = typer.Option("youtube", "--platform",
+                                      help="youtube | twitch | kick"),
+         segment: float = typer.Option(
+             300.0, "--segment",
+             help="Seconds of stream per clipping window. Shorter = clips "
+                  "appear sooner; longer = better context for the ranker."),
+         config: Path = CONFIG_OPT) -> None:
+    """Capture ONE live stream and clip it while it is still running.
+
+    `watch` polls a configured watchlist; this points at a single stream
+    that is on air right now, which is what an operator actually does when
+    they see something worth clipping.
+
+    The stream is segmented as it arrives and each finished segment goes
+    straight into the clip pipeline, so clips land in the gallery minutes
+    into a broadcast rather than after it ends. YouTube live went through
+    the VOD path before this — the monitor counts `platform != "youtube"`
+    as the live set — so a YouTube broadcast produced nothing at all until
+    it finished and became a downloadable video.
+
+    Ctrl+C stops it and finalises the tail.
+    """
+    import threading
+
+    from clipforge.dispatch import ClipDispatcher
+    from clipforge.ingest import kick, twitch, youtube
+    from clipforge.ingest.chunker import ChunkerConfig, ChunkerSession
+    from clipforge.ingest.monitor import disk_allows
+    from clipforge.ingest.retention import workspace_lock
+    from clipforge.state import StateDB
+
+    cfg, ws = _boot(config, sweep_partials=False)
+    platform = platform.strip().lower()
+    if platform not in ("youtube", "twitch", "kick"):
+        console.print("[red]--platform must be youtube, twitch or kick[/]")
+        raise typer.Exit(2)
+
+    quality = quality or cfg.ingest.quality
+    per_window = clips or cfg.orchestration.clips_per_window
+    # `watch` uses [ingest] segment_time_s, which is 900 s — right for an
+    # unattended overnight run and wrong here: this command exists to be
+    # watched, and a first clip fifteen minutes in looks like nothing is
+    # happening. Five minutes is still enough context for the ranker to
+    # find a moment.
+    if not 30.0 <= segment <= 3600.0:
+        console.print("[red]--segment must be between 30 and 3600 seconds[/]")
+        raise typer.Exit(2)
+
+    # Probe before committing to a capture: streamlink will happily sit on
+    # a non-live URL until its timeout, which looks exactly like a working
+    # capture that produces nothing.
+    console.print(f"[dim]checking whether {target} is live…[/]")
+    if platform == "youtube":
+        state = youtube.is_live(target)
+        url_or_handle = youtube.live_url(target)
+        args = youtube.chunker_args(target, quality)
+        label = youtube.live_title(target) or url_or_handle
+        # NOT the raw target: the chunker builds `chunks/{platform}_{handle}/`
+        # from this, and a URL contains ':' and '/'. Passing the URL made
+        # every connect fail with WinError 123 and retry forever — the
+        # capture looked alive and produced nothing (measured against the
+        # live ISS stream, 2026-08-12).
+        handle = youtube.capture_handle(target)
+    elif platform == "twitch":
+        state = twitch.is_live(target)
+        args = twitch.chunker_args(target, quality,
+                                   disable_ads=cfg.ingest.twitch_disable_ads)
+        label = f"twitch/{target}"
+        handle = target.strip().lstrip("@")[:80]
+    else:
+        state = kick.is_live(target)
+        args = kick.chunker_args(target, quality)
+        label = f"kick/{target}"
+        handle = target.strip().lstrip("@")[:80]
+
+    if state is False:
+        console.print(f"[yellow]{target} is not live right now.[/] Nothing to "
+                      "capture. For a finished video use `bta grab <url>`.")
+        raise typer.Exit(1)
+    if state is None:
+        console.print("[yellow]could not confirm it is live[/] — trying "
+                      "anyway; the capture ends on its own if there is no "
+                      "stream.")
+
+    with workspace_lock(ws) as acquired:
+        if not acquired:
+            console.print("[red]another clipforge is already using this "
+                          f"workspace ({ws.root}). Stop it first.[/]")
+            raise typer.Exit(3)
+
+        db = StateDB(ws.state_db)
+        stop = threading.Event()
+
+        def _clip_window(path: Path, abs_start_s: float) -> None:
+            process(input_path=path, config=config, abs_offset=abs_start_s,
+                    clips=per_window, jumpcut=None)
+
+        dispatcher = ClipDispatcher(
+            handler=_clip_window,
+            maxsize=cfg.orchestration.queue_maxsize).start()
+
+        # Segments reach the clipper through the dispatcher's queue, never
+        # inline: a live stream is not replayable, and a four-minute render
+        # on the capture thread is four minutes of stream lost for good.
+        captured = {"segments": 0}
+
+        def _on_segment(event) -> None:
+            captured["segments"] += 1
+            console.print(f"[green]segment {event.seg_index}[/] "
+                          f"({event.duration_s:.0f}s) -> clipping")
+            dispatcher.submit(Path(event.path), event.abs_start_s)
+
+        session = ChunkerSession(
+            db=db, chunks_root=ws.chunks, quarantine_dir=ws.quarantine,
+            platform=platform, handle=handle,
+            streamlink_args=args,
+            cfg=ChunkerConfig(
+                segment_time_s=segment,
+                ready_stable_s=cfg.ingest.segment_ready_stable_s,
+                backoff_base_s=cfg.ingest.backoff_base_s,
+                backoff_max_s=cfg.ingest.backoff_max_s,
+            ),
+            on_segment_ready=_on_segment,
+            disk_ok=lambda: disk_allows(ws.root, cfg.disk.free_floor_gb),
+            log_dir=ws.logs,
+        )
+
+        console.print(f"[bold green]capturing[/] {label}")
+        console.print(f"[dim]{segment:.0f}s segments · "
+                      f"{per_window} clip(s) per segment · first clip in about "
+                      f"{segment/60:.0f} min · Ctrl+C to stop[/]")
+        try:
+            session.run(stop)
+        except KeyboardInterrupt:
+            console.print("[yellow]stopping — finalizing the tail[/]")
+            stop.set()
+        finally:
+            stop.set()
+            dispatcher.stop()
+            stats = dispatcher.stats.snapshot()
+            console.print(f"[yellow]capture ended — {captured['segments']} "
+                          f"segment(s) captured, {stats['processed']} "
+                          f"window(s) clipped, {stats['failed']} failed, "
+                          f"{stats['dropped']} dropped[/]")
+            db.close()
+
+        # Exiting 0 after capturing nothing is how a broken capture gets
+        # reported as a finished one. The dashboard reads the exit code,
+        # and "completed · 0 clips" is indistinguishable from success at a
+        # glance — which is exactly what happened on the first live run.
+        if captured["segments"] == 0:
+            console.print(
+                "[red]nothing was captured.[/] The stream may have ended, or "
+                "streamlink could not open it. The log above says which.")
+            raise typer.Exit(1)
 
 
 swarm_app = typer.Typer(name="swarm", no_args_is_help=True,
@@ -1734,6 +2289,31 @@ def swarm_niches() -> None:
 
     for n in niche_summary():
         console.print(f"[bold]{n['name']}[/] — {n['label']}: {n['summary']}")
+
+
+@app.command("models")
+def models_cmd() -> None:
+    """List generation models: what is downloaded, and what is proven.
+
+    `--model` needs a key, and until now the only way to learn one was to
+    pass a wrong one and read the error. Downloaded and verified are
+    shown apart on purpose: an UNVERIFIED model can be run — an explicit
+    request is how a model gets verified — but it is never chosen for you.
+    """
+    from clipforge.genvideo.models import REGISTRY, weights_present
+
+    for spec in REGISTRY.values():
+        here = "downloaded" if weights_present(spec) else "NOT downloaded"
+        proof = "verified here" if spec.verified else "UNVERIFIED"
+        extra = f", needs {spec.interpreter}" if spec.interpreter else ""
+        console.print(f"[bold]{spec.key}[/] - {spec.label}")
+        console.print(f"    {here}, {proof}{extra}")
+        console.print(f"    up to {spec.max_pixels:,} px/frame, "
+                      f"{spec.vram_gb:g} GB VRAM, {spec.steps} steps"
+                      + (f", {spec.requires_quantization} required"
+                         if spec.requires_quantization else ""))
+        if spec.notes:
+            console.print(f"    [dim]{spec.notes}[/]")
 
 
 def main() -> None:  # console_scripts shim

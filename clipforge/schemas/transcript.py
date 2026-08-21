@@ -50,3 +50,14 @@ class TranscriptArtifact(ArtifactModel):
     diarization_ok: bool = Field(True, description=(
         "False when pyannote failed and speakers are absent — downstream "
         "stages must degrade explicitly, not guess"))
+    words_aligned: bool = Field(True, description=(
+        "False when forced alignment did not run, so segments carry text "
+        "and coarse times but NO word timings. Captions and the editor's "
+        "word marks both key off word-level times, so this must be stated "
+        "rather than inferred from an empty `words` list — which is also "
+        "what a genuinely wordless segment looks like."))
+    no_speech: bool = Field(False, description=(
+        "True when the ASR found no speech at all in this window. A real "
+        "answer, not a failure: live capture is full of music, ambience "
+        "and silence, and a window with nothing said is skipped rather "
+        "than crashing the run."))

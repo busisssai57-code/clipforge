@@ -59,6 +59,10 @@ class ShotOutcome:
     prompt: str
     seconds: float
     error: str = ""
+    #: Punchline marks the script put on this beat, carried through so the
+    #: post layer can stamp them without re-parsing the screenplay and
+    #: re-deriving a shot distribution that has already been decided.
+    marks: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -94,6 +98,32 @@ class GenerationRouter:
         #: in memory only — the operator adding a key mid-day should not
         #: have to wait out a persisted penalty.
         self._unconfigured: set[str] = set()
+
+    # ----------------------------------------------------------- close
+
+    def close_providers(self) -> None:
+        """Release providers that hold something between shots.
+
+        `SubprocessModelProvider` keeps a worker — and, through it, a
+        `gpu_session` and 13 GB of card — alive across a whole sequence
+        on purpose: its model costs 81-103 s to load and 56-61 s to run,
+        so a process per shot nearly doubles a brief. The cost of that
+        choice is that somebody has to say when the sequence is over. A
+        run that ends without this leaves the session held and the next
+        GPU stage waiting on a lock nobody will release.
+
+        Failures here are logged, not raised: a provider that will not
+        shut down cleanly must not turn a finished piece into an error.
+        """
+        for provider in self.providers:
+            close = getattr(provider, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("genvideo.provider_close_failed",
+                            provider=provider.name, error=str(exc)[:200])
 
     # ------------------------------------------------------------ pick
 
@@ -184,7 +214,8 @@ class GenerationRouter:
     def generate_sequence(self, *, brief: str, preset: Preset,
                           out_dir: Path, shots: int | None = None,
                           aspect_ratio: str = "9:16",
-                          continuity: bool = False) -> SequenceResult:
+                          continuity: bool = False,
+                          screenplay: bool = False) -> SequenceResult:
         """Generate a whole piece, shot by shot.
 
         A failed shot does not abort the sequence: five good shots and one
@@ -199,9 +230,57 @@ class GenerationRouter:
         the gap would assert a continuity the piece does not have.
         """
         count = int(shots or preset.default_shots)
-        beats = split_into_beats(brief, count)
+        # `screenplay` reached this method for the first time on
+        # 2026-08-18. `bta generate --screenplay` had been a declared flag
+        # that nothing read: the CLI parsed it and then always split the
+        # brief on full stops, so a Fountain script generated exactly as
+        # if it were prose. The dashboard's own generate call went through
+        # `build_storyboard`, which did honour it — which is why the flag
+        # looked implemented from the UI side.
+        marks: list[list[str]] = [[] for _ in range(count)]
+        if screenplay:
+            from clipforge.screenplay import to_beats_with_marks  # noqa: PLC0415
+
+            pairs = to_beats_with_marks(brief, count)
+            if pairs:
+                beats = [b for b, _ in pairs]
+                marks = [m for _, m in pairs]
+                # The piece context handed to every shot becomes the
+                # PICTURE-only synopsis. Left as the raw script it put
+                # the dialogue back into each prompt one line after the
+                # beat had removed it.
+                from clipforge.screenplay import synopsis  # noqa: PLC0415
+
+                brief = synopsis(brief)
+            else:
+                log.info("genvideo.screenplay_empty",
+                         note="no scenes parsed; falling back to sentences")
+                beats = split_into_beats(brief, count)
+        else:
+            beats = split_into_beats(brief, count)
         out_dir.mkdir(parents=True, exist_ok=True)
         result = SequenceResult()
+        try:
+            self._run_shots(result, beats, marks, brief=brief, preset=preset,
+                            out_dir=out_dir, count=count,
+                            aspect_ratio=aspect_ratio, continuity=continuity)
+        finally:
+            # Whatever happened — finished, failed, interrupted — the
+            # sequence is over, so anything a provider was holding for
+            # its duration goes back now.
+            self.close_providers()
+        # More than one provider in one piece means the quota flipped
+        # mid-sequence; the caller should say so rather than pretend the
+        # piece is uniform.
+        if len(result.providers_used) > 1:
+            result.degraded = True
+        return result
+
+    def _run_shots(self, result: SequenceResult, beats: list[str],
+                   marks: list[list[str]], *, brief: str, preset: Preset,
+                   out_dir: Path, count: int, aspect_ratio: str,
+                   continuity: bool) -> None:
+        """The shot loop itself, so `generate_sequence` can wrap it."""
         seed_frame: Path | None = None
         for i in range(count):
             prompt = build_shot_prompt(brief, preset, shot_index=i,
@@ -217,12 +296,13 @@ class GenerationRouter:
                 log.error("genvideo.shot_failed", shot=i, error=str(exc)[:300])
                 result.shots.append(ShotOutcome(
                     i, "none", None, prompt, preset.shot_seconds,
-                    error=str(exc)[:300]))
+                    error=str(exc)[:300], marks=list(marks[i])))
                 result.degraded = True
                 seed_frame = None  # the chain is broken; do not span the gap
                 continue
             result.shots.append(ShotOutcome(
-                i, gen.provider, gen.path, prompt, gen.seconds))
+                i, gen.provider, gen.path, prompt, gen.seconds,
+                marks=list(marks[i])))
             if continuity and gen.path is not None:
                 from clipforge.genvideo.providers import last_frame
 
@@ -230,12 +310,6 @@ class GenerationRouter:
                     Path(gen.path), out_dir / f"shot_{i:02d}.last.jpg")
             if gen.provider not in result.providers_used:
                 result.providers_used.append(gen.provider)
-        # More than one provider in one piece means the quota flipped
-        # mid-sequence; the caller should say so rather than pretend the
-        # piece is uniform.
-        if len(result.providers_used) > 1:
-            result.degraded = True
-        return result
 
 
 def _safe_available(provider: Provider) -> bool:

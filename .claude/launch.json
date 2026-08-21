@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "bta-web",
+      "runtimeExecutable": "D:\\clipforge\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "clipforge.cli", "web", "--port", "8765"],
+      "port": 8765
+    }
+  ]
+}

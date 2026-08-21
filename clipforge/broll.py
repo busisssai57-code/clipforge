@@ -127,19 +127,30 @@ def render_broll(clip: Path, cues: list[BRollCue], *, router, width: int,
     work_dir.mkdir(parents=True, exist_ok=True)
 
     usable: list[tuple[BRollCue, Path]] = []
-    for i, cue in enumerate(cues):
-        dest = work_dir / f"broll_{i:02d}.mp4"
-        try:
-            router.generate_shot(prompt=cue.prompt, seconds=cue.duration_s,
-                                 fps=24, out_path=dest, aspect_ratio=aspect)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("broll.shot_failed", cue=i, subject=cue.subject,
-                        error=f"{type(exc).__name__}: {exc}"[:200])
-            continue
-        if not dest.is_file() or dest.stat().st_size < 1024:
-            log.warning("broll.shot_empty", cue=i)
-            continue
-        usable.append((cue, dest))
+    # This walks the cues itself rather than going through
+    # `generate_sequence`, so it also owns the shutdown that method does
+    # in its `finally`: a provider may hold a worker process and a GPU
+    # session between shots, and b-roll is the one caller that would
+    # otherwise leave one running after the last cue.
+    try:
+        for i, cue in enumerate(cues):
+            dest = work_dir / f"broll_{i:02d}.mp4"
+            try:
+                router.generate_shot(prompt=cue.prompt,
+                                     seconds=cue.duration_s, fps=24,
+                                     out_path=dest, aspect_ratio=aspect)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("broll.shot_failed", cue=i, subject=cue.subject,
+                            error=f"{type(exc).__name__}: {exc}"[:200])
+                continue
+            if not dest.is_file() or dest.stat().st_size < 1024:
+                log.warning("broll.shot_empty", cue=i)
+                continue
+            usable.append((cue, dest))
+    finally:
+        close = getattr(router, "close_providers", None)
+        if close is not None:
+            close()
 
     if not usable:
         log.warning("broll.none_usable", planned=len(cues),
