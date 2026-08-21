@@ -104,12 +104,24 @@ def check_ffmpeg_capabilities() -> list[CheckResult]:
         return [CheckResult("ffmpeg-caps", False, "required",
                             f"could not probe ffmpeg capabilities: {exc}",
                             "Reinstall ffmpeg; the binary is present but not runnable.")]
-    has_nvenc = "h264_nvenc" in encoders
+    # LISTED is not WORKING. This asked ffmpeg which encoders it knows
+    # about and reported PASS, while every real render on this machine
+    # failed with `-22 Invalid argument` and fell back to libx264 — the
+    # driver (596.49) is older than the ffmpeg 8.x nvenc path needs. A
+    # doctor that says the fast encoder is available while the pipeline
+    # silently uses the slow one is the report-vs-reality drift this
+    # whole module exists to catch, so it encodes one frame and looks.
+    listed = "h264_nvenc" in encoders
+    works, why = (_nvenc_encodes_a_frame() if listed
+                  else (False, "h264_nvenc is not in this ffmpeg build"))
     results.append(CheckResult(
-        "h264_nvenc", has_nvenc, "optional",
-        "NVENC encoder available" if has_nvenc else "h264_nvenc missing",
-        "" if has_nvenc else "Renders will use libx264 (slower). Install an "
-                             "ffmpeg build with --enable-nvenc (Gyan full build has it)."))
+        "h264_nvenc", works, "optional",
+        "NVENC encodes" if works else f"NVENC unusable: {why}",
+        "" if works else
+        ("Renders fall back to libx264, which works and is slower. "
+         + ("Update the NVIDIA driver: ffmpeg 8.x needs a newer one than "
+            "this machine has." if listed else
+            "Install an ffmpeg build with --enable-nvenc."))))
     has_ass = " ass " in filters or "\nass" in filters or " ass\n" in filters
     results.append(CheckResult(
         "libass", has_ass, "required",
@@ -117,6 +129,40 @@ def check_ffmpeg_capabilities() -> list[CheckResult]:
         "" if has_ass else "Install a full ffmpeg build with libass "
                            "(Gyan.FFmpeg full)."))
     return results
+
+
+def _nvenc_encodes_a_frame() -> tuple[bool, str]:
+    """Encode one frame with nvenc and report what happened.
+
+    Two seconds at most, and it is the only question worth asking: the
+    encoder being listed says nothing about whether this driver can run
+    it. Failure text is trimmed to the last line ffmpeg wrote, which is
+    where the actual reason lives.
+    """
+    import subprocess  # noqa: PLC0415
+
+    from clipforge.ffmpeg import require_binary  # noqa: PLC0415
+
+    try:
+        proc = subprocess.run(
+            [str(require_binary("ffmpeg")), "-nostdin", "-hide_banner", "-y",
+             "-f", "lavfi", "-i", "testsrc=size=128x128:rate=1:d=1",
+             "-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=60)
+    except Exception as exc:  # noqa: BLE001 - a check must not raise
+        return False, f"{type(exc).__name__}: {exc}"[:120]
+    if proc.returncode == 0:
+        return True, ""
+    lines = [ln.strip() for ln in (proc.stderr or "").splitlines() if ln.strip()]
+    # ffmpeg's LAST line is "Conversion failed!", which names nothing. The
+    # line that explains it is higher up and mentions the encoder, the
+    # driver or the argument it rejected.
+    for marker in ("driver", "nvenc", "InitializeEncoder", "Invalid argument",
+                   "Cannot load", "No capable devices"):
+        for ln in lines:
+            if marker.lower() in ln.lower():
+                return False, ln[:150]
+    return False, (lines[-1][:150] if lines else f"exit {proc.returncode}")
 
 
 def check_cuda() -> CheckResult:

@@ -262,3 +262,33 @@ def test_boot_turns_off_the_transport_that_hangs(tmp_path, monkeypatch):
         pass
     assert os.environ["HF_HUB_DISABLE_XET"] == "0", (
         "the operator's own setting was overwritten")
+
+
+# ------------------------------------------------------------- the encoder
+
+def test_nvenc_is_reported_on_whether_it_encodes_not_on_being_listed(
+        monkeypatch):
+    """`doctor` said PASS while every render fell back to libx264.
+
+    The check asked ffmpeg which encoders it knows about. This machine
+    lists h264_nvenc and cannot run it — driver 596.49 offers nvenc API
+    13.0 where ffmpeg 8.x wants 13.1 — so the fast path was reported
+    available while the pipeline quietly used the slow one on every clip.
+    """
+    from clipforge import preflight
+
+    class _Failed:
+        returncode = 1
+        stderr = ("[h264_nvenc @ 0000] Driver does not support the required "
+                  "nvenc API version. Required: 13.1 Found: 13.0\n"
+                  "Conversion failed!\n")
+
+    monkeypatch.setattr(preflight.subprocess if hasattr(preflight, "subprocess")
+                        else __import__("subprocess"), "run",
+                        lambda *a, **k: _Failed())
+    ok, why = preflight._nvenc_encodes_a_frame()
+    assert ok is False
+    # The last line ffmpeg writes is "Conversion failed!", which names
+    # nothing; the reason has to be the line that does.
+    assert "13.1" in why and "13.0" in why, why
+    assert "Conversion failed" not in why
