@@ -366,8 +366,11 @@ def check_ranking_weights(model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ",
     from clipforge.genvideo.models import hf_cache_dir  # noqa: PLC0415
 
     folder = hf_cache_dir(model_id)
-    have = sum(f.stat().st_size for f in folder.rglob("*")
-               if f.is_file()) if folder.is_dir() else 0
+    # blobs/ ONLY. On Windows the snapshot is a COPY of each blob rather
+    # than a symlink, so walking the whole folder counts every weight
+    # twice and reported 13.9 GB for a 6.9 GB model.
+    have = sum(f.stat().st_size for f in (folder / "blobs").glob("*")
+               if f.is_file()) if (folder / "blobs").is_dir() else 0
     # A half-finished fetch leaves `.incomplete` blobs, and a folder of
     # 2.8 GB with two of those in it is not a model — it is a download
     # that will resume inside the stage. Both halves are asked.
