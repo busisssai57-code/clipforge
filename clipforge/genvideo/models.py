@@ -230,6 +230,23 @@ LTX_25 = ModelSpec(
     #: Deliberately plain and content-free. It has to say "there IS
     #: sound here" without inventing what the sound is — a hint naming
     #: voices would put a crowd in an empty desert.
+    #:
+    #: It is NOT a complete fix, and the measurements say where it stops.
+    #: All at 704x1280, 30 steps, seed 1234, delivered LUFS:
+    #:
+    #:   2 s  bare brief                          -18.7   audible
+    #:   2 s  brief + the preset's 50-word style  -52.8   silent
+    #:   2 s  the same, plus this hint            -12.8   audible
+    #:   6 s  short prompt                        -18.0   audible
+    #:   6 s  brief + style                       -inf    silent
+    #:   6 s  brief + style + this hint           -inf    silent
+    #:
+    #: So the house style suppresses this model's audio, length makes the
+    #: suppression worse, and the hint overcomes it at two seconds and
+    #: not at six. Raising `audio_guidance_scale` to 12 did not rescue it
+    #: either (-44.5 dBFS). The provider warns on a silent track rather
+    #: than pretending; a six-second shot in a styled preset may still
+    #: come back mute.
     audio_prompt_hint="The scene has its own natural sound.",
     #: Its own interpreter. `SubprocessModelProvider` runs the worker
     #: there; `CLIPFORGE_ALT_PYTHON` overrides the location.

@@ -67,6 +67,14 @@ def _boot(config_path: Path, *, sweep_partials: bool = True) -> tuple:
     in-flight remux and T1 temp files.
     """
     ensure_nvidia_dll_dirs()  # T6: before anything can import ctranslate2
+    # Hugging Face's xet transport STALLS on this machine: S3 sat at
+    # "Fetching 5 files: 0%" with the process alive, 18 seconds of CPU
+    # and a cache that never grew, which reads as a slow stage rather
+    # than a hung one — there is no timeout on it. The classic HTTP
+    # path fetched the same 7 GB immediately. Set before any
+    # huggingface_hub import, and only when the operator has not made
+    # their own choice.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     cfg = load_config(config_path)
     ws = Workspace(cfg.workspace.root).ensure()
     setup_logging(ws.logs)

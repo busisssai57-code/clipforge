@@ -3284,3 +3284,49 @@ rows.
 Kept, deliberately: the cloud chokepoint and `VeoProvider`. Cloud is off
 by the operator's decision and the chokepoint proves it — that is a
 dormant path that states its own status, not a claim that is false.
+
+### A download that hung and read as a slow stage
+
+The first end-to-end clip run stopped at `Fetching 5 files: 0%` and
+stayed there: the process alive, 18 seconds of CPU burnt, the HF cache
+not growing, no timeout anywhere. Hugging Face's **xet transport**
+stalling. The classic HTTP path fetched the same weights immediately, so
+`HF_HUB_DISABLE_XET=1` is now set in `_boot` unless the operator has
+already chosen — set before any `huggingface_hub` import, with a test
+that pins both halves (default on, operator's own value untouched).
+
+Worth naming separately: **neither VL checkpoint was actually on disk.**
+The AWQ cache held 16 MB of config and tokenizer files, the plain 7B held
+1.6 GB of ~16 GB. The 2026-08-05 entry says local Qwen ranking was proven
+end to end, and it was — the weights were cleaned up afterwards, and
+nothing noticed because the next run just tried to fetch them again and
+hung.
+
+### LTX-2.5 audio: where the cue stops working
+
+The prompt hint added earlier is not a complete fix, and the registry now
+carries the grid rather than the headline. All at 704x1280, 30 steps,
+seed 1234, delivered LUFS:
+
+| length | prompt | audio |
+|---|---|---|
+| 2 s | bare brief | -18.7 |
+| 2 s | brief + the preset's 50-word style | **-52.8** |
+| 2 s | the same, plus the hint | -12.8 |
+| 6 s | short prompt | -18.0 |
+| 6 s | brief + style | **-inf** |
+| 6 s | brief + style + the hint | **-inf** |
+
+The house style suppresses this model's audio; length makes the
+suppression worse; the hint overcomes it at two seconds and not at six.
+`audio_guidance_scale=12` did not rescue it either (-44.5 dBFS). The
+provider warns on a silent track (`genvideo.audio_silent`) rather than
+shipping a mute piece quietly, and that is where this stands.
+
+### Gate
+
+**pytest 1295 passed, 0 skipped** (5:50) and **`clipforge verify all`:
+GATE PASSED** — skeleton 7/7, ingestion 20/20, ai 13/13. Both exit 0.
+The count moves from 1297 to 1295 because 102 lines of split-screen tests
+went with the feature and six new ones came in for the S3 guard, the
+reaper and the transport.

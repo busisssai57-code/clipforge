@@ -228,3 +228,37 @@ def test_a_stage_row_outliving_its_job_is_reaped_too(tmp_path):
     row = {r["id"]: r for r in db.stage_runs_for(job)}[orphan]
     assert row["status"] == "failed"
     assert "abandoned" in (row["error"] or "")
+
+
+# ------------------------------------------------------------ the transport
+
+def test_boot_turns_off_the_transport_that_hangs(tmp_path, monkeypatch):
+    """A stalled download is indistinguishable from a slow stage.
+
+    Hugging Face's xet transport hung here with the process alive, 18
+    seconds of CPU burnt and a cache that never grew — S3 printed
+    "Fetching 5 files: 0%" and sat there. Nothing times it out. The
+    classic HTTP path fetched the same 7 GB immediately.
+
+    An operator who has made their own choice keeps it.
+    """
+    import os
+
+    from clipforge import cli
+
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+    cfg = Path(__file__).resolve().parents[2] / "config" / "config.example.toml"
+    monkeypatch.chdir(tmp_path)
+    try:
+        cli._boot(cfg, sweep_partials=False)
+    except Exception:  # noqa: BLE001 - booting fully is not what is under test
+        pass
+    assert os.environ.get("HF_HUB_DISABLE_XET") == "1"
+
+    monkeypatch.setenv("HF_HUB_DISABLE_XET", "0")
+    try:
+        cli._boot(cfg, sweep_partials=False)
+    except Exception:  # noqa: BLE001
+        pass
+    assert os.environ["HF_HUB_DISABLE_XET"] == "0", (
+        "the operator's own setting was overwritten")
