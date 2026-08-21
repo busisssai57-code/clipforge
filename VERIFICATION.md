@@ -3356,3 +3356,40 @@ empty cache spends an hour fetching ~7 GB from inside the stage, printing
 make a folder that looks present, so the check asks for size AND the
 absence of unfinished blobs — a 2.9 GB folder with two `.incomplete`
 files in it is a download, not a model.
+
+### The product ran, end to end, and its output passed QA
+
+`bta process` on a real speech video, after the S3 fix and with the
+weights actually on disk:
+
+```
+S1  81 segments, 1580 words, en, diarization UNAVAILABLE (no token)
+S2  candidates scored
+S3  ranked - the stage that had been crashing
+S4  coverage 0.972, mean conf 0.852, mode=speaker, 2 shots, 7 switches
+S5  178 subtitle events, 177 words
+S6  58.95 s, 1080x1920, libx264, -14.5 LUFS / -1.22 dBTP
+S7  QA PASSED - 23 checks, 0 failed
+DONE - 2 clip(s) passed QA
+```
+
+Export packs written for five platforms. **This workspace held zero
+accepted clips and one rejection when the session started.**
+
+Two things worth recording from watching the output rather than the log:
+
+* **The framing is correct in principle and awkward on this source.** S4
+  followed the speaker properly — the crop is 606x1080 out of a
+  1920x1080 screencast — but on a screen recording the speaker is a small
+  webcam inset in the corner, so the face is clipped by the bottom edge
+  while the screen fills the frame. Right for a podcast or gameplay,
+  imperfect for screencasts. It needs a decision (follow the screen, or
+  letterbox the inset), not a patch.
+* **NVENC failed and libx264 took over**, exactly as the newly honest
+  doctor check now predicts. The render cost 21.6 s where the GPU
+  encoder would have been faster. One driver update away.
+
+### Gate
+
+**pytest 1299 passed, 0 skipped** (5:55) and **`clipforge verify all`:
+GATE PASSED** — skeleton 7/7, ingestion 20/20, ai 13/13. Both exit 0.
