@@ -240,28 +240,47 @@ def test_boot_turns_off_the_transport_that_hangs(tmp_path, monkeypatch):
     "Fetching 5 files: 0%" and sat there. Nothing times it out. The
     classic HTTP path fetched the same 7 GB immediately.
 
-    An operator who has made their own choice keeps it.
+    `_boot` is allowed to RAISE here rather than being wrapped in a bare
+    `except`: setdefault runs on its first line, so swallowing everything
+    after it would leave this test green on a completely broken boot.
     """
     import os
 
     from clipforge import cli
 
     monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
-    cfg = Path(__file__).resolve().parents[2] / "config" / "config.example.toml"
-    monkeypatch.chdir(tmp_path)
-    try:
-        cli._boot(cfg, sweep_partials=False)
-    except Exception:  # noqa: BLE001 - booting fully is not what is under test
-        pass
-    assert os.environ.get("HF_HUB_DISABLE_XET") == "1"
+    cfg = tmp_path / "config.toml"
+    base = (Path(__file__).resolve().parents[2] / "config"
+            / "config.example.toml").read_text(encoding="utf-8")
+    cfg.write_text(base.replace('root = "workspace"',
+                                f'root = {str(tmp_path / "ws")!r}'),
+                   encoding="utf-8")
 
+    cfg_obj, ws = cli._boot(cfg, sweep_partials=False)
+
+    assert os.environ.get("HF_HUB_DISABLE_XET") == "1"
+    # And the boot itself did its job, so the assertion above is about
+    # ordering inside a working boot rather than about one env line.
+    assert ws.root.is_dir() and cfg_obj.workspace.root
+
+
+def test_boot_leaves_the_operators_own_transport_choice_alone(tmp_path,
+                                                              monkeypatch):
     monkeypatch.setenv("HF_HUB_DISABLE_XET", "0")
-    try:
-        cli._boot(cfg, sweep_partials=False)
-    except Exception:  # noqa: BLE001
-        pass
-    assert os.environ["HF_HUB_DISABLE_XET"] == "0", (
-        "the operator's own setting was overwritten")
+    from clipforge import cli
+
+    cfg = tmp_path / "config.toml"
+    base = (Path(__file__).resolve().parents[2] / "config"
+            / "config.example.toml").read_text(encoding="utf-8")
+    cfg.write_text(base.replace('root = "workspace"',
+                                f'root = {str(tmp_path / "ws")!r}'),
+                   encoding="utf-8")
+
+    cli._boot(cfg, sweep_partials=False)
+
+    import os
+
+    assert os.environ["HF_HUB_DISABLE_XET"] == "0"
 
 
 # ------------------------------------------------------------- the encoder
@@ -325,3 +344,61 @@ def test_a_half_fetched_model_does_not_read_as_present(tmp_path, monkeypatch):
     # finished
     (cache / "blobs" / "shard.incomplete").rename(cache / "blobs" / "shard")
     assert preflight.check_ranking_weights().ok is True
+
+
+def test_a_slow_job_is_not_reaped_while_its_stages_report_in(tmp_path):
+    """The reaper must tell "stuck" from "slow", and could not.
+
+    `set_job_status` runs exactly twice in a job's life, so `updated_at`
+    meant "when this started", and six hours of honest work — a two-hour
+    source through S1, or an LTX-2.5 brief at ~25 minutes a shot — read
+    as silence. Every stage boundary is now a heartbeat.
+    """
+    import time as _time
+
+    db = StateDB(tmp_path / "state.db")
+    job = db.upsert_job("clip", "key-slow", {})
+    db.set_job_status(job, "running")
+    with db._conn:  # noqa: SLF001 - simulate eight hours of elapsed work
+        db._conn.execute("UPDATE jobs SET updated_at=? WHERE id=?",
+                         (_time.time() - 8 * 3600, job))
+
+    # ... and then a stage finishes, exactly as a live job does.
+    run = db.stage_started(job, "s1_transcribe", "cache-slow")
+
+    assert db.reap_stale_jobs(older_than_s=6 * 3600) == []
+    assert db.get_job("key-slow")["status"] == "running"
+    assert {r["id"]: r for r in db.stage_runs_for(job)}[run]["status"] == \
+        "running", "the row of a live job was marked failed under it"
+
+    db.stage_finished(run, artifact="a.json")
+    assert db.reap_stale_jobs(older_than_s=6 * 3600) == [], (
+        "finishing a stage must also refresh the job")
+
+
+def test_an_open_row_under_a_live_job_survives_the_orphan_sweep(tmp_path):
+    """The orphan sweep swept by AGE alone, which catches slow work.
+
+    A stage row older than the cutoff is only abandoned if the job above
+    it has stopped; under a job still marked running it is a long stage.
+    """
+    import time as _time
+
+    db = StateDB(tmp_path / "state.db")
+    live = db.upsert_job("clip", "key-live", {})
+    dead = db.upsert_job("clip", "key-dead", {})
+    live_run = db.stage_started(live, "s3_semantic", "c-live")
+    dead_run = db.stage_started(dead, "s3_semantic", "c-dead")
+    db.set_job_status(live, "running")
+    db.set_job_status(dead, "failed")
+    old = _time.time() - 48 * 3600
+    with db._conn:  # noqa: SLF001
+        db._conn.execute("UPDATE stage_runs SET started_at=?", (old,))
+        db._conn.execute("UPDATE jobs SET updated_at=? WHERE id=?", (old, dead))
+
+    db.reap_stale_jobs(older_than_s=6 * 3600)
+
+    assert {r["id"]: r for r in db.stage_runs_for(dead)}[dead_run]["status"] \
+        == "failed"
+    assert {r["id"]: r for r in db.stage_runs_for(live)}[live_run]["status"] \
+        == "running", "a long stage under a live job was reaped"

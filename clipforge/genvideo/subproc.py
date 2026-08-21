@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -110,7 +111,9 @@ class SubprocessModelProvider:
     def __init__(self, spec: ModelSpec, *, seed: int = 1234,
                  interpreter: Path | None = None,
                  repo_root: Path | None = None,
-                 quantize: str = "") -> None:
+                 quantize: str = "",
+                 loras: list[str] | None = None,
+                 step_cache_threshold: float = 0.0) -> None:
         self.spec = spec
         self.model_id = spec.model_id
         self.name = f"{spec.key}-subprocess"
@@ -123,6 +126,22 @@ class SubprocessModelProvider:
         self._stack: ExitStack | None = None
         self._loaded = False
         self._last_request: dict | None = None
+        # The worker has no knob for either of these. Saying so once, at
+        # construction, is the difference between a customisation that
+        # was declined and one that vanished: `LocalDiffusersProvider`
+        # already logs `genvideo.lora_unsupported` for the same case, and
+        # this path said nothing at all.
+        if loras:
+            log.warning("genvideo.lora_unsupported", model=spec.key,
+                        requested=len(loras),
+                        note="this model runs in a separate interpreter "
+                             "whose worker cannot apply LoRAs; the "
+                             "configured weights were NOT used")
+        if step_cache_threshold:
+            log.warning("genvideo.step_cache_unsupported", model=spec.key,
+                        requested=step_cache_threshold,
+                        note="the subprocess worker has no step cache; "
+                             "generation runs at full step count")
 
     # ------------------------------------------------------------ status
 
@@ -158,8 +177,11 @@ class SubprocessModelProvider:
         hint = getattr(self.spec, "audio_prompt_hint", "")
         if not (self.spec.generates_audio and hint):
             return prompt
-        low = prompt.lower()
-        if any(w in low for w in self._AUDIO_WORDS):
+        # WORD boundaries. Plain `in` matched "hum" inside "humble" and
+        # "score" inside "scoreboard", so an ordinary brief could look
+        # like it already carried audio direction and lose the cue that
+        # is the measured difference between -52.8 and -12.8 LUFS.
+        if set(re.findall(r"[a-z']+", prompt.lower())) & set(self._AUDIO_WORDS):
             return prompt
         log.info("genvideo.audio_hint_added", model=self.spec.key)
         return prompt.rstrip().rstrip(".") + ". " + hint
@@ -253,17 +275,21 @@ class SubprocessModelProvider:
         # the whole time.
         deadline = time.monotonic() + timeout
         while True:
+            # Checked FIRST: a worker flooding the pipe with lines this
+            # loop skips (noise, blanks) could otherwise hold the call —
+            # and the GPU session behind it — past its budget, because the
+            # deadline was only tested when the queue went quiet.
+            if time.monotonic() >= deadline:
+                self.close()
+                raise ProviderError(
+                    f"{self.spec.label} worker did not answer "
+                    f"{request.get('op')!r} within {timeout:.0f}s")
             try:
                 line = self._replies.get(timeout=min(2.0, timeout))
             except queue.Empty:
                 if proc.poll() is not None:
                     raise self._died("it exited before answering "
                                      f"{request.get('op')!r}")
-                if time.monotonic() >= deadline:
-                    self.close()
-                    raise ProviderError(
-                        f"{self.spec.label} worker did not answer "
-                        f"{request.get('op')!r} within {timeout:.0f}s")
                 continue
             if not line.strip():
                 continue
@@ -297,12 +323,26 @@ class SubprocessModelProvider:
                     proc.stdin.flush()
                 proc.wait(timeout=30)
             except Exception:  # noqa: BLE001 - a stuck worker still gets killed
-                proc.kill()
-                proc.wait(timeout=10)
+                try:
+                    proc.kill()
+                    proc.wait(timeout=10)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("genvideo.worker_unkillable",
+                                model=self.spec.key, pid=proc.pid,
+                                error=f"{type(exc).__name__}: {exc}"[:200])
+            # None when even the kill did not settle. "exit=None" hides the
+            # one field that says whether this was the access violation
+            # (3221225477) or a clean stop.
+            code = proc.returncode
             log.info("genvideo.worker_stopped", model=self.spec.key,
-                     exit=proc.returncode)
+                     exit=code if code is not None else "still terminating")
         if stack is not None:
-            stack.close()
+            try:
+                stack.close()
+            except Exception as exc:  # noqa: BLE001 - releasing must not raise
+                log.warning("genvideo.session_close_failed",
+                            model=self.spec.key,
+                            error=f"{type(exc).__name__}: {exc}"[:200])
         self._loaded = False
 
     def __enter__(self) -> "SubprocessModelProvider":
@@ -324,9 +364,20 @@ class SubprocessModelProvider:
         # generated 512x896 and scaled it 2.1x to 1080x1920, which is
         # most of what "blurry" was.
         width, height = _generation_dims(aspect_ratio,
-                                         budget=self.spec.max_pixels)
+                                         budget=self.spec.max_pixels,
+                                         multiple=self.spec.dim_multiple)
+        # Legal BY CONSTRUCTION, which is why there is no fallback here:
+        # the budget is the spec's own `max_pixels` and the grid is its
+        # own `dim_multiple`, and `_generation_dims` searches at or below
+        # the budget, so `spec.supports(width, height)` cannot fail.
+        # Selection is the looser half — it scores every model against the
+        # size the GLOBAL cap produces — and that is a conservative floor:
+        # a model approved for 512x896 rendering at its own larger
+        # envelope is the intended behaviour, not drift.
+        # `test_every_registry_model_generates_inside_its_own_envelope`
+        # pins the invariant for every model and aspect.
         deliver = delivery_dims(aspect_ratio)
-        frames = _latent_frames(seconds, fps)
+        frames = _latent_frames(seconds, fps, group=self.spec.frame_group)
         npy = out_path.parent / f".{out_path.stem}.frames.npy"
         wav_npy = out_path.parent / f".{out_path.stem}.audio.npy"
         npy.parent.mkdir(parents=True, exist_ok=True)
@@ -396,8 +447,17 @@ class SubprocessModelProvider:
                 log.warning("genvideo.audio_missing", model=self.spec.key,
                             note="the spec says this model generates audio "
                                  "and the worker returned none")
-            _write_video(np.load(npy), out_path, fps, deliver=deliver,
-                         audio=track)
+            try:
+                _write_video(np.load(npy), out_path, fps, deliver=deliver,
+                             audio=track)
+            except Exception:
+                # Same reason as the failed reply above, and it was
+                # missing here: the router answers any ProviderError by
+                # trying the NEXT provider, which loads its own model on
+                # this card while this worker still holds ~13 GB of it.
+                # A blank-frame rejection is exactly such a failure.
+                self.close()
+                raise
         finally:
             npy.unlink(missing_ok=True)
             wav_npy.unlink(missing_ok=True)

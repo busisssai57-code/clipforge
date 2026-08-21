@@ -164,3 +164,124 @@ def test_requires_quantization_overrides_the_operator_preference():
     src = inspect.getsource(genvideo.build_router)
     assert "requires_quantization" in src
     assert 'controls["quantize"] = spec.requires_quantization' in src
+
+
+# ---------------------------------------------------- what "downloaded" means
+
+def _fake_cache(root, model_id, *, files):
+    """A HF cache folder for ``model_id`` containing exactly ``files``."""
+    snap = (root / ("models--" + model_id.replace("/", "--"))
+            / "snapshots" / "abc123")
+    for name, body in files.items():
+        f = snap / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(body, encoding="utf-8") if isinstance(body, str) \
+            else f.write_bytes(body)
+    return snap
+
+
+def test_a_config_only_cache_is_not_a_downloaded_model(tmp_path, monkeypatch):
+    """The state that cost a pipeline run: 16 MB of JSON, no weights.
+
+    `weights_present` asked whether the snapshot folder had ANY file in
+    it, so config.json and the tokenizer reported a 7 GB checkpoint as
+    installed. Selection said installed, the run started, and S3 blocked
+    mid-pipeline downloading the model it had been told was there.
+    """
+    import dataclasses
+
+    from clipforge.genvideo import models as m
+
+    spec = dataclasses.replace(REGISTRY["wan22"], model_id="Fake/ConfigOnly")
+    _fake_cache(tmp_path, spec.model_id,
+                files={"config.json": "{}", "tokenizer.json": "{}",
+                       "README.md": "hi"})
+    monkeypatch.setattr(m, "hf_cache_dir",
+                        lambda mid: tmp_path / ("models--"
+                                                + mid.replace("/", "--")))
+    assert m.weights_present(spec) is False
+
+
+def test_a_half_fetched_sharded_model_is_not_downloaded(tmp_path, monkeypatch):
+    """1.6 GB of a 16 GB checkpoint - the plain Qwen VL cache's real state.
+
+    The index names every shard, so the missing ones are countable.
+    """
+    import dataclasses
+    import json
+
+    from clipforge.genvideo import models as m
+
+    spec = dataclasses.replace(REGISTRY["wan22"], model_id="Fake/HalfShards")
+    index = json.dumps({"weight_map": {"a": "model-00001-of-00002.safetensors",
+                                       "b": "model-00002-of-00002.safetensors"}})
+    _fake_cache(tmp_path, spec.model_id,
+                files={"model.safetensors.index.json": index,
+                       "model-00001-of-00002.safetensors": b"\x00" * 16})
+    monkeypatch.setattr(m, "hf_cache_dir",
+                        lambda mid: tmp_path / ("models--"
+                                                + mid.replace("/", "--")))
+    assert m.weights_present(spec) is False
+
+    # The missing shard arrives and the answer flips - no hardcoded False
+    # to remember to delete.
+    (tmp_path / ("models--" + spec.model_id.replace("/", "--"))
+     / "snapshots" / "abc123"
+     / "model-00002-of-00002.safetensors").write_bytes(b"\x00" * 16)
+    assert m.weights_present(spec) is True
+
+
+def test_a_download_in_flight_is_not_downloaded(tmp_path, monkeypatch):
+    """`.incomplete` blobs are what the old comment claimed to check."""
+    import dataclasses
+
+    from clipforge.genvideo import models as m
+
+    spec = dataclasses.replace(REGISTRY["wan22"], model_id="Fake/InFlight")
+    _fake_cache(tmp_path, spec.model_id,
+                files={"model.safetensors": b"\x00" * 16})
+    root = tmp_path / ("models--" + spec.model_id.replace("/", "--"))
+    (root / "blobs").mkdir(parents=True, exist_ok=True)
+    (root / "blobs" / "deadbeef.incomplete").write_bytes(b"\x00")
+    monkeypatch.setattr(m, "hf_cache_dir", lambda mid: root)
+    assert m.weights_present(spec) is False
+
+
+def test_the_frame_group_a_model_declares_is_the_one_it_gets():
+    """`frame_group` was a registry field with no reader.
+
+    `_latent_frames` hardcoded 8, so a model whose temporal VAE groups by
+    4 or 16 could declare it correctly and still be asked for 8n+1 - the
+    same dead-knob shape as the `quantize` field fixed on 2026-08-18.
+    """
+    import dataclasses
+    from pathlib import Path
+
+    from clipforge.genvideo.providers import _latent_frames
+    from clipforge.genvideo.subproc import SubprocessModelProvider
+
+    assert _latent_frames(2.0, 24, group=8) == 49
+    assert _latent_frames(2.0, 24, group=4) == 49
+    assert _latent_frames(2.0, 24, group=16) == 49
+    # 24 frames rounds DOWN to one group of 16 plus a keyframe,
+    # because 17 is nearer to 24 than 33 is.
+    assert _latent_frames(1.0, 24, group=16) == 17
+    assert _latent_frames(1.0, 24, group=8) == 25
+
+    spec = dataclasses.replace(REGISTRY["ltx25"], frame_group=16)
+    provider = SubprocessModelProvider(spec)
+    captured = {}
+    provider._start = lambda: captured.setdefault("started", True)  # noqa: SLF001
+
+    def _call(request, *, timeout):
+        captured["frames"] = request["frames"]
+        raise RuntimeError("stop after the request is built")
+
+    provider._call = _call  # noqa: SLF001
+    try:
+        provider.generate(prompt="x", seconds=1.0, fps=24,
+                          out_path=Path("unused.mp4"))
+    except RuntimeError:
+        pass
+    assert captured["frames"] == 17, (
+        "the spec's frame_group did not reach the request")

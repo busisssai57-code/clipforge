@@ -264,3 +264,42 @@ def test_the_cue_reaches_the_worker(provider, tmp_path):
     provider.generate(prompt="a camel at a market, 35mm anamorphic lens",
                       seconds=1.0, fps=24, out_path=tmp_path / "s.mp4")
     assert LTX_25.audio_prompt_hint in provider._last_request["prompt"]
+
+
+def test_a_word_inside_another_word_does_not_count_as_audio_direction(
+        provider):
+    """`in` matched "hum" inside "humble" and "score" inside "scoreboard".
+
+    An ordinary brief then looked like it already carried audio
+    direction, and lost the cue that is the measured difference between
+    -52.8 and -12.8 LUFS - silently, and only for some prompts.
+    """
+    for brief in ("a humble market trader at dusk",
+                  "a scoreboard above a stadium",
+                  "a humid afternoon in the souq"):
+        got = provider._prompt(brief)
+        assert got.endswith(LTX_25.audio_prompt_hint), brief
+
+    # A real mention still suppresses it.
+    assert provider._prompt("the hum of the market") == "the hum of the market"
+
+
+@needs_ffmpeg
+def test_a_failed_encode_releases_the_worker(provider, tmp_path, monkeypatch):
+    """The router fails over to a provider that needs this card.
+
+    A blank-frame rejection raises out of `_write_video`, and the worker
+    was left holding ~13 GB while the next provider tried to load its own
+    model into the same 24 GB. The failed-reply path already closed for
+    this reason; the encode path did not.
+    """
+    from clipforge.genvideo import providers as prov
+
+    def _boom(*_a, **_k):
+        raise prov.ProviderError("blank frame detected")
+
+    monkeypatch.setattr(subproc, "_write_video", _boom)
+    with pytest.raises(prov.ProviderError):
+        provider.generate(prompt="a camel", seconds=1.0, fps=24,
+                          out_path=tmp_path / "s.mp4")
+    assert provider._proc is None, "the worker outlived the failed encode"

@@ -80,3 +80,22 @@ def test_an_all_silent_sequence_is_left_exactly_as_it_was(tmp_path):
     dest = tmp_path / "sequence.mp4"
     _concat_shots(shots, dest)
     assert not _has_audio(dest)
+
+
+@needs_ffmpeg
+def test_the_padding_scaffolding_does_not_stay_in_the_output_folder(tmp_path):
+    """Padded copies beside the shots look like shots.
+
+    They doubled a shot's bytes in the piece's own directory and would be
+    picked up by anything globbing *.mp4 there - a re-concat, a manual
+    re-cut, a listing. They belong to one concat and are removed with it.
+    """
+    out = tmp_path / "piece"
+    out.mkdir()
+    shots = [_make(out / "shot_00.mp4", audio=True),
+             _make(out / "shot_01.mp4", audio=False)]
+    _concat_shots(shots, out / "sequence.mp4")
+    assert sorted(p.name for p in out.glob("*.mp4")) == [
+        "sequence.mp4", "shot_00.mp4", "shot_01.mp4"]
+    assert not [p for p in out.iterdir() if p.is_dir()], (
+        "the temp dir outlived the concat")

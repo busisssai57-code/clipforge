@@ -473,3 +473,54 @@ def test_the_timeout_moves_with_the_work_not_with_a_constant():
     # And a trivial call still gets a floor, so a stub worker on a busy
     # machine is not raced.
     assert call_timeout_s(1, 64, 64, 1, first_call=False) == MIN_CALL_TIMEOUT_S
+
+
+# ---------------------------------------------------- dropped controls
+
+def test_loras_this_worker_cannot_apply_are_reported(caplog):
+    """A customisation that vanishes is worse than one that is declined.
+
+    `LocalDiffusersProvider._apply_loras` logs `lora_unsupported` when a
+    pipeline cannot take them. The subprocess path took `spec` and `seed`
+    and nothing else, so `[genvideo] loras` configured against ltx25 went
+    nowhere with no line in the log.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        SubprocessModelProvider(LTX_25, loras=["a.safetensors"],
+                                step_cache_threshold=0.3)
+    assert "lora_unsupported" in caplog.text
+    assert "step_cache_unsupported" in caplog.text
+
+
+def test_a_model_with_no_extra_controls_is_quiet(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        SubprocessModelProvider(LTX_25)
+    assert "unsupported" not in caplog.text
+
+
+# ------------------------------------------------------- the envelope
+
+def test_every_registry_model_generates_inside_its_own_envelope():
+    """The size that renders must be legal for the spec that authorised it.
+
+    Selection scores models against the size the GLOBAL cap produces and
+    the provider generates at the model's own envelope, so the size that
+    actually renders was never checked against the spec. It is legal by
+    construction — the budget and the grid both come from the spec — and
+    this pins that, because asking past a model's envelope returns blank
+    frames rather than an error.
+    """
+    from clipforge.genvideo.models import REGISTRY
+    from clipforge.genvideo.providers import _generation_dims
+
+    for key, spec in REGISTRY.items():
+        for aspect in ("9:16", "16:9", "3:4", "4:5", "1:1"):
+            w, h = _generation_dims(aspect, budget=spec.max_pixels,
+                                    multiple=spec.dim_multiple)
+            assert spec.supports(w, h), (
+                f"{key} would generate {w}x{h} at {aspect}, which its own "
+                f"envelope rejects")

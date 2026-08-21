@@ -814,17 +814,21 @@ def _round_to(value: int, multiple: int) -> int:
     return max(multiple, int(round(value / multiple)) * multiple)
 
 
-def _latent_frames(seconds: float, fps: int) -> int:
-    """Frame count these models actually accept: ``8n + 1``.
+def _latent_frames(seconds: float, fps: int, *, group: int = 8) -> int:
+    """Frame count these models actually accept: ``group * n + 1``.
 
-    The temporal VAE compresses in groups of 8 plus a keyframe, so a plain
+    The temporal VAE compresses in groups plus a keyframe, so a plain
     ``seconds * fps`` is rejected (144 frames is not 8n+1). Rounds to the
-    nearest legal count of at least 9 — one group — because a request for
-    a fraction of a group cannot be honoured at all.
+    nearest legal count of at least one group, because a request for a
+    fraction of a group cannot be honoured at all.
+
+    ``group`` comes from the model spec's ``frame_group``, which was a
+    registry field nothing read: every model got 8 whatever it declared.
     """
+    step = max(1, int(group))
     want = max(1, int(round(seconds * fps)))
-    groups = max(1, round((want - 1) / 8))
-    return groups * 8 + 1
+    groups = max(1, round((want - 1) / step))
+    return groups * step + 1
 
 
 def _first_video(result: Any) -> Any:
@@ -867,7 +871,9 @@ def _write_audio_wav(audio: Any, sample_rate: int, frames: int,
     # back at full scale, and wrapping instead of clamping turns a loud
     # mix into a buzz.
     inter = np.clip(arr.T.reshape(-1), -1.0, 1.0)
-    pcm = (inter * 32767.0).astype("<i2")
+    # rint, not a bare cast: `astype` truncates toward zero, which maps
+    # 0.99999 to 32766 and biases every sample by up to half an LSB.
+    pcm = np.rint(inter * 32767.0).astype("<i2")
     with wave.open(str(dest), "wb") as wav:
         wav.setnchannels(int(arr.shape[0]))
         wav.setsampwidth(2)

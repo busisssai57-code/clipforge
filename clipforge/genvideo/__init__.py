@@ -109,7 +109,9 @@ def build_router(cfg, ws, *, api_key: str | None = None,
                 SubprocessModelProvider)
 
             providers.append(SubprocessModelProvider(
-                spec, seed=gv.local_seed, quantize=controls["quantize"]))
+                spec, seed=gv.local_seed, quantize=controls["quantize"],
+                loras=controls["loras"],
+                step_cache_threshold=controls["step_cache_threshold"]))
         else:
             providers.append(LocalDiffusersProvider(
                 spec.model_id, steps=spec.steps,

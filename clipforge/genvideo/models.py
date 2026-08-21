@@ -334,8 +334,53 @@ def weights_present(spec: ModelSpec) -> bool:
     snapshots = folder / "snapshots"
     if not snapshots.is_dir():
         return False
-    # A folder with only .incomplete blobs is a half-download, not a model.
-    return any(any(s.iterdir()) for s in snapshots.iterdir() if s.is_dir())
+    # "Any file at all" was the old test, and it is how 16 MB of config
+    # and tokenizer JSON reported a 7 GB model as downloaded: selection
+    # said installed, the run started, and S3 blocked mid-pipeline
+    # fetching weights. MEASURED on
+    # models--Qwen--Qwen2.5-VL-7B-Instruct-AWQ, 2026-08-20.
+    #
+    # A download in flight also leaves `.incomplete` blobs, so those are
+    # checked here too — which is what the old comment claimed and the
+    # old code never did.
+    if any((folder / "blobs").glob("*.incomplete")):
+        return False
+    return any(_snapshot_has_weights(s) for s in snapshots.iterdir()
+               if s.is_dir())
+
+
+#: Extensions a checkpoint's actual weights arrive in. Config, tokenizer
+#: and README files are not weights and must not vote.
+_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf", ".onnx")
+
+
+def _snapshot_has_weights(snapshot: Path) -> bool:
+    """Whether this snapshot holds every weight file it says it has.
+
+    Where a shard index exists it is the authority: it names each shard,
+    so a half-fetched sharded model (1.6 GB of a 16 GB checkpoint, which
+    is the state the plain Qwen VL cache was in) is missing files the
+    index lists and answers False. Without an index, one weight file of
+    non-zero size is the most that can be asked.
+    """
+    import json as _json  # noqa: PLC0415 - only this check parses indexes
+
+    found_index = False
+    for index in snapshot.rglob("*.index.json"):
+        try:
+            weight_map = _json.loads(index.read_text(encoding="utf-8"))["weight_map"]
+        except Exception:  # noqa: BLE001 - an unreadable index is not proof
+            continue
+        found_index = True
+        for name in set(weight_map.values()):
+            shard = index.parent / name
+            if not shard.is_file() or shard.stat().st_size == 0:
+                return False
+    if found_index:
+        return True
+    return any(f.is_file() and f.stat().st_size > 0
+               for f in snapshot.rglob("*")
+               if f.suffix in _WEIGHT_SUFFIXES)
 
 
 def select_model(*, needs: frozenset[str] | set[str] | None = None,

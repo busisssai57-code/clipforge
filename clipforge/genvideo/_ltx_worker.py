@@ -42,6 +42,11 @@ _REPLY = sys.stdout
 sys.stdout = sys.stderr
 
 _PIPE = None
+#: What `_PIPE` actually is. The cache used to be keyed on nothing, so a
+#: request naming a different model_id or quantize mode silently got the
+#: first-loaded pipeline and reported success for frames the wrong
+#: checkpoint made.
+_PIPE_KEY: tuple[str, str] | None = None
 _LOAD_SECONDS = 0.0
 
 
@@ -51,10 +56,24 @@ def _reply(payload: dict) -> None:
 
 
 def _load(model_id: str, quantize: str) -> object:
-    """Build the pipeline once, and keep it for the life of the process."""
-    global _PIPE, _LOAD_SECONDS
-    if _PIPE is not None:
+    """Build the pipeline once per (model, quantize), and keep it.
+
+    Keyed, because the protocol carries both on every request: an
+    unkeyed cache answers a second request for a different checkpoint
+    with the first one's weights and calls it a success.
+    """
+    global _PIPE, _PIPE_KEY, _LOAD_SECONDS
+    key = (model_id, quantize)
+    if _PIPE is not None and _PIPE_KEY == key:
         return _PIPE
+    if _PIPE is not None:
+        # One model at a time: this process holds a card that the parent
+        # has reserved for exactly one residency.
+        _PIPE = None
+        _PIPE_KEY = None
+        import gc
+
+        gc.collect()
     t0 = time.time()
     import torch
     from diffusers import BitsAndBytesConfig as DiffusersBnb
@@ -86,7 +105,7 @@ def _load(model_id: str, quantize: str) -> object:
     if vae is not None and hasattr(vae, "enable_tiling"):
         vae.enable_tiling()
     _LOAD_SECONDS = round(time.time() - t0, 1)
-    _PIPE = pipe
+    _PIPE, _PIPE_KEY = pipe, key
     return pipe
 
 

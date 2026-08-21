@@ -280,10 +280,17 @@ class StateDB:
             # 'running' under jobs that had finished eight days earlier, one
             # of them s7_qa, which is what the dashboard reads for its
             # per-stage medians.
+            #
+            # Only under a job that has STOPPED. A long stage under a live
+            # job — S1 on a two-hour source, one LTX-2.5 shot at 25 minutes
+            # — is slow, not abandoned, and marking its row failed while it
+            # is still writing would be this reaper inventing the failure
+            # it claims to clean up.
             self._conn.execute(
                 "UPDATE stage_runs SET status='failed', finished_at=?, "
                 "error='abandoned: no process ever finished this stage' "
-                "WHERE status='running' AND started_at < ?",
+                "WHERE status='running' AND started_at < ? AND job_id IN ("
+                "  SELECT id FROM jobs WHERE status != 'running')",
                 (time.time(), cutoff))
         return ids
 
@@ -296,20 +303,35 @@ class StateDB:
 
     @_guarded
     def stage_started(self, job_id: int, stage: str, cache_key: str) -> int:
+        now = time.time()
         with self._lock, self._conn:
             cur = self._conn.execute(
                 "INSERT INTO stage_runs(job_id, stage, cache_key, status, started_at) "
-                "VALUES(?,?,?,'running',?)", (job_id, stage, cache_key, time.time()))
+                "VALUES(?,?,?,'running',?)", (job_id, stage, cache_key, now))
+            # A HEARTBEAT for the job. `set_job_status` is called exactly
+            # twice in a job's life — 'running' at the start and a
+            # terminal status at the end — so `updated_at` said "when this
+            # job began", and `reap_stale_jobs` read that as "how long it
+            # has been silent". A two-hour source or an LTX-2.5 brief at
+            # ~25 min a shot passes six hours while working perfectly and
+            # was reaped mid-flight. Every stage boundary now says the job
+            # is alive.
+            self._conn.execute("UPDATE jobs SET updated_at=? WHERE id=?",
+                               (now, job_id))
         return int(cur.lastrowid)
 
     @_guarded
     def stage_finished(self, run_id: int, *, artifact: str | None = None,
                        error: str | None = None) -> None:
         status = "done" if error is None else "failed"
+        now = time.time()
         with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE stage_runs SET status=?, artifact=?, error=?, finished_at=? WHERE id=?",
-                (status, artifact, error, time.time(), run_id))
+                (status, artifact, error, now, run_id))
+            self._conn.execute(
+                "UPDATE jobs SET updated_at=? WHERE id=("
+                "  SELECT job_id FROM stage_runs WHERE id=?)", (now, run_id))
 
     @_guarded
     def recent_jobs(self, limit: int = 20) -> list[sqlite3.Row]:

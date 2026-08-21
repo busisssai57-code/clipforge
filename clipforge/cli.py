@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib
+import contextlib
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -1381,7 +1383,24 @@ def _concat_shots(paths: list[Path], dest: Path) -> None:
     from clipforge.ffmpeg import require_binary
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    paths = _with_uniform_audio(paths, dest.parent)
+    # A TEMP dir, not the piece's own folder: the padded copies are
+    # scaffolding for one concat, and left beside the shots they double a
+    # shot's bytes and look like shots to anything globbing *.mp4 there.
+    stack = contextlib.ExitStack()
+    with stack:
+        work = Path(stack.enter_context(
+            tempfile.TemporaryDirectory(prefix="concat-", dir=dest.parent)))
+        paths = _with_uniform_audio(paths, work)
+        return _concat_listed(paths, dest)
+
+
+def _concat_listed(paths: list[Path], dest: Path) -> None:
+    """The ffmpeg half, once every input has the same streams."""
+    import subprocess
+
+    from clipforge.errors import ClipForgeError as _Err
+    from clipforge.ffmpeg import require_binary
+
     listing = dest.with_suffix(".txt")
     listing.write_text(
         "".join(f"file '{p.resolve().as_posix()}'\n" for p in paths),
