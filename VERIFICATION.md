@@ -3330,3 +3330,29 @@ GATE PASSED** — skeleton 7/7, ingestion 20/20, ai 13/13. Both exit 0.
 The count moves from 1297 to 1295 because 102 lines of split-screen tests
 went with the feature and six new ones came in for the S3 guard, the
 reaper and the transport.
+
+### Three more things the state DB and the logs were already saying
+
+**The most common failure had no test.** Six of the nine failed jobs died
+on `ValueError: No default align-model for language: cy` — whisperx
+transcribed the audio and had no wav2vec2 aligner to force-align it. The
+degrade for that (keep the transcript, drop the word timings, say so) was
+written in a later session and never pinned; it is pinned now, in both
+directions — a missing aligner degrades, a CUDA fault still raises.
+Worth noting why it matters beyond the six: **Somali has no aligner
+either**, so the format this project is being built to copy runs straight
+into this path.
+
+**`doctor` said the fast encoder was available while every render used
+the slow one.** The check asked ffmpeg which encoders it lists, which says
+nothing about whether this driver can run one. It now encodes a frame:
+*"Driver does not support the required nvenc API version. Required: 13.1
+Found: 13.0"*. That is one driver update away from faster renders, and it
+had been invisible behind a PASS.
+
+**S3's weights are reported before a run needs them.** A first run with an
+empty cache spends an hour fetching ~7 GB from inside the stage, printing
+"S3: ranking candidate windows" and then nothing. 16 MB of config files
+make a folder that looks present, so the check asks for size AND the
+absence of unfinished blobs — a 2.9 GB folder with two `.incomplete`
+files in it is a download, not a model.
