@@ -303,12 +303,13 @@ def available_models(vram_gb: float = 24.0) -> list[ModelSpec]:
     return out
 
 
-def weights_present(spec: ModelSpec) -> bool:
-    """Whether the model is downloaded, without importing torch.
+def hf_cache_dir(model_id: str):
+    """Where this model's blobs live, without importing torch or hitting
+    the network.
 
-    Checks the HF cache directly: constructing a pipeline to find out
-    would download tens of gigabytes as a side effect of a availability
-    check.
+    Shared with `preflight.check_ranking_weights`, which asks the same
+    question about S3's vision-language model: two copies of this path
+    arithmetic would drift the moment HF changes its layout.
     """
     from pathlib import Path
 
@@ -317,7 +318,17 @@ def weights_present(spec: ModelSpec) -> bool:
         root = Path(HF_HUB_CACHE)
     except Exception:  # noqa: BLE001
         root = Path.home() / ".cache" / "huggingface" / "hub"
-    folder = root / ("models--" + spec.model_id.replace("/", "--"))
+    return root / ("models--" + model_id.replace("/", "--"))
+
+
+def weights_present(spec: ModelSpec) -> bool:
+    """Whether the model is downloaded, without importing torch.
+
+    Checks the HF cache directly: constructing a pipeline to find out
+    would download tens of gigabytes as a side effect of a availability
+    check.
+    """
+    folder = hf_cache_dir(spec.model_id)
     if not folder.is_dir():
         return False
     snapshots = folder / "snapshots"

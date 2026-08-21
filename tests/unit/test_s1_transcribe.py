@@ -473,3 +473,59 @@ def test_words_without_timestamps_are_dropped_not_fatal(env):
     art = stage.run(input_digest=digest_bytes(b"m"), params={},
                     media_path=media)
     assert len(art.segments[0].words) == 1  # the timestamped one survives
+
+
+# ------------------------------------------------- languages with no aligner
+
+def test_a_language_with_no_aligner_still_produces_a_transcript(env):
+    """The pipeline's most common historical failure, and the one waiting
+    for the operator's own content.
+
+    Six of the failed jobs in this workspace died on
+    ``ValueError: No default align-model for language: cy`` — whisperx
+    transcribed the audio and had no wav2vec2 aligner to force-align it,
+    and the stage raised. Somali has no aligner either, so the Somali
+    format this project is being built to copy would hit exactly this.
+
+    A missing aligner is a fact about the LANGUAGE. The transcript is
+    still worth having; only the word timings are lost, and captions
+    degrade to segment level.
+    """
+    db, media, tmp = env
+    calls: list[str] = []
+
+    class NoAligner(FakeEngine):
+        def load_align(self, language):
+            calls.append(f"load_align({language})")
+            raise ValueError(f"No default align-model for language: {language}")
+
+    art = make_stage(db, tmp, NoAligner(calls)).run(
+        input_digest=digest_bytes(b"m"), params={}, media_path=media,
+        abs_offset_s=0.0)
+
+    assert art.segments, "the transcript was thrown away with the alignment"
+    assert art.words_aligned is False, (
+        "a transcript with no word timings must SAY it has none, or S5 will "
+        "build karaoke captions out of times nobody measured")
+
+
+def test_a_real_fault_during_alignment_still_raises(env):
+    """The narrowness that makes the degrade safe.
+
+    A CUDA fault, an OOM or a half-fetched checkpoint means the machine
+    is in trouble. Emitting a wordless transcript for those would hide a
+    hardware problem behind a plausible artifact.
+    """
+    db, media, tmp = env
+    calls: list[str] = []
+
+    class BrokenCard(FakeEngine):
+        def load_align(self, language):
+            calls.append("load_align")
+            raise RuntimeError("CUDA error: out of memory")
+
+    with pytest.raises(Exception) as err:
+        make_stage(db, tmp, BrokenCard(calls)).run(
+            input_digest=digest_bytes(b"m"), params={}, media_path=media,
+            abs_offset_s=0.0)
+    assert "out of memory" in str(err.value)

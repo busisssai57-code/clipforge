@@ -292,3 +292,36 @@ def test_nvenc_is_reported_on_whether_it_encodes_not_on_being_listed(
     # nothing; the reason has to be the line that does.
     assert "13.1" in why and "13.0" in why, why
     assert "Conversion failed" not in why
+
+
+# ------------------------------------------------------------- the weights
+
+def test_a_half_fetched_model_does_not_read_as_present(tmp_path, monkeypatch):
+    """2.9 GB of a 7 GB model is a download, not a model.
+
+    The first clip run of the day printed "S3: ranking candidate windows"
+    and sat there for an hour: an empty cache, 7 GB fetched from inside
+    the stage, no progress anywhere. A check that only asked whether the
+    folder existed would have said yes — 16 MB of config files make a
+    folder.
+    """
+    from clipforge import preflight
+
+    cache = tmp_path / "models--Qwen--Qwen2.5-VL-7B-Instruct-AWQ"
+    (cache / "blobs").mkdir(parents=True)
+    monkeypatch.setattr("clipforge.genvideo.models.hf_cache_dir",
+                        lambda _model_id: cache)
+
+    # nothing but configs
+    (cache / "blobs" / "config").write_bytes(b"x" * 4096)
+    assert preflight.check_ranking_weights().ok is False
+
+    # a fetch in flight: big, and unfinished
+    (cache / "blobs" / "shard.incomplete").write_bytes(b"x" * int(2e9))
+    result = preflight.check_ranking_weights()
+    assert result.ok is False
+    assert "unfinished" in result.message
+
+    # finished
+    (cache / "blobs" / "shard.incomplete").rename(cache / "blobs" / "shard")
+    assert preflight.check_ranking_weights().ok is True

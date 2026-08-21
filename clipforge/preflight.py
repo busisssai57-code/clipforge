@@ -349,6 +349,44 @@ def check_workspace_writable(workspace_root: Path) -> CheckResult:
 # --------------------------------------------------------------------------
 
 
+def check_ranking_weights(model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ",
+                          ) -> CheckResult:
+    """Whether S3's vision-language weights are on disk, before a run needs them.
+
+    A first run with an empty cache spends an hour downloading ~7 GB from
+    inside the stage, printing "S3: ranking candidate windows" and then
+    nothing. MEASURED here: the cache held 16 MB of config and tokenizer
+    files — enough to look present to anything checking for the folder —
+    and the run sat there. Reported here so the wait is a known cost
+    before it is a mystery.
+
+    Size, not presence: the folder exists as soon as one config file has
+    been fetched.
+    """
+    from clipforge.genvideo.models import hf_cache_dir  # noqa: PLC0415
+
+    folder = hf_cache_dir(model_id)
+    have = sum(f.stat().st_size for f in folder.rglob("*")
+               if f.is_file()) if folder.is_dir() else 0
+    # A half-finished fetch leaves `.incomplete` blobs, and a folder of
+    # 2.8 GB with two of those in it is not a model — it is a download
+    # that will resume inside the stage. Both halves are asked.
+    partial = (any(folder.glob("blobs/*.incomplete"))
+               if folder.is_dir() else False)
+    # The AWQ checkpoint is ~7 GB; anything under a gigabyte is configs.
+    ok = have > 1e9 and not partial
+    return CheckResult(
+        "s3-weights", ok, "optional",
+        f"{model_id.split('/')[-1]}: {have / 1e9:.1f} GB cached"
+        + ("" if ok else
+           " (a fetch is unfinished)" if partial else " (weights missing)"),
+        "" if ok else
+        ("The first clip run will download ~7 GB inside S3 with no "
+         "progress in the console. Pre-fetch it if you would rather not "
+         "wait mid-run: python -c \"from huggingface_hub import "
+         f"snapshot_download as d; d('{model_id}')\""))
+
+
 def run_all(workspace_root: Path, *, disk_floor_gb: float = 50.0) -> list[CheckResult]:
     """Run every check; returns results in a stable order."""
     results: list[CheckResult] = [check_python()]
@@ -360,6 +398,7 @@ def run_all(workspace_root: Path, *, disk_floor_gb: float = 50.0) -> list[CheckR
     results.append(check_cudnn_dlls())
     results.append(check_torchcodec())
     results.append(check_hf_token())
+    results.append(check_ranking_weights())
     results.extend(check_tools())
     results.append(check_disk(workspace_root, disk_floor_gb))
     results.append(check_workspace_writable(workspace_root))
