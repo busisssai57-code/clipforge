@@ -1967,20 +1967,6 @@ def _print_access_banner(host: str, port: int, token: str | None, *,
 
 
 @app.command()
-def mcp(api: str = typer.Option("http://127.0.0.1:8765", "--api",
-                                help="Base URL of a running `bta web`")) -> None:
-    """Serve BTA over MCP on stdio, for Claude, Cursor and other clients.
-
-    This speaks the protocol on stdout, so it must not be run interactively
-    — point an MCP client's command at it. It is a client of `bta web`
-    rather than a second way to run the pipeline: start that first.
-    """
-    from clipforge.mcp_server import serve
-
-    raise typer.Exit(serve(api))
-
-
-@app.command()
 def test_render(video: Path, s1_json: Path, s2_json: Path):
     """Force a render of the top candidate to test the UI pipeline."""
     import json
