@@ -70,29 +70,6 @@ def _has_module(name: str) -> bool:
         return False
 
 
-def _renders_split_screen() -> bool:
-    """Whether a render path actually composites the split-screen crops.
-
-    This tile used to be reported as ``has_filter("xstack")``, which answered
-    the wrong question. ``s4_tracking.compute_split_screen_crops`` computes
-    both crops correctly, but its only caller is a unit test — S6 never
-    builds an xstack graph, so nothing turns those crops into a frame. The
-    filter's presence in ffmpeg says nothing about whether BTA uses it, so
-    the tile read LIVE on every ordinary build for a feature that does not
-    exist. That is precisely the report-vs-reality drift this module's
-    docstring exists to forbid.
-
-    So probe the render side instead. Build the composite path, expose
-    ``build_split_screen_filter`` on S6, and this flips to True on its own —
-    no hardcoded ``False`` to remember to delete.
-    """
-    try:
-        from clipforge.stages import s6_render  # noqa: PLC0415
-    except Exception:  # noqa: BLE001 - a broken import means no render path
-        return False
-    return callable(getattr(s6_render, "build_split_screen_filter", None))
-
-
 def _local_model_installed() -> bool:
     try:
         from clipforge.genvideo.models import REGISTRY, weights_present
@@ -290,26 +267,6 @@ def probe() -> list[Capability]:
         available=not no_speech,
         blocker="" if not no_speech else f"{' and '.join(no_speech)} missing",
         note="highpass, denoise, de-ess and level — applied before loudness",
-    ))
-    # Two independent requirements, reported in the order you would fix
-    # them: there is no point naming a missing filter for a path that is not
-    # written yet.
-    ss_renders = _renders_split_screen()
-    ss_filter = has_filter("xstack")
-    if not ss_renders:
-        ss_blocker = ("not implemented — S4 computes the crops but no render "
-                      "path composites them")
-    elif not ss_filter:
-        ss_blocker = "xstack missing"
-    else:
-        ss_blocker = ""
-    caps.append(Capability(
-        key="splitscreen", label="Split screen",
-        available=ss_renders and ss_filter,
-        blocker=ss_blocker,
-        note=("two tracked speakers stacked; S4 already scores each face"
-              if ss_renders else
-              "the crop maths exists and is tested; the render path does not"),
     ))
     return caps
 

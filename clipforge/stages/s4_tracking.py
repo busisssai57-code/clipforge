@@ -61,44 +61,6 @@ def _even(val: int) -> int:
     return val if val % 2 == 0 else val - 1
 
 
-def compute_split_screen_crops(
-    box_a: tuple[float, float, float, float],
-    box_b: tuple[float, float, float, float],
-    src_w: int,
-    src_h: int,
-    frame_idx: int = 0
-) -> tuple[CropFrame, CropFrame]:
-    """Compute dual 9:16 stacked split-screen crops for two podcast speakers.
-
-    Top half crop focuses on Speaker A (centroid x_a, y_a); bottom half crop
-    focuses on Speaker B (centroid x_b, y_b). Returns two CropFrame instances.
-    """
-    # Half-height 9:16 frame aspect: height is src_h // 2, width is 9/8 * half_h
-    half_h = _even(src_h // 2)
-    crop_w = _even(int(half_h * (9.0 / 8.0)))
-    if crop_w > src_w:
-        crop_w = _even(src_w)
-        half_h = _even(int(crop_w * (8.0 / 9.0)))
-
-    # Speaker A (Top)
-    ax1, ay1, ax2, ay2 = box_a
-    acx = (ax1 + ax2) / 2.0
-    acy = (ay1 + ay2) / 2.0
-    top_x = _even(int(max(0, min(src_w - crop_w, acx - crop_w / 2.0))))
-    top_y = _even(int(max(0, min(src_h - half_h, acy - half_h / 2.0))))
-
-    # Speaker B (Bottom)
-    bx1, by1, bx2, by2 = box_b
-    bcx = (bx1 + bx2) / 2.0
-    bcy = (by1 + by2) / 2.0
-    bot_x = _even(int(max(0, min(src_w - crop_w, bcx - crop_w / 2.0))))
-    bot_y = _even(int(max(0, min(src_h - half_h, bcy - half_h / 2.0))))
-
-    top_crop = CropFrame(frame=frame_idx, x=top_x, y=top_y, w=crop_w, h=half_h)
-    bot_crop = CropFrame(frame=frame_idx, x=bot_x, y=bot_y, w=crop_w, h=half_h)
-    return top_crop, bot_crop
-
-
 def _detect_shots(video_path: Path, start_s: float, duration_s: float,
                   fps: float, *, threshold: float = 0.30) -> list[int]:
     """Shot-boundary frame indices (window-relative) via ffmpeg scene scores.

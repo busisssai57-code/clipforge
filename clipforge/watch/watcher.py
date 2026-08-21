@@ -94,7 +94,8 @@ class DirectoryWatcher:
     """watchdog + poll-sweep driver around a StableFileTracker.
 
     ``on_stable`` is invoked from the watcher thread — callbacks must be
-    quick and thread-safe (the monitor pushes onto a Bus channel).
+    quick and thread-safe (the monitor hands the path to
+    ``ClipDispatcher.submit``).
     """
 
     def __init__(self, directory: Path, on_stable: Callable[[Path], None], *,

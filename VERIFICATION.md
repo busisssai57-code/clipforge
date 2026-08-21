@@ -3224,3 +3224,63 @@ number grows with each of frames, steps and pixels — a constant fails it.
 the concat) and minus the two Flow web tests that went with the feature.
 **`clipforge verify all`: GATE PASSED** — skeleton 7/7, ingestion 20/20,
 ai 13/13. Both halves exit 0.
+
+## Finishing pass: the crash that stopped the product, and three things deleted (2026-08-20)
+
+Operator: *"finish it end to end, remove anything unnecessary without
+asking."* The assessment that preceded it found the priority by reading
+the state DB rather than the code.
+
+### The clip pipeline had a live crash, and nine failed jobs nobody read
+
+`workspace/state.sqlite3`: **16 jobs — 3 done, 3 empty, 9 failed, 1
+"running" for 7.8 days.** The most recent failure, on a real
+speech-carrying source, was `S3 execution error: list index out of
+range`. Not configuration: an unhandled `IndexError` two lines from where
+it was raised.
+
+`_extract_frames_cv2` returns `[]` when every `cap.read()` in a candidate
+window fails — a seek past the end, a damaged GOP, a codec the build
+cannot decode at that offset. The empty list went straight into the
+processor, which indexed it, and the blanket handler turned that into
+"S3 execution error" and lost **all ten candidates and the whole job**.
+
+Now: a window that reads no frames is scored last with a justification
+saying so, and the run continues; a video where EVERY window is
+unreadable still fails, but names the file and the count. Proven by
+mutation — putting the guard back to `if False:` reproduces the original
+message exactly, `S3 execution error: list index out of range`.
+
+### Jobs a crash left running are reaped
+
+A job's status only ever moves in the process running it, so a kill, a
+power cut or an OOM leaves it `running` for ever — and a stuck job is
+indistinguishable from a busy one, so the queue looks occupied by work
+nobody is doing. `reap_stale_jobs` closes jobs and stage rows older than
+six hours at boot, next to the session reconcile that already existed.
+
+The first version missed the rows that outlive their job: an exception
+handler moves the JOB to failed while the stage row it was inside never
+gets its `stage_finished`. Two such rows were sitting in this workspace
+under jobs that had finished eight days earlier, one of them `s7_qa` —
+which is what the dashboard reads for its per-stage medians. Both live
+jobs and both orphan rows are now closed; the workspace has zero stuck
+rows.
+
+### Deleted
+
+* **Split screen.** `compute_split_screen_crops` computed both crops
+  correctly and its only caller was a unit test; the capability tile had
+  already been made honest and read DOWN. Third time this feature has
+  been found advertised-and-unbuilt, so it is gone: the maths, the tile,
+  the probe and 102 lines of tests that pinned the report of a feature
+  that did not exist.
+* **`bus.py`.** 88 lines of bounded asyncio channels that the spec's §6
+  describes and nothing constructs — `ClipDispatcher` is what the watch
+  loop actually hands media to. A docstring in `watcher.py` still claimed
+  "the monitor pushes onto a Bus channel"; it now names the dispatcher.
+* Google Flow, earlier in the same session.
+
+Kept, deliberately: the cloud chokepoint and `VeoProvider`. Cloud is off
+by the operator's decision and the chokepoint proves it — that is a
+dormant path that states its own status, not a claim that is false.

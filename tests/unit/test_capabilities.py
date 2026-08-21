@@ -95,7 +95,7 @@ def _patch_probe_world(monkeypatch, *, filters=(), kokoro=False,
                        local_model=False, asr=True,
                        load_config=None, cloud_enabled=None,
                        has_key=False, voices=None,
-                       local_translator=True, split_screen_render=False):
+                       local_translator=True):
     """Pin every external the probe consults to an explicit value.
 
     ``local_translator`` defaults True because that is the real state of
@@ -104,7 +104,6 @@ def _patch_probe_world(monkeypatch, *, filters=(), kokoro=False,
     under the cloud-off decision. Tests that want a dark tile must now
     remove BOTH routes, which is the point of the feature.
 
-    ``split_screen_render`` defaults False because that is the real state of
     the tree: the S6 composite path is not written. It is a knob rather than
     a constant so the fully-equipped world can still assert that no tile is
     hardcoded dead.
@@ -117,8 +116,6 @@ def _patch_probe_world(monkeypatch, *, filters=(), kokoro=False,
 
     monkeypatch.setattr(translate, "local_translator_available",
                         lambda cfg: local_translator)
-    monkeypatch.setattr(capabilities, "_renders_split_screen",
-                        lambda: split_screen_render)
 
     fset = frozenset(filters)
     monkeypatch.setattr(capabilities, "has_filter", lambda n: n in fset)
@@ -148,7 +145,7 @@ def test_probe_reports_every_advertised_tile_exactly_once(monkeypatch):
     _patch_probe_world(monkeypatch)
     keys = [c.key for c in capabilities.probe()]
     assert keys == ["voiceover", "upscale", "broll", "dubbing",
-                    "publish", "speech", "splitscreen"]
+                    "publish", "speech"]
 
 
 def test_unavailable_tiles_name_their_fix(monkeypatch):
@@ -165,7 +162,7 @@ def test_available_tiles_carry_no_blocker(monkeypatch):
                               "afftdn", "speechnorm", "xstack"),
         kokoro=True, local_model=True,
         cloud_enabled=lambda cfg, feat: True, has_key=True,
-        voices={"en": "af_heart"}, split_screen_render=True)
+        voices={"en": "af_heart"})
     for cap in capabilities.probe():
         if cap.available:
             assert cap.blocker == "", f"{cap.key} available yet blocked"
@@ -178,7 +175,7 @@ def test_fully_equipped_world_reports_every_tile_live(monkeypatch):
                               "afftdn", "speechnorm", "xstack"),
         kokoro=True, local_model=True,
         cloud_enabled=lambda cfg, feat: True, has_key=True,
-        voices={"en": "af_heart"}, split_screen_render=True)
+        voices={"en": "af_heart"})
     for cap in capabilities.probe():
         assert cap.available, f"{cap.key} dead in a fully equipped world"
 
@@ -199,108 +196,6 @@ def test_speech_names_whichever_filter_is_missing(monkeypatch):
     assert not tile.available
     assert "speechnorm" in tile.blocker
 
-
-# ------------------------------------------------------------ split screen
-#
-# This tile was reported as `has_filter("xstack")`, which is a fact about
-# ffmpeg rather than about BTA. S4 computes the crops correctly, but nothing
-# in the render path composites them, so the tile read LIVE on every ordinary
-# build — on the dashboard and on splitscreen.html — for a feature that does
-# not exist. These tests pin the report to the render path instead.
-
-def test_split_screen_dark_when_the_render_path_is_missing(monkeypatch):
-    """xstack present and the path absent is the exact shipped bug."""
-    _patch_probe_world(monkeypatch, filters=("xstack",),
-                       split_screen_render=False)
-    tile = _tile(capabilities.probe(), "splitscreen")
-    assert not tile.available
-    assert "not implemented" in tile.blocker
-    # Naming the filter here would send someone to fix ffmpeg for a path
-    # nobody has written.
-    assert "xstack missing" not in tile.blocker
-
-
-def test_split_screen_names_the_filter_once_the_path_exists(monkeypatch):
-    """Path written, filter absent: now xstack IS the thing to fix."""
-    _patch_probe_world(monkeypatch, filters=(), split_screen_render=True)
-    tile = _tile(capabilities.probe(), "splitscreen")
-    assert not tile.available
-    assert tile.blocker == "xstack missing"
-
-
-def test_split_screen_live_only_when_both_hold(monkeypatch):
-    _patch_probe_world(monkeypatch, filters=("xstack",),
-                       split_screen_render=True)
-    tile = _tile(capabilities.probe(), "splitscreen")
-    assert tile.available
-    assert tile.blocker == ""
-
-
-def test_split_screen_probe_is_live_not_a_hardcoded_false(monkeypatch):
-    """The probe must flip on its own when S6 grows the entry point.
-
-    A hardcoded False would pass every test above and then quietly under-report
-    the feature forever once somebody built it.
-    """
-    from clipforge.stages import s6_render
-
-    assert not capabilities._renders_split_screen()
-    monkeypatch.setattr(s6_render, "build_split_screen_filter",
-                        lambda *a, **k: "", raising=False)
-    assert capabilities._renders_split_screen()
-
-
-def test_split_screen_tile_cannot_outrun_its_caller():
-    """Structural: no production caller means the tile may not claim a path.
-
-    Deliberately reads the tree rather than a fixture. `compute_split_screen_crops`
-    sat callable and tested, with its only caller a unit test, while the tile
-    advertised it — so the invariant worth enforcing is the module->caller
-    edge itself, not any particular spelling of the probe.
-    """
-    from pathlib import Path
-
-    import clipforge
-
-    pkg = Path(clipforge.__file__).resolve().parent
-    callers = sorted(
-        p.name for p in pkg.rglob("*.py")
-        if p.name != "s4_tracking.py"
-        and "compute_split_screen_crops(" in p.read_text(encoding="utf-8")
-    )
-    if not callers:
-        assert not capabilities._renders_split_screen(), (
-            "nothing in clipforge/ calls compute_split_screen_crops, yet the "
-            "render probe claims a split-screen path exists")
-
-
-def test_voiceover_flite_only_names_the_kokoro_upgrade(monkeypatch):
-    _patch_probe_world(monkeypatch, filters=("flite",), kokoro=False)
-    tile = _tile(capabilities.probe(), "voiceover")
-    assert tile.available
-    assert "Kokoro" in tile.note  # upgrade path named, not implied
-
-
-def test_voiceover_with_no_tts_at_all_goes_dark(monkeypatch):
-    """The module's one rule, tested at the only point it can fail.
-
-    Every other voiceover test above runs in a world with flite, Kokoro or
-    both, so all of them stay green if ``available`` is hardcoded True —
-    including the fully-equipped sweep, which asserts availability. The
-    empty world is the case that distinguishes a probe from a constant.
-    """
-    _patch_probe_world(monkeypatch, filters=(), kokoro=False)
-    tile = _tile(capabilities.probe(), "voiceover")
-    assert not tile.available
-    # and it names BOTH fixes, per the docstring's "in the same breath"
-    assert "libflite" in tile.blocker and "Kokoro" in tile.blocker
-
-
-def test_upscale_never_claims_super_resolution(monkeypatch):
-    _patch_probe_world(monkeypatch, filters=("libplacebo", "cas"))
-    tile = _tile(capabilities.probe(), "upscale")
-    assert tile.available
-    assert "RESAMPLING" in tile.note  # honest-quality note survives
 
 
 # ----------------------------------------------- dubbing tile tri-state

@@ -242,6 +242,52 @@ class StateDB:
                                (status, time.time(), job_id))
 
     @_guarded
+    def reap_stale_jobs(self, older_than_s: float = 6 * 3600.0) -> list[int]:
+        """Mark jobs a crash left ``running`` as failed. Returns their ids.
+
+        A job's status is only ever moved by the process running it, so a
+        kill -9, a power cut or an OOM leaves it ``running`` for ever.
+        MEASURED on this workspace: one job had been ``running`` for 7.8
+        days, and because a stuck job looks exactly like a busy one,
+        nothing above it could tell that the queue was idle.
+
+        Time-based rather than PID-based on purpose: the pid that owned it
+        is gone, and a job legitimately in flight for six hours is already
+        outside anything this pipeline does in one piece.
+        """
+        cutoff = time.time() - older_than_s
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT id FROM jobs WHERE status='running' AND updated_at < ?",
+                (cutoff,)).fetchall()
+            ids = [int(r["id"]) for r in rows]
+            if ids:
+                self._conn.execute(
+                    "UPDATE jobs SET status='failed', updated_at=? "
+                    "WHERE status='running' AND updated_at < ?",
+                    (time.time(), cutoff))
+                # The stage runs under them are stuck in the same way, and
+                # a 'running' stage row makes the dashboard's per-stage
+                # medians wrong for ever.
+                self._conn.execute(
+                    "UPDATE stage_runs SET status='failed', finished_at=?, "
+                    "error='abandoned: the process that owned this job died' "
+                    f"WHERE status='running' AND job_id IN ({','.join('?' * len(ids))})",
+                    (time.time(), *ids))
+            # Stage rows can outlive their job's status: the job was moved
+            # to failed by an exception handler while the row it was inside
+            # never got its `stage_finished`. MEASURED here — two rows left
+            # 'running' under jobs that had finished eight days earlier, one
+            # of them s7_qa, which is what the dashboard reads for its
+            # per-stage medians.
+            self._conn.execute(
+                "UPDATE stage_runs SET status='failed', finished_at=?, "
+                "error='abandoned: no process ever finished this stage' "
+                "WHERE status='running' AND started_at < ?",
+                (time.time(), cutoff))
+        return ids
+
+    @_guarded
     def get_job(self, key: str) -> sqlite3.Row | None:
         with self._lock:
             return self._conn.execute("SELECT * FROM jobs WHERE key=?", (key,)).fetchone()

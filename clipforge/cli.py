@@ -203,6 +203,15 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
         console.print(f"[yellow]recovered {recovered} segment(s) from an "
                       "interrupted session[/]")
 
+    # The same treatment for JOBS. A status is only ever moved by the
+    # process running it, so a kill leaves one 'running' for ever - and a
+    # stuck job is indistinguishable from a busy one, so the queue looks
+    # occupied by work nobody is doing.
+    stale = db.reap_stale_jobs()
+    if stale:
+        console.print(f"[yellow]{len(stale)} job(s) were left running by an "
+                      "earlier crash; marked failed[/]")
+
     async def _serve() -> None:
         # Install the handler INSIDE the loop: waiting for asyncio.run() to
         # raise KeyboardInterrupt is too late — an in-flight download would

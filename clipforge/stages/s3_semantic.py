@@ -264,6 +264,7 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                 total_visual_tokens = 0
 
                 try:
+                    unreadable = 0
                     for i, cand in enumerate(candidates[:10]):
                         frames = _extract_frames_cv2(
                             video_path=Path(video_path),
@@ -271,6 +272,42 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                             end_s=cand.end,
                             num_frames=frames_per_cand,
                         )
+                        if not frames:
+                            # `cap.read()` can fail for every index in a
+                            # window — a seek past the end, a damaged GOP,
+                            # a codec the build cannot decode at that
+                            # offset — and `_extract_frames_cv2` then
+                            # returns []. Handing an empty image list to
+                            # the processor raises `IndexError: list index
+                            # out of range`, which the wrapper below turned
+                            # into "S3 execution error" and lost the whole
+                            # job. MEASURED: that is what killed the last
+                            # real clip run on 2026-08-13, and the nine
+                            # failed jobs in the state DB.
+                            #
+                            # One unreadable window is not a broken run.
+                            # It is scored last and said out loud, so ten
+                            # candidates do not die for one of them.
+                            unreadable += 1
+                            log.warning("s3.frames_unreadable", candidate=i,
+                                        start=round(cand.start, 2),
+                                        end=round(cand.end, 2),
+                                        video=Path(video_path).name,
+                                        note="scored last; it cannot be "
+                                             "judged on pictures nobody saw")
+                            ranked_items.append(
+                                RankedItem(
+                                    candidate_index=getattr(cand, "index", i),
+                                    rank=i + 1,
+                                    visual_action=0.0,
+                                    hook_strength=0.0,
+                                    comprehensibility=0.0,
+                                    justification=(
+                                        "no frames could be read from "
+                                        f"{cand.start:.1f}s-{cand.end:.1f}s"),
+                                )
+                            )
+                            continue
 
                         prompt_text = (
                             "You are a short-form video editor picking and "
@@ -344,6 +381,16 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                                     justification=f"Parse failure for candidate {i}",
                                 )
                             )
+
+                    if unreadable and unreadable == len(ranked_items):
+                        # Every window unreadable is a broken VIDEO, not a
+                        # degraded candidate, and it must say so rather
+                        # than return ten zero-scored items that look like
+                        # a ranking.
+                        raise StageError(
+                            f"no frames could be read from {video_path} for "
+                            f"any of {unreadable} candidate windows; the "
+                            "file is unreadable at those offsets")
 
                     # Sort items by average multimodal score
                     ranked_items.sort(
