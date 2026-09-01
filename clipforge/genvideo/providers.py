@@ -305,7 +305,12 @@ class LocalDiffusersProvider:
                  seed: int = 1234, loras: list[str] | None = None,
                  lora_scale: float = 1.0,
                  step_cache_threshold: float = 0.0,
-                 quantize: str = "none") -> None:
+                 quantize: str = "none", spec: Any = None) -> None:
+        #: The registry entry this provider was built from, or None when
+        #: the router fell back to the configured id. It carries the
+        #: model's OWN envelope; without it this provider generates
+        #: inside `MAX_GEN_PIXELS`, which was measured on LTX-Video 0.9.
+        self.spec = spec
         self.model_id = model_id
         self.device = device
         self.steps = steps
@@ -481,13 +486,38 @@ class LocalDiffusersProvider:
         from clipforge.gpu import ModelClass, gpu_session, hard_unload
 
         # Generate INSIDE the model's trained envelope, deliver at the
-        # short-form size. See MAX_GEN_PIXELS: 704x1280 came back blank.
-        width, height = _generation_dims(aspect_ratio)
+        # short-form size.
+        #
+        # THIS model's envelope, not the global cap -- the same correction
+        # `SubprocessModelProvider` got on 2026-08-20 and this path did
+        # not. `MAX_GEN_PIXELS` is 460k because LTX-Video 0.9 returned
+        # BLANK frames above it: measured, but measured on a model that
+        # was retired on 2026-08-13. Applied to every model since, it made
+        # Wan 2.2 -- the only auto-selectable entry in the registry --
+        # render 512x896 and upscale 2.14x to 1080x1920, when its own
+        # declared envelope is 704x1280 (1.50x). That is most of what
+        # "blurry" is, and it is a soft picture rather than an error, so
+        # nothing about the output says it happened.
+        #
+        # `spec` is None only on the fallback branch, where there IS no
+        # registry entry and the global cap is the only budget known.
+        spec = self.spec
+        if spec is not None:
+            width, height = _generation_dims(
+                aspect_ratio, budget=spec.max_pixels,
+                multiple=spec.dim_multiple)
+            frames = _latent_frames(seconds, fps, group=spec.frame_group)
+        else:
+            width, height = _generation_dims(aspect_ratio)
+            frames = _latent_frames(seconds, fps)
         deliver = delivery_dims(aspect_ratio)
-        frames = _latent_frames(seconds, fps)
         models: dict[str, Any] = {}
         try:
-            with gpu_session(ModelClass.VL, budget_gb=16.0):
+            # The model's own measured peak, not a constant. 16.0 was
+            # LTX-Video 0.9's; Wan 2.2 declares 18.0, and a budget that
+            # understates a model lets something else co-load beside it.
+            budget_gb = float(spec.vram_gb) if spec is not None else 16.0
+            with gpu_session(ModelClass.VL, budget_gb=budget_gb):
                 import torch  # noqa: PLC0415
                 from diffusers import DiffusionPipeline  # noqa: PLC0415
 

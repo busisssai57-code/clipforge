@@ -81,10 +81,11 @@ width = 1080
 height = 1920
 encoder = "h264_nvenc"        # falls back to libx264 automatically
 nvenc_preset = "p5"
+x264_preset = "veryfast"   # CPU encoder path (THE path when NVENC is unavailable)
 cq = 21
 audio_bitrate = "192k"
 loudness_i = -14.0            # integrated loudness target (LUFS)
-loudness_tp = -1.5
+loudness_tp = -2.0            # single-pass loudnorm lands ~0.4-0.7 dB ABOVE target
 loudness_lra = 11.0
 
 [orchestration]

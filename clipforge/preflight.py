@@ -259,23 +259,23 @@ def check_hf_token(*, probe: Callable[[str, str], bool | None] | None = None,
     token = Secrets().hf_token or os.environ.get("HF_TOKEN")
     if not token:
         return CheckResult(
-            "hf-token", False, "required", "No Hugging Face token configured",
+            "hf-token", False, "optional", "No Hugging Face token configured",
             f"Set CLIPFORGE_HF_TOKEN (or HF_TOKEN). Then accept terms at BOTH:\n{accept_urls}")
 
     results = {r: probe(r, token) for r in PYANNOTE_GATED_REPOS}  # one probe each
     denied = [r for r, ok in results.items() if ok is False]
     if denied:
         return CheckResult(
-            "hf-token", False, "required",
+            "hf-token", False, "optional",
             f"token present but gated access DENIED for: {', '.join(denied)}",
             f"Log in as the token's owner and accept the terms at:\n{accept_urls}")
     unknown = [r for r, ok in results.items() if ok is None]
     if unknown:
         return CheckResult(
-            "hf-token", True, "required",
+            "hf-token", True, "optional",
             "token present; gated access could not be verified (offline?) - "
             "will be enforced on first S1 run")
-    return CheckResult("hf-token", True, "required",
+    return CheckResult("hf-token", True, "optional",
                        "token present; both gated pyannote repos accessible")
 
 

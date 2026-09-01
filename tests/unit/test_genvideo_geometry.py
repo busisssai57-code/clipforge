@@ -79,3 +79,72 @@ def test_default_guidance_scale_is_within_ltx_safe_range():
     assert 2.0 <= default <= 4.0, (
         f"guidance_scale {default} is outside the LTX-Video safe range "
         f"(2.0–4.0); blank or over-saturated frames are likely")
+
+
+# ----------------------------------------- the in-venv model's envelope
+
+def test_the_local_provider_generates_at_the_spec_envelope_not_the_global_cap():
+    """A registry model rendered in THIS venv gets its own envelope too.
+
+    `SubprocessModelProvider` was corrected on 2026-08-20 to generate
+    inside the selected model's `max_pixels`; `LocalDiffusersProvider`
+    was not, and it is the path every auto-selected model takes. The
+    result was that Wan 2.2 -- the only auto-selectable entry in the
+    registry -- rendered 512x896 under LTX-Video 0.9's retired 460k cap
+    and was upscaled 2.14x to 1080x1920, instead of the 704x1280 its own
+    spec authorises.
+
+    A soft picture is not an error, so nothing but this test says it
+    happened.
+    """
+    from clipforge.genvideo.models import REGISTRY
+    from clipforge.genvideo.providers import (MAX_GEN_PIXELS,
+                                              LocalDiffusersProvider,
+                                              _generation_dims)
+
+    for key, spec in REGISTRY.items():
+        provider = LocalDiffusersProvider(spec.model_id, spec=spec)
+        w, h = _generation_dims("9:16", budget=provider.spec.max_pixels,
+                                multiple=provider.spec.dim_multiple)
+        assert spec.supports(w, h), f"{key}: {w}x{h} is outside its envelope"
+        if spec.max_pixels > MAX_GEN_PIXELS:
+            assert w * h > MAX_GEN_PIXELS, (
+                f"{key} declares a {spec.max_pixels:,}px envelope but would "
+                f"still generate {w}x{h} ({w * h:,}px), inside the retired "
+                "global cap")
+
+
+def test_the_local_provider_keeps_the_global_cap_without_a_spec():
+    """The fallback branch has no registry entry, so it keeps the floor.
+
+    `build_router` falls back to the configured model id when nothing in
+    the registry fits or is downloaded. There is no measured envelope for
+    that id, and inventing a larger one would be exactly the guess the
+    460k cap exists to prevent.
+    """
+    from clipforge.genvideo.providers import (MAX_GEN_PIXELS,
+                                              LocalDiffusersProvider,
+                                              _generation_dims)
+
+    provider = LocalDiffusersProvider("some/unregistered-model")
+    assert provider.spec is None
+    w, h = _generation_dims("9:16")
+    assert w * h <= MAX_GEN_PIXELS
+
+
+def test_the_router_hands_the_selected_spec_to_the_local_provider():
+    """The wiring itself, not just the provider's behaviour given a spec.
+
+    The envelope fix is worthless if `build_router` keeps constructing
+    the provider from two scalars: that is how the model's own numbers
+    went missing in the first place.
+    """
+    import inspect
+
+    from clipforge.genvideo import build_router
+
+    source = inspect.getsource(build_router)
+    assert "spec=spec" in source, (
+        "build_router must pass the selected ModelSpec to "
+        "LocalDiffusersProvider, or the model's envelope and VRAM budget "
+        "are dropped on the way in")

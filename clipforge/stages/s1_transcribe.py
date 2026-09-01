@@ -34,6 +34,7 @@ clustering is deterministic given fixed seeds and identical input bytes.
 from __future__ import annotations
 
 import gc
+import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -299,7 +300,15 @@ class S1Transcribe(Stage[TranscriptArtifact]):
                 # and measurement showed the asymmetry exactly: a failure in
                 # load_asr recorded ZERO teardowns, a failure in load_align
                 # recorded only ['asr'].
+                # Per-phase wall clock. S1 is one of the two stages that
+                # dominate a run, but `stage_runs` records only its TOTAL, so
+                # "S1 took 18 minutes" cannot be attributed to ASR rather than
+                # alignment without instrumenting a run by hand. These numbers
+                # make the split a fact in the log instead of an inference
+                # from gaps between unrelated library log lines.
+                _phase_s = {"asr": 0.0, "align": 0.0, "diarize": 0.0}
                 asr_model = None
+                _t0 = time.perf_counter()
                 try:
                     asr_model = engine.load_asr(model_name, compute_type)
                     raw = engine.transcribe(asr_model, media_path,
@@ -318,6 +327,7 @@ class S1Transcribe(Stage[TranscriptArtifact]):
                     _release_traceback_locals(exc)
                     raise
                 finally:
+                    _phase_s["asr"] = time.perf_counter() - _t0
                     del asr_model
                     self._unload("asr")
 
@@ -343,6 +353,7 @@ class S1Transcribe(Stage[TranscriptArtifact]):
                                   "produce no candidates")
                 else:
                     align_model = None
+                    _t0 = time.perf_counter()
                     try:
                         try:
                             align_model = engine.load_align(detected_lang)
@@ -377,6 +388,7 @@ class S1Transcribe(Stage[TranscriptArtifact]):
                         _release_traceback_locals(exc)
                         raise
                     finally:
+                        _phase_s["align"] = time.perf_counter() - _t0
                         del align_model
                         self._unload("align")
 
@@ -390,6 +402,7 @@ class S1Transcribe(Stage[TranscriptArtifact]):
                 # documented Windows leak shape: the failure path, not the
                 # success path, is what strands VRAM.
                 diar_model = None
+                _t0 = time.perf_counter()
                 try:
                     diar_model = engine.load_diarizer(self.hf_token)
                     diarization = engine.diarize(diar_model, media_path)
@@ -403,8 +416,16 @@ class S1Transcribe(Stage[TranscriptArtifact]):
                                 note="emitting transcript without speakers"
                                      " (T5: check HF token + accepted terms)")
                 finally:
+                    _phase_s["diarize"] = time.perf_counter() - _t0
                     del diar_model
                     self._unload("diar")
+                    # The one line that says where S1's minutes went.
+                    log.info("s1.phase_timings",
+                             asr_s=round(_phase_s["asr"], 1),
+                             align_s=round(_phase_s["align"], 1),
+                             diarize_s=round(_phase_s["diarize"], 1),
+                             batch_size=batch_size, model=model_name,
+                             language=detected_lang)
         except RetryableStageError:
             raise
         except Exception as exc:

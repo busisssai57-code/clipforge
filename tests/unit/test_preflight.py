@@ -70,9 +70,42 @@ def test_hf_token_missing_fails_with_both_urls(monkeypatch):
         assert repo in r.fix, "fix must list the exact URLs to accept (T5)"
 
 
+def test_hf_token_is_optional_not_required(monkeypatch):
+    """Missing diarization DEGRADES the pipeline, it does not block it.
+
+    This module's own contract is "required blocks the pipeline, optional
+    degrades a capability", and every other layer already agrees: S1 emits
+    diarization_ok=False and carries on, and `verify ai` asserts "diarization
+    failure degrades; transcript survives". Measured: a full trending -> clips
+    run with no token exits 0 with clips that pass QA.
+
+    Marked "required", a fully working install made `bta doctor` — the first
+    command in the README — print "required checks FAILED" and exit non-zero.
+    The warning and its accept-the-terms URLs still stand; only the severity
+    moved, exactly as h264_nvenc (which degrades to libx264) already does.
+    """
+    monkeypatch.delenv("CLIPFORGE_HF_TOKEN", raising=False)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    missing = preflight.check_hf_token(probe=lambda repo, token: True)
+    assert missing.severity == "optional"
+
+    _with_token(monkeypatch)
+    denied = preflight.check_hf_token(probe=lambda repo, token: False)
+    assert denied.severity == "optional"
+
+
+def test_a_machine_with_no_hf_token_still_passes_doctor(monkeypatch):
+    # The end-to-end property the severity exists for: no token must not make
+    # the overall verdict fail.
+    monkeypatch.delenv("CLIPFORGE_HF_TOKEN", raising=False)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    results = [preflight.check_hf_token(probe=lambda repo, token: True)]
+    assert [r for r in results if r.severity == "required" and not r.ok] == []
+
+
 def test_hf_token_present_but_terms_not_accepted_fails(monkeypatch):
-    """THE T5 scenario: valid token, never clicked accept. Doctor must fail
-    now, not twenty minutes into the first S1 run."""
+    """THE T5 scenario: valid token, never clicked accept. Doctor must still
+    say so loudly (ok=False), just without blocking a working install."""
     _with_token(monkeypatch)
     r = preflight.check_hf_token(probe=lambda repo, token: False)
     assert not r.ok

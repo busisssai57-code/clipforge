@@ -144,6 +144,32 @@ def test_a_peak_violation_asks_for_more_headroom():
     assert plan.param_overrides["loudness_tp"] < SHIP_TP_CEILING
 
 
+def test_a_marginal_peak_violation_still_changes_the_target():
+    """The no-op repair, pinned.
+
+    A clip measuring -0.9 dBTP is only 0.1 over the -1.0 ceiling. The old
+    plan derived the new target from the CEILING alone: -1.0 - max(0.5, 0.1)
+    = -1.5, which was exactly the default target the failing render had just
+    used. The retry re-rendered with identical params, hit the stage cache,
+    and returned the very same rejected file — two attempts spent achieving
+    nothing. A repair must ask for something strictly quieter than the
+    attempt that failed.
+    """
+    used = -1.5
+    plan = _plan(_check("true-peak-ceiling", "-0.90 dBTP"), target_tp=used)
+    assert plan.repairable
+    assert plan.param_overrides["loudness_tp"] < used, (
+        "repair must lower the TP target below what the failed render used, "
+        "or the re-render is identical and gets served from the stage cache")
+
+
+def test_peak_repair_lowers_relative_to_an_already_generous_target():
+    # Even when the configured target is already low, the repair must go
+    # lower still rather than snapping back up to a ceiling-derived value.
+    plan = _plan(_check("true-peak-ceiling", "-0.90 dBTP"), target_tp=-3.0)
+    assert plan.param_overrides["loudness_tp"] <= -3.5
+
+
 def test_loudness_is_retargeted_by_the_measured_shortfall():
     """Landed 4.3 LU quiet -> ask for 3.0 louder (clamped), not 4.3:
     loudnorm cannot beat the source's headroom and over-asking just

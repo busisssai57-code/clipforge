@@ -157,10 +157,14 @@ class S6Config(_StrictModel):
     height: int = Field(1920)
     encoder: str = Field("h264_nvenc", description="Falls back to libx264 on session exhaustion")
     nvenc_preset: str = "p5"
+    #: libx264 preset for the CPU path. Not a rarely-touched fallback knob:
+    #: whenever NVENC is unavailable this IS the encoder, so it gets the same
+    #: configurability its NVENC counterpart always had.
+    x264_preset: str = "veryfast"
     cq: int = Field(21, ge=0, le=51)
     audio_bitrate: str = "192k"
     loudness_i: float = Field(-14.0, description="Integrated loudness target (LUFS)")
-    loudness_tp: float = Field(-1.5)
+    loudness_tp: float = Field(-2.0)
     loudness_lra: float = Field(11.0)
     #: Speech cleanup applied BEFORE loudnorm, so the normalizer measures
     #: the cleaned signal. Default "off" is a judgement about CONTENT, not

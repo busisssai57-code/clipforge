@@ -113,10 +113,15 @@ def build_router(cfg, ws, *, api_key: str | None = None,
                 loras=controls["loras"],
                 step_cache_threshold=controls["step_cache_threshold"]))
         else:
+            # `spec` goes in as well as its steps and guidance: the
+            # envelope (max_pixels, dim_multiple, frame_group) and the
+            # VRAM budget live on it, and passing only the two scalars is
+            # how this path kept generating inside LTX-Video 0.9's 460k
+            # cap regardless of which model was selected.
             providers.append(LocalDiffusersProvider(
                 spec.model_id, steps=spec.steps,
                 guidance_scale=spec.guidance_scale, seed=gv.local_seed,
-                **controls))
+                spec=spec, **controls))
     except ValueError as exc:
         # No registered model fits (nothing downloaded, or the size is out
         # of every envelope). Fall back to the configured id rather than

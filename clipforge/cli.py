@@ -513,6 +513,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
         s6_params = {
             "width": cfg.s6.width, "height": cfg.s6.height,
             "encoder": cfg.s6.encoder, "nvenc_preset": cfg.s6.nvenc_preset,
+            "x264_preset": cfg.s6.x264_preset,
             "cq": cfg.s6.cq, "audio_bitrate": cfg.s6.audio_bitrate,
             "loudness_i": cfg.s6.loudness_i, "loudness_tp": cfg.s6.loudness_tp,
             "loudness_lra": cfg.s6.loudness_lra,
@@ -799,6 +800,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                     failed, window_start=cur_start, window_end=cur_end,
                     source_duration=float(source_info.duration_s),
                     attempt=attempt, target_i=float(cfg.s6.loudness_i),
+                    target_tp=float(cfg.s6.loudness_tp),
                     original_start=win_start, original_end=win_end)
                 if not plan.repairable:
                     if attempt:
@@ -1424,6 +1426,18 @@ def _concat_listed(paths: list[Path], dest: Path) -> None:
     partial.replace(dest)
 
 
+def _trending_default_limit() -> int:
+    """``trending.DEFAULT_LIMIT`` as a Typer default, without duplicating it.
+
+    Typer evaluates option defaults at decoration time, so this runs on
+    import; ``clipforge.trending`` is deliberately torch-free (it shells out to
+    yt-dlp), so importing it here costs nothing measurable.
+    """
+    from clipforge.trending import DEFAULT_LIMIT
+
+    return DEFAULT_LIMIT
+
+
 def _js_runtime() -> str | None:
     """``"node:C:\\...\\node.exe"`` for the first runtime on this machine.
 
@@ -1446,10 +1460,14 @@ def grab(url: str = typer.Argument(..., help="Video URL (yt-dlp supported)"),
          clips: int = typer.Option(3, "--clips", "-n", min=1)) -> None:
     """Download a video, then clip it. One command, URL to clips."""
     import subprocess
+    import time
 
     cfg, ws = _boot(config, sweep_partials=False)
     dest_dir = ws.root / "downloads"
     dest_dir.mkdir(parents=True, exist_ok=True)
+    # Captured before the download so the newest-file fallback only ever
+    # considers files this run produced, never a stale prior download.
+    started_at = time.time()
     console.print(f"[green]downloading {url}[/]")
     # Height cap, not "best": a 4K source triples every decode in the DAG
     # for pixels that 1080x1920 throws away.
@@ -1477,12 +1495,169 @@ def grab(url: str = typer.Argument(..., help="Video URL (yt-dlp supported)"),
     if proc.returncode != 0:
         console.print(f"[red]download failed:[/] {(proc.stderr or '')[-400:]}")
         raise typer.Exit(1)
-    path = (proc.stdout or "").strip().splitlines()[-1] if proc.stdout else ""
+    # yt-dlp prints the final path via --print after_move:filepath, but it is
+    # NOT reliably the last stdout line: post-processing notices, JS-runtime
+    # messages, and merge summaries can trail it. Take the last line that is an
+    # existing file (same rule as ingest.youtube.download_vod), then fall back
+    # to the newest file that landed in dest_dir during this run — which is how
+    # a real 465 MB download once got misreported as "no file landed".
+    path = ""
+    for line in reversed((proc.stdout or "").splitlines()):
+        cand = line.strip()
+        if cand and Path(cand).exists():
+            path = cand
+            break
+    if not path:
+        landed = [p for p in dest_dir.glob("*")
+                  if p.is_file() and p.stat().st_mtime >= started_at]
+        if landed:
+            path = str(max(landed, key=lambda p: p.stat().st_mtime))
     if not path or not Path(path).exists():
         console.print("[red]download reported success but no file landed[/]")
         raise typer.Exit(1)
     console.print(f"[green]downloaded:[/] {path}")
     process(input_path=Path(path), config=config, abs_offset=0.0, clips=clips)
+
+
+@app.command()
+def trending(config: Path = CONFIG_OPT,
+             query: str = typer.Option(
+                 "podcast", "--query", "-q",
+                 help="Search seed for trend discovery. The result is the "
+                      "most-viewed video THIS WEEK matching it — 'podcast', "
+                      "'interview', 'news', a topic, or a creator's name."),
+             region: str = typer.Option("US", "--region",
+                                        help="Two-letter region to bias toward (gl)."),
+             clips: int = typer.Option(3, "--clips", "-n", min=1,
+                                       help="Clips to render from the chosen video."),
+             pick: int = typer.Option(1, "--pick", min=1,
+                                      help="Use the Nth trending candidate (1 = top)."),
+             min_minutes: float = typer.Option(
+                 3.0, "--min-minutes",
+                 help="Skip sources shorter than this (too short to clip)."),
+             max_minutes: float = typer.Option(
+                 90.0, "--max-minutes",
+                 help="Skip sources longer than this (ties up the GPU)."),
+             limit: int = typer.Option(
+                 _trending_default_limit(), "--limit", min=1,
+                 help="Search results to consider before filtering. Higher "
+                      "costs nothing extra (one listing call) and survives "
+                      "an aggressive duration window."),
+             lang: str = typer.Option(
+                 None, "--lang",
+                 help="Only accept a video in this ISO language (e.g. 'en'). "
+                      "Off by default; enabling it probes candidates in order."),
+             dry_run: bool = typer.Option(
+                 False, "--dry-run",
+                 help="Show the trending candidates and the pick, then stop "
+                      "before downloading or clipping.")) -> None:
+    """Find a currently-trending video and run the full clip pipeline on it.
+
+    One command, zero input: discover what is trending this week, pick the
+    most-viewed clip-ready video, download it, and cut it into shorts. This is
+    ``grab`` with the URL chosen for you from what is trending right now.
+    """
+    from clipforge import trending as _trending
+    from clipforge.errors import IngestError
+    from clipforge.ingest.youtube import download_vod
+
+    cfg, ws = _boot(config, sweep_partials=False)
+    console.print(f"[green]discovering trending videos[/] "
+                  f"(query={query!r}, region={region})")
+    stats: dict = {}
+    try:
+        cands = _trending.discover(
+            query, region=region, limit=limit, stats=stats,
+            min_minutes=min_minutes, max_minutes=max_minutes)
+    except IngestError as exc:
+        console.print(f"[red]trend discovery failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+
+    # Always show what the duration window did. A thin candidate pool is the
+    # single most common reason this command disappoints, and without these
+    # numbers the next failure gets blamed on --lang or on "nothing trending".
+    console.print(
+        f"  {stats.get('raw', len(cands))} result(s) -> "
+        f"{stats.get('usable', len(cands))} clip-ready "
+        f"(dropped: {stats.get('too_long', 0)} too long, "
+        f"{stats.get('too_short', 0)} too short, {stats.get('live', 0)} live)")
+
+    if not cands:
+        console.print(
+            f"[red]no clip-ready trending videos found[/] for {query!r} "
+            f"between {min_minutes:g} and {max_minutes:g} minutes.")
+        if stats.get("too_long"):
+            console.print(
+                f"  {stats['too_long']} of {stats['raw']} were longer than "
+                f"{max_minutes:g} min — raise --max-minutes (long-form queries "
+                "like 'podcast' or 'interview' need 60-120).")
+        else:
+            console.print("  Widen --min-minutes/--max-minutes, or try a "
+                          "different --query.")
+        raise typer.Exit(1)
+
+    # Optional language gate: probe candidates top-down until enough match, so
+    # the pick still respects view-count order within the requested language.
+    # Capped, because each probe is its own yt-dlp extraction (~2-4 s) and a
+    # wide discovery list would otherwise spend minutes here before any work.
+    if lang:
+        want = lang.strip().lower()
+        probe_budget = min(len(cands), max(pick * 4, 12))
+        console.print(f"  probing up to {probe_budget} candidate(s) for "
+                      f"language={want!r}…")
+        matched = []
+        for c in cands[:probe_budget]:
+            if _trending.probe_language(c.video_id) == want:
+                matched.append(c)
+                if len(matched) >= pick:
+                    break
+        if not matched:
+            console.print(
+                f"[red]none of the top {probe_budget} trending candidates are "
+                f"in language {want!r}.[/]")
+            # Do not let --lang take the blame for a duration window that had
+            # already emptied the pool: with 58 of 59 dropped as too long,
+            # there was only ever one video for the language gate to look at.
+            if stats.get("too_long", 0) > stats.get("usable", 0):
+                console.print(
+                    f"  Note: the language gate only had "
+                    f"{stats.get('usable', 0)} candidate(s) to choose from — "
+                    f"{stats['too_long']} were dropped for being longer than "
+                    f"{max_minutes:g} min. Raise --max-minutes first.")
+            else:
+                console.print(
+                    "  Re-run without --lang to take the most-viewed "
+                    "regardless of language, or try --region/--query closer "
+                    "to that audience.")
+            raise typer.Exit(1)
+        cands = matched
+
+    console.print(f"  {len(cands)} candidate(s):")
+    for i, c in enumerate(cands[:max(pick, 8)], start=1):
+        marker = "->" if i == pick else "  "
+        views = f"{c.view_count:,}" if c.view_count is not None else "?"
+        console.print(f"  {marker} {i}. [{c.duration_hms}] {views} views  "
+                      f"{c.title[:60]}")
+
+    if pick > len(cands):
+        console.print(f"[red]--pick {pick} but only {len(cands)} candidate(s)[/]")
+        raise typer.Exit(1)
+    chosen = cands[pick - 1]
+    console.print(f"[green]chosen:[/] {chosen.title}  [{chosen.url}]")
+
+    if dry_run:
+        console.print("[yellow]--dry-run: stopping before download.[/]")
+        return
+
+    dest_dir = ws.root / "downloads"
+    console.print(f"[green]downloading {chosen.url}[/]")
+    try:
+        path = download_vod(chosen.video_id, dest_dir)
+    except IngestError as exc:
+        console.print(f"[red]download failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"[green]downloaded:[/] {path}")
+    process(input_path=path, config=config, abs_offset=0.0, clips=clips)
 
 
 @app.command()
@@ -2336,6 +2511,91 @@ def models_cmd() -> None:
                          if spec.requires_quantization else ""))
         if spec.notes:
             console.print(f"    [dim]{spec.notes}[/]")
+
+
+@app.command()
+def holdout(config: Path = CONFIG_OPT,
+            sources: list[str] = typer.Option(
+                None, "--source", "-s",
+                help="Restrict to clips cut from these source filenames "
+                     "(repeatable). Omit to measure every clip on disk - a "
+                     "snapshot, not a comparable holdout set."),
+            save: bool = typer.Option(
+                True, "--save/--no-save",
+                help="Record this measurement under the workspace's holdout/ "
+                     "directory so the next run can diff against it.")) -> None:
+    """Measure the clips the pipeline actually shipped - one comparable number.
+
+    Every stage already wrote down how good its output was (S2/S3's scorecard,
+    S7's QA verdict, S6's measured loudness); nothing ever read them back as a
+    single figure, so the only number anyone could quote was the test count -
+    which says the code does what it was told, never whether the clips are
+    worth posting. This reads those sidecars back and reports mean score, QA
+    pass rate and loudness-in-band for the clips on disk.
+
+    With --source it measures a FIXED set, so two runs over the same sources
+    produce a delta worth reading; without it, it is a snapshot of whatever is
+    there and the next run is reported as incomparable rather than diffed into
+    a meaningless number.
+    """
+    from clipforge import holdout as _holdout
+
+    _, ws = _boot(config, sweep_partials=False)
+    srcs = _cli_value(sources, None)
+    srcs = list(srcs) if srcs else None
+    report = _holdout.measure(ws, sources=srcs)
+
+    if not report["clips"]:
+        where = f" from {', '.join(srcs)}" if srcs else ""
+        console.print(f"[yellow]no accepted clips to measure[/]{where}. "
+                      "Run `bta process` first.")
+        return
+
+    tail = f", {report['rejected']} rejected" if report["rejected"] else ""
+    console.print(f"[bold]{report['clips']} clip(s) measured[/]{tail}")
+
+    def _num(v: Any) -> str:
+        return "n/a" if v is None else f"{v:g}"
+
+    def _pct(v: Any) -> str:
+        return "n/a" if v is None else f"{v * 100:.0f}%"
+
+    median = report["median_score"]
+    median_note = f"  (median {median:g})" if median is not None else ""
+    console.print(f"  mean score       {_num(report['mean_score'])}{median_note}")
+    console.print(f"  QA pass rate     {_pct(report['qa_pass_rate'])}")
+    console.print(f"  loudness in-band {_pct(report['loudness_in_band'])}  "
+                  f"(target {_holdout.TARGET_LUFS:g} +/- "
+                  f"{_holdout.LUFS_TOLERANCE:g} LUFS)")
+    if report["mean_duration_s"] is not None:
+        console.print(f"  mean duration    {report['mean_duration_s']:g}s")
+    if report["grades"]:
+        grades = ", ".join(f"{g} x{n}" for g, n in report["grades"].items())
+        console.print(f"  grades           {grades}")
+    if report["framing_modes"]:
+        modes = ", ".join(f"{m} x{n}" for m, n in report["framing_modes"].items())
+        console.print(f"  framing          {modes}")
+
+    # Diff against the most recent PRIOR measurement, before this one is saved.
+    prev = _holdout.previous(ws)
+    delta = _holdout.compare(report, prev)
+    if delta.get("comparable"):
+        moved = {k: v for k, v in delta.items()
+                 if k != "comparable" and isinstance(v, (int, float)) and v}
+        if moved:
+            console.print("[bold]vs previous run:[/]")
+            for key, val in moved.items():
+                sign = "+" if val > 0 else ""
+                console.print(f"  {key:<16} {sign}{val:g}")
+        else:
+            console.print("[dim]vs previous run: no change[/]")
+    elif prev is not None:
+        console.print(f"[dim]not comparable to the previous run: "
+                      f"{delta.get('reason')}[/]")
+
+    if save:
+        path = _holdout.save(ws, report)
+        console.print(f"[green]saved[/] {path}")
 
 
 def main() -> None:  # console_scripts shim

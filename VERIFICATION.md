@@ -3393,3 +3393,135 @@ Two things worth recording from watching the output rather than the log:
 
 **pytest 1299 passed, 0 skipped** (5:55) and **`clipforge verify all`:
 GATE PASSED** — skeleton 7/7, ingestion 20/20, ai 13/13. Both exit 0.
+
+## A feature that read as done but did nothing, a loudness ceiling that shipped rejects, and the encoder nobody could configure (2026-09-01)
+
+This round finished a tray of uncommitted work and closed the one hole in
+it. The hole is the kind this project keeps finding: a module that was
+written, was correct, and was **wired to nothing** — so it read as done
+and did nothing.
+
+### `holdout` was dead code with no caller
+
+`clipforge/holdout.py` measures the clips the pipeline actually shipped —
+one comparable number from the scorecards, QA verdicts and loudness the
+stages already wrote, so a round can be judged on whether its clips are
+worth posting instead of on the test count. It was complete, it even
+carried the scar of a bug fixed during its writing (`mean_score` came back
+null over two graded clips because the first version read the scorecard's
+`score` key, which does not exist — the key is `overall`). And **nothing
+imported it.** No CLI command, no test. `grep -rn holdout` outside the
+file returned nothing. Advertised-as-done, called-by-no-one is the exact
+shape this ledger has caught four times before; this is the fifth.
+
+It is wired now, as `bta holdout`, and proven on the way it was always
+going to be used:
+
+```
+11 clip(s) measured, 2 rejected
+  mean score       70.5  (median 69.2)
+  QA pass rate     100%
+  loudness in-band 73%  (target -14 +/- 1 LUFS)
+  mean duration    49.8s
+  grades           B x3, B+ x2, B- x4, C x2
+  framing          speaker x11
+```
+
+A second run reported **`vs previous run: no change`** — the comparison
+path fires, and because the source set was identical it produced a real
+delta (all zeros) rather than refusing. `test_holdout.py` (12 tests) pins
+the two load-bearing properties directly: the headline reads `overall` not
+`score`, and two runs over different source sets are declared incomparable
+rather than diffed into a number that would get quoted for months.
+
+That 73% is itself the point. Nearly a third of the clips on disk are
+outside the loudness band — measured, visible, and previously unquotable
+because nothing ever read the number back. Which is the next finding.
+
+### -1.5 dBTP was a coin flip, and 2 of 8 clips lost it
+
+Single-pass loudnorm does not land **on** its true-peak target, it lands
+**above** it. Measured on 45 s of real speech at I=-14, LRA=11:
+
+```
+TP=-1.5 -> -0.8 dBFS   (FAILS s7's -1.0 ceiling)
+TP=-2.0 -> -1.6 dBFS   (passes, 0.6 dB margin)
+```
+
+At the old -1.5 default every render landed within 0.1 dB of the ceiling,
+so whether a clip shipped was luck — 2 of 8 rendered clips were rejected
+for true peak. The target is now -2.0 across `s6_render`, `config.toml`,
+`config.py` and `repair`, kept in lockstep. It costs 0.2 LU of integrated
+loudness (-14.5 → -14.7), well inside s7's -14.0 ±1.5 tolerance.
+
+### The true-peak repair re-rendered the same rejected file
+
+Worse, the repair for a true-peak failure was a **silent no-op**. It set
+the retry's TP from the ceiling alone: a clip measuring -0.9 gave
+`over=0.1`, the `max(0.5, …)` floor turned that into -1.5 — which *was*
+the default target, so the retry re-rendered with identical params, hit
+the stage cache, and handed back the same rejected file. A repair must ask
+for something strictly **quieter than the attempt that just failed**, so
+it now derives from the ceiling **and** from the failed render's own
+target and takes whichever is lower. The CLI now passes that target
+(`target_tp`) into `plan_repair` instead of letting it guess.
+
+### The x264 preset was hardcoded while its NVENC twin was configurable
+
+On this box NVENC is unavailable (driver reports nvenc API 13.0, ffmpeg
+8.x needs 13.1), so libx264 is not a fallback — it is **the** encoder. Its
+preset was the literal `"medium"` in the render command while the NVENC
+preset was a config knob: invisible where NVENC works, the whole encoder
+where it doesn't. It is a config field now (`s6.x264_preset`, default
+`veryfast`). Measured, 30 s of 1080×1920 at crf 21: medium 17.9 s / 13.3 MB,
+veryfast 9.9 s / 11.0 MB — **1.82× faster and smaller**, crf untouched so
+the quality target is unchanged. The `-c:v …` args moved into
+`_video_codec_args` so the preset reaching ffmpeg is asserted without a
+render (`test_s6_encoder_preset.py`).
+
+### The generation envelope was measured on a model retired weeks ago
+
+`LocalDiffusersProvider` generated inside `MAX_GEN_PIXELS` (460k px) — a
+cap measured because **LTX-Video 0.9** returned blank frames above it, then
+applied to every model after 0.9 was retired on 2026-08-13. For Wan 2.2,
+the only auto-selectable registry entry, that meant rendering 512×896 and
+upscaling 2.14× to 1080×1920 when its own declared envelope is 704×1280
+(1.50×). That soft picture is most of what "blurry" was, and it raised no
+error. The provider now takes the registry `spec` and generates inside
+**that** model's envelope and VRAM budget — the same correction
+`SubprocessModelProvider` got on 2026-08-20 and this in-process path had
+not. (`test_genvideo_geometry.py`.)
+
+### `bta trending`: zero-input, from what's trending to shorts
+
+A new command that needs nothing: it discovers what is trending this week
+(a view-sorted, this-week YouTube search — the global `/feed/trending` and
+`/charts` endpoints were retired in 2025 and yt-dlp 404s on them),
+filters to clip-ready durations, picks the most-viewed usable video, and
+runs the full pipeline on it. The selection logic is injected-runner
+unit-tested offline (`test_trending.py`, 13 tests): junk rows never become
+candidates, and survivor order is view-count order so `--pick 1` is the
+most-viewed clip-ready video. It always prints why the duration window
+dropped what it dropped, because a thin candidate pool is the single most
+common way this disappoints and the blame otherwise lands on `--lang`.
+
+### Three smaller ones
+
+* **`grab` misreported a 465 MB download as "no file landed".** It took
+  the last stdout line as the path, but post-processing notices trail
+  yt-dlp's `--print`. It now takes the last line that is an existing file,
+  then falls back to the newest file that landed during this run.
+* **S1 now logs where its minutes went.** `stage_runs` recorded only S1's
+  total, so "S1 took 18 minutes" could not be split into ASR vs alignment
+  vs diarization without instrumenting a run by hand. One
+  `s1.phase_timings` line now makes the split a fact in the log.
+* **The HF-token preflight check is `optional`, not `required`.** With
+  cloud off and diarization degrading cleanly to a speaker-less
+  transcript, a missing token is not a blocker — it was failing the whole
+  check as `required`.
+
+### Gate
+
+**pytest 1345 passed, 0 skipped** and **`bta verify all`: GATE PASSED** —
+skeleton, ingestion 20/20, ai 13/13. Both exit 0. The 1345 is 1333 from
+the tray as it stood plus the 12 that now hold `holdout` to account.

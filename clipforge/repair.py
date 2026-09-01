@@ -39,6 +39,11 @@ from clipforge.stages.s7_qa import (LOUDNESS_FAIL_LU, MAX_CLIP_S, MIN_CLIP_S,
 #: practice and costs a full render.
 MAX_ATTEMPTS = 2
 
+#: Fallback for callers that do not say which TP target the failed render
+#: used. Kept in step with ``s6_render.LOUDNESS_TP``; imported lazily-by-value
+#: rather than from s6 to keep this module free of the render stack.
+LOUDNESS_TP_DEFAULT = -2.0
+
 #: Loudness correction is clamped: loudnorm cannot exceed the source's
 #: headroom, and chasing a target past this just trades LUFS for clipping.
 MAX_GAIN_CORRECTION_LU = 3.0
@@ -102,6 +107,7 @@ def plan_repair(
     source_duration: float,
     attempt: int,
     target_i: float,
+    target_tp: float = LOUDNESS_TP_DEFAULT,
     original_start: float | None = None,
     original_end: float | None = None,
 ) -> RepairPlan:
@@ -188,8 +194,15 @@ def plan_repair(
     if "true-peak-ceiling" in by_name:
         measured = _number(by_name["true-peak-ceiling"].measured)
         over = (measured - SHIP_TP_CEILING) if measured is not None else 1.0
-        overrides["loudness_tp"] = round(
-            SHIP_TP_CEILING - max(0.5, min(2.0, over)), 2)
+        # Derived from the ceiling AND from what this render actually asked
+        # for, then whichever is lower wins. Ceiling-only was a silent no-op:
+        # a clip measuring -0.9 gives over=0.1, the max(0.5, ...) floor turns
+        # that into -1.0-0.5 = -1.5 — which WAS the default target, so the
+        # retry re-rendered with identical params, hit the stage cache, and
+        # returned the same rejected file. A repair must always ask for
+        # something strictly quieter than the attempt that just failed.
+        from_ceiling = SHIP_TP_CEILING - max(0.5, min(2.0, over))
+        overrides["loudness_tp"] = round(min(from_ceiling, target_tp - 0.5), 2)
         remedies.append(Remedy(
             "lower-peak-ceiling", "true-peak-ceiling",
             f"{measured if measured is not None else '?'} dBTP over "

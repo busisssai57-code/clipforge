@@ -42,7 +42,16 @@ log = get_logger(__name__)
 
 #: Loudness targets (spec §S6).
 LOUDNESS_I = -14.0
-LOUDNESS_TP = -1.5
+#: Single-pass loudnorm does not land ON its TP target, it lands ABOVE it.
+#: Measured on real source audio (45 s of speech, I=-14, LRA=11):
+#:   TP=-1.5 -> -0.8 dBFS   (FAILS s7's -1.0 ceiling)
+#:   TP=-2.0 -> -1.6 dBFS   (passes, 0.6 dB margin)
+#:   TP=-2.5 -> -1.9 dBFS
+#: At -1.5 every render landed within 0.1 dB of the ceiling, so whether a
+#: clip shipped was a coin flip — 2 of 8 rendered clips were rejected for
+#: true peak. -2.0 buys real margin for 0.2 LU of integrated loudness
+#: (-14.5 -> -14.7 LUFS), well inside s7's -14.0 +/- 1.5 tolerance.
+LOUDNESS_TP = -2.0
 LOUDNESS_LRA = 11.0
 
 
@@ -110,6 +119,21 @@ SEAM_MIN_W_STEP_PX = 6
 #: output at all. Measurement decodes a single clip; two minutes is ample.
 RENDER_TIMEOUT_S = 1800.0
 MEASURE_TIMEOUT_S = 120.0
+
+
+def _video_codec_args(vcodec: str, *, nvenc_preset: str, x264_preset: str,
+                      cq: int) -> list[str]:
+    """The ``-c:v ...`` half of the render command.
+
+    A function, not an inline branch, so the preset actually reaching ffmpeg
+    can be asserted without running a render. The x264 preset used to be the
+    literal "medium" here while NVENC's was configurable — invisible on a
+    machine with working NVENC, and the whole encoder on a machine without it.
+    """
+    if vcodec == "h264_nvenc":
+        return ["-c:v", "h264_nvenc", "-preset", nvenc_preset,
+                "-rc", "vbr", "-cq", str(cq), "-b:v", "0"]
+    return ["-c:v", "libx264", "-preset", x264_preset, "-crf", str(cq)]
 
 
 def _remap_path_frames(path_frames: list[Any], tmap: Any, fps_f: float,
@@ -261,6 +285,15 @@ class S6Render(Stage[ClipArtifact]):
         out_h = int(params.get("height", 1920))
         encoder = str(params.get("encoder", "h264_nvenc"))
         preset = str(params.get("nvenc_preset", "p5"))
+        # The libx264 preset was hardcoded to "medium" while its NVENC
+        # counterpart was configurable — and on a machine where NVENC is
+        # unavailable (this one: the driver reports nvenc API 13.0, ffmpeg 8.x
+        # requires 13.1) the x264 path is not a fallback, it is THE encoder.
+        # Measured, 30s of 1080x1920 at crf 21: medium 17.9s/13.3 MB,
+        # veryfast 9.9s/11.0 MB — 1.82x faster AND smaller, so that is the
+        # default. ultrafast is 2.82x but writes 35 MB, which is why it is not.
+        # crf is untouched, so the quality target is unchanged.
+        x264_preset = str(params.get("x264_preset", "veryfast"))
         cq = int(params.get("cq", 21))
         audio_bitrate = str(params.get("audio_bitrate", "192k"))
         target_i = float(params.get("loudness_i", LOUDNESS_I))
@@ -486,12 +519,8 @@ class S6Render(Stage[ClipArtifact]):
                          "-map", "[vout]", "-map", "[aout]"]
             else:
                 base += ["-vf", vf, "-af", af]
-            if vcodec == "h264_nvenc":
-                base += ["-c:v", "h264_nvenc", "-preset", preset,
-                         "-rc", "vbr", "-cq", str(cq), "-b:v", "0"]
-            else:
-                base += ["-c:v", "libx264", "-preset", "medium",
-                         "-crf", str(cq)]
+            base += _video_codec_args(vcodec, nvenc_preset=preset,
+                                      x264_preset=x264_preset, cq=cq)
             # -f mp4 explicitly: the output is written to a `.mp4.partial`
             # name (Resumability Law — a killed render must not leave a
             # truncated .mp4 that looks finished), and ffmpeg infers the
