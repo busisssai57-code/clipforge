@@ -130,7 +130,45 @@ def test_ltx25_uses_the_schedule_that_was_measured_here():
     assert (spec.steps, spec.guidance_scale) == (30, 3.0)
 
 
-def test_ltx25_is_not_auto_selected_while_unverified():
+@pytest.fixture
+def one_verified_model(monkeypatch):
+    """A registry with one downloaded VERIFIED model beside unverified
+    ltx25, independent of what this machine has on disk.
+
+    The three tests below are about selection POLICY — that `verified`
+    gates automatic choice, and that a verified model is still reachable.
+    They answered that by reading the real HF cache, so on a box where
+    wan22 (the only verified entry) is not downloaded they failed for a
+    reason that has nothing to do with the policy they assert. What is
+    actually downloaded is preflight's question, not a unit test's.
+
+    It also gives `test_ltx25_is_not_auto_selected_while_unverified` its
+    teeth back: with `weights_present` true for everything, ltx25 can be
+    absent from `available_models` for exactly one reason. Unpatched, that
+    test passes on a machine that has never fetched ltx25 at all — a pass
+    that proves nothing, which is the trap this repo keeps rediscovering.
+    """
+    import dataclasses
+
+    from clipforge.genvideo import models as m
+
+    # Costlier than ltx25 ON PURPOSE. select_model breaks ties on cost and
+    # then on key, so a cheap fake would be picked over ltx25 by the
+    # alphabet even with the `verified` filter deleted, and
+    # `test_the_unverified_model_is_not_what_auto_selection_picks` would
+    # pass while proving nothing. Priced above it, the only thing keeping
+    # selection off ltx25 is the policy under test.
+    verified = dataclasses.replace(
+        REGISTRY["ltx25"], key="fake_verified", model_id="Fake/Verified",
+        label="Fake Verified Model", verified=True, interpreter="",
+        requires_quantization="", cost=REGISTRY["ltx25"].cost + 1.0)
+    registry = {"fake_verified": verified, "ltx25": REGISTRY["ltx25"]}
+    monkeypatch.setattr(m, "REGISTRY", registry)
+    monkeypatch.setattr(m, "weights_present", lambda spec: True)
+    return registry
+
+
+def test_ltx25_is_not_auto_selected_while_unverified(one_verified_model):
     """Every number in its envelope came from a model card. Auto-selecting
     on published figures is how blank frames ship silently — this project
     has been burned by exactly that twice."""
@@ -138,7 +176,8 @@ def test_ltx25_is_not_auto_selected_while_unverified():
     assert "ltx25" not in [m.key for m in available_models(24.0)]
 
 
-def test_the_unverified_model_is_not_what_auto_selection_picks():
+def test_the_unverified_model_is_not_what_auto_selection_picks(
+        one_verified_model):
     """The regression guard. LTX 0.9 was retired on 2026-08-13, so this no
     longer names it — what must stay true is that selection never lands on
     a model whose envelope came from a model card."""
@@ -147,10 +186,71 @@ def test_the_unverified_model_is_not_what_auto_selection_picks():
     assert picked.key != "ltx25"
 
 
-def test_a_verified_model_is_still_selectable():
+def test_a_verified_model_is_still_selectable(one_verified_model):
     keys = {m.key for m in available_models(24.0)}
     assert keys, "no model is auto-selectable — generation cannot run"
     assert "ltx25" not in keys
+
+
+# ------------------------------- the reason given for "nothing fits"
+
+def _only_ltx25(monkeypatch):
+    """A registry holding just the unverified model, downloaded."""
+    from clipforge.genvideo import models as m
+
+    monkeypatch.setattr(m, "REGISTRY", {"ltx25": REGISTRY["ltx25"]})
+    monkeypatch.setattr(m, "weights_present", lambda spec: True)
+
+
+def test_an_unverified_model_is_not_blamed_on_the_pixel_budget(monkeypatch):
+    """The message this replaced, verbatim from this machine:
+
+        no installed model can render 512x896. Wan 2.2 TI2V 5B: not
+        downloaded; LTX-2.5 22B (distilled): 458,752 px exceeds its
+        921,600 px budget
+
+    458,752 is LESS than 921,600. The chain modelled every filter
+    `available_models` applies except `verified`, so the fall-through
+    branch blamed the budget for a size well inside it — an operator
+    reading that shrinks a piece that was never too big, and never learns
+    that `--model ltx25` is the one thing that would have worked.
+    """
+    _only_ltx25(monkeypatch)
+    with pytest.raises(ValueError) as exc:
+        select_model(width=512, height=896)
+
+    msg = str(exc.value)
+    assert "unverified" in msg
+    assert "--model ltx25" in msg
+    assert "exceeds" not in msg, msg
+    assert "px budget" not in msg, msg
+
+
+def test_a_size_really_past_the_budget_still_says_so(monkeypatch):
+    """`verified` is reported LAST because it is the only reason an
+    explicit `--model` can overrule. A shot that is genuinely too big is
+    refused on that request too, so the budget is what the operator needs
+    to hear — naming `verified` here would be the same defect pointing
+    the other way."""
+    _only_ltx25(monkeypatch)
+    with pytest.raises(ValueError) as exc:
+        select_model(width=1920, height=1088)
+
+    msg = str(exc.value)
+    assert "2,088,960 px exceeds its 921,600 px budget" in msg
+    assert "unverified" not in msg, msg
+
+
+def test_an_off_grid_size_still_says_so(monkeypatch):
+    """Same ordering, the other hard blocker: 500 is not a multiple of 32
+    and no flag makes it one."""
+    _only_ltx25(monkeypatch)
+    with pytest.raises(ValueError) as exc:
+        select_model(width=500, height=896)
+
+    msg = str(exc.value)
+    assert "off the latent grid" in msg
+    assert "unverified" not in msg, msg
 
 
 def test_requires_quantization_overrides_the_operator_preference():

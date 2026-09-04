@@ -432,10 +432,25 @@ def select_model(*, needs: frozenset[str] | set[str] | None = None,
                 reasons.append(
                     f"{m.label}: {width}x{height} is off the latent grid "
                     f"(both dimensions must be multiples of {m.dim_multiple})")
-            else:
+            elif width * height > m.max_pixels:
                 reasons.append(
                     f"{m.label}: {width * height:,} px exceeds its "
                     f"{m.max_pixels:,} px budget")
+            else:
+                # Everything MEASURABLE about this model says yes, so the
+                # only filter left in `available_models` is `verified`: a
+                # verified model reaching here would BE a candidate and we
+                # would not be in this branch at all.
+                #
+                # This was the pixel-budget message, which is how the
+                # chain reported "458,752 px exceeds its 921,600 px
+                # budget" for LTX-2.5 — a reason that is not merely
+                # unhelpful but arithmetically false, and sends the
+                # operator to shrink a piece that was never too big.
+                reasons.append(
+                    f"{m.label}: unverified, so auto-selection will not "
+                    f"pick it — request it explicitly with "
+                    f"--model {m.key}")
         raise ValueError(
             f"no installed model can render {width}x{height}. "
             + "; ".join(reasons))

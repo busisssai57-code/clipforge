@@ -3525,3 +3525,131 @@ common way this disappoints and the blame otherwise lands on `--lang`.
 **pytest 1345 passed, 0 skipped** and **`bta verify all`: GATE PASSED** —
 skeleton, ingestion 20/20, ai 13/13. Both exit 0. The 1345 is 1333 from
 the tray as it stood plus the 12 that now hold `holdout` to account.
+
+---
+
+## An error message that blamed the wrong constraint (2026-09-04)
+
+Reported from a real invocation on this box:
+
+```
+ValueError: no installed model can render 512x896. Wan 2.2 TI2V 5B: not
+downloaded; LTX-2.5 22B (distilled): 458,752 px exceeds its 921,600 px
+budget
+```
+
+458,752 is **less** than 921,600. The message names a constraint the
+requested size does not violate, and it prints the arithmetic that refutes
+itself.
+
+### The chain modelled four of the five filters
+
+`select_model`'s "say WHICH constraint failed" block exists precisely so
+that "no model fits" does not send an operator shopping for a GPU when the
+real problem is that 720 is off the latent grid. It walked
+`weights_present` → `fits` → `dim_multiple`, and then let everything else
+fall through to the pixel budget. But `available_models` applies one
+filter the chain never modelled: `verified`.
+
+Checked by hand before touching anything: LTX-2.5 is downloaded, fits
+24 GB, and `REGISTRY['ltx25'].supports(512, 896)` is True. `verified=False`
+was the *sole* reason it was not a candidate, and the fall-through blamed
+the budget for it. So the operator was told to shrink a piece that was
+never too big, and was never told the one thing that would have worked —
+`--model ltx25`, which the forced path has always allowed for exactly this
+model, and which the registry `notes` already advertise.
+
+Same class as `bta dub`'s refusal misdiagnosing the no-key state
+(2026-08-05, finding 1): a diagnostic whose branches do not cover the
+states the code can actually be in, so it asserts a wrong cause with full
+confidence. That round fixed one instance of it; this is another, and the
+shape is worth naming — every one of these has been a *fall-through* case
+absorbing states its message does not describe.
+
+### `verified` is reported last, deliberately
+
+The pixel budget now has its own `elif` and the fall-through `else` is the
+`verified` branch:
+
+```
+LTX-2.5 22B (distilled): unverified, so auto-selection will not pick it
+— request it explicitly with --model ltx25
+```
+
+The ordering is the substance of the fix, not a detail. `verified` is the
+only one of the five filters an explicit `--model` overrules; off-grid and
+over-budget sizes are refused on that request too, so a model that really
+is too big must still be told it is too big or the message is wrong in the
+other direction. Reported last, the branch is additionally correct *by
+elimination*: a verified model reaching it would be in `candidates`, and
+the block would not be running at all.
+
+### Two tests were asserting what this machine has on disk
+
+`test_the_unverified_model_is_not_what_auto_selection_picks` and
+`test_a_verified_model_is_still_selectable` were failing here, and not for
+a code reason. Both need one verified *and downloaded* model to exist.
+wan22 is the only verified entry and its weights are not in this box's HF
+cache; LTX 0.9 was retired on 2026-08-13. Zero verified models, so both
+raised.
+
+They are unit tests about selection *policy*, so they now get a
+`one_verified_model` fixture — a fake verified spec plus a stubbed
+`weights_present` — instead of reading the real cache. What is actually
+downloaded is preflight's question, not theirs.
+
+The same fixture went onto `test_ltx25_is_not_auto_selected_while_unverified`,
+which was passing. It asserts ltx25 is absent from `available_models`, and
+on a machine that never fetched ltx25 that passes for the wrong reason
+entirely. With `weights_present` stubbed true, its absence can have
+exactly one cause.
+
+### What the fixture got wrong on the first attempt
+
+Worth recording, because it is the trap this ledger keeps re-finding in
+its own work. The first version of the fixture priced the fake verified
+model identically to ltx25. `select_model` breaks ties on cost and then on
+key, so `"fake_verified"` beat `"ltx25"` **alphabetically** — and
+`test_the_unverified_model_is_not_what_auto_selection_picks` survived the
+mutant that deletes the `verified` filter outright. It asserted the right
+thing and proved nothing. The fake is now priced *above* ltx25 on purpose,
+so the policy under test is the only thing keeping selection off it.
+
+Found by running the mutants, not by reading the fixture.
+
+### Revert-safety
+
+Three mutants, all killed:
+
+| mutant | tests failed |
+|---|---|
+| drop the `verified` branch (the shipped defect) | 1 |
+| `available_models` stops excluding unverified | 4 |
+| `verified` reported ahead of the hard blockers | 2 |
+
+The third is the one guarding the ordering argument above: it turns the
+genuinely-too-big and off-grid messages into "unverified" and two tests
+say so.
+
+### Gate
+
+**pytest 1349 passed, 5 skipped** and **`bta verify all`: GATE PASSED** —
+skeleton, ingestion 20/20, ai 13/13. Both exit 0.
+
+Two honest notes on those numbers rather than a clean delta against the
+1345 of 2026-09-01:
+
+* **All 5 skips are one cause**: `Wan-AI/Wan2.2-TI2V-5B-Diffusers` is not
+  in this box's HF cache (3 in `test_quantization_real_weights.py`, 2 in
+  `test_model_registry.py`). They are environment skips, not new holes —
+  and they are the same absence that made the two tests above fail.
+* **The tray is not all this change.** It also carries uncommitted work on
+  `screenplay.py` / `test_screenplay.py` (+3 tests) that is not mine and
+  that I did not audit. This change's own contribution is exactly +3:
+  `test_quantization.py` goes 20 → 23 test functions, 23 → 26 items.
+
+Every collected test is accounted for: 1349 passed + 5 skipped = 1354
+collected, nothing unreported. Checked explicitly, because an earlier run
+this session printed 1346 and the gap turned out to be the concurrent
+screenplay work landing in the tree mid-session — not the silent
+non-execution of 2026-08-20, but worth confirming rather than assuming.
