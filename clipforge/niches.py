@@ -230,8 +230,189 @@ GEEL_SKETCH = Niche(
     post_layer=True,
 )
 
+#: The Ari Channel's own preset. Same cutting rhythm as GEEL_SKETCH --
+#: that number is the format, not the subject -- but the subject is a real
+#: child and a real animal, so nothing here may drift anthropomorphic.
+#: Kept as a separate niche rather than a flag on GEEL_SKETCH because the
+#: style and avoid lists are the whole difference and sharing them was
+#: exactly how a camel-market render ended up on a toddler channel.
+ARI_GOAT = Niche(
+    name="ari_goat",
+    label="Ari Soomaali",
+    summary=("Somali toddler meets a goat: real child, real animal, fast "
+             "cuts on every reaction, hook card on frame one and emoji "
+             "stamped on the punchline."),
+    #: "a single ... alone in frame" and the centring clause are load-
+    #: bearing, not padding. The first render of this niche put TWO
+    #: children in frame, both pushed to the edges with the centre empty
+    #: -- and ari_bridge reserves 750-1050 for a face sitting dead
+    #: centre, so an off-centre subject means the punchline block lands
+    #: over nothing. Nothing in the old wording asked for one child or
+    #: for the middle of the frame; "a Somali toddler" is not an
+    #: instruction, it is a noun. Lower case throughout on purpose: an
+    #: all-caps word here comes back drawn into the picture.
+    #: The framing clause is SIZED, not stylistic. MEASURED on the first
+    #: real render of this niche (shot_00, 2026-09-04): "tight framing"
+    #: came back as a medium-wide shot with the child at roughly 40% of
+    #: frame height. At the 704x1280 generation size and this model's
+    #: 32-px latent grid, that leaves a hand about 1.4 latent cells
+    #: across -- fingers cannot be represented in one and a half cells,
+    #: and they were not: both arms came back as boneless tapered stumps
+    #: and a six-fingered hand appeared in the lap. Naming the shot size
+    #: explicitly roughly doubles the child's linear size and takes a
+    #: hand to ~5 cells. There is no resolution lever left to pull
+    #: instead: 704x1280 is 901,120 px against LTX-2.5's 921,600 budget.
+    #: Toddler proportions are stated positively for the same reason the
+    #: centring clause is -- "toddler" is a noun, not an instruction, and
+    #: the model rendered a toddler head on an older child's legs.
+    #:
+    #: Three clauses were added after the FIRST framing test (2026-09-04,
+    #: same seed 1234, same 30 steps at CFG 3.0, the prompt the only
+    #: variable):
+    #:
+    #: * WARDROBE. Neither prompt had ever named clothing. The wide
+    #:   version got a patterned shirt by luck; the close version came
+    #:   back with the child wearing nothing, which is unpublishable on a
+    #:   toddler channel. Luck is not a wardrobe department, so the shirt
+    #:   and shorts are stated, and "a naked child" is in the avoid list.
+    #: * COLOUR. Closing in did not just fix hands, it exposed the skin:
+    #:   sunburnt orange, blotchy, with yellow-green patches on the
+    #:   cheeks and red-rimmed eyes. The prompt was asking for "saturated
+    #:   colour" AND "strong warm" sun, and then `grade` below multiplied
+    #:   saturation by another 1.16 on top. That stacking is invisible on
+    #:   a small distant subject and brutal on a face filling the frame,
+    #:   so the prompt now asks for natural skin tones and the grade is
+    #:   pulled back.
+    #: * GOAT SCALE. Asking for the goat "close beside him" put a shaggy
+    #:   mass across half the frame with its head drifting out of shot.
+    #:
+    #: The scale clause written for that third point then produced the
+    #: WORST animal yet, and it is worth recording exactly why, because
+    #: the mistake is one this file already warns about in another form.
+    #: It read "a normal farm goat about the size of a large dog". A text
+    #: encoder does not evaluate "about the size of" as a comparison --
+    #: it sees the tokens `large dog`, and the render came back with a
+    #: shaggy, long-snouted, hornless animal with a sloping back that the
+    #: operator called a dog, because a dog is what the prompt asked for.
+    #: Never name an animal you do not want in shot, not even as a ruler.
+    #: The same clause carried "not crowding the child": these models do
+    #: not honour negation in the POSITIVE prompt, so that reads as
+    #: "crowding". Both belong in `gen_avoid`, which is a real negative
+    #: prompt, and that is where they now are.
+    #:
+    #: So the goat is described positively and specifically instead --
+    #: short-haired, smooth coat, small upright horns, standing behind --
+    #: and the block was rewritten SHORTER (950 -> ~650 chars, near the
+    #: 603 it started at), because length dilutes every clause.
+    #:
+    #: NOT for the audio, though -- that claim was made here and is
+    #: WRONG, so it is corrected rather than quietly deleted. The short
+    #: 647-char version measured -87.3 dBFS, the QUIETEST of the four
+    #: renders, against -50.9 for the 603-char original. And the original
+    #: run's own nine shots logged peaks of 0.76 / 0.23 / 0.23 / 0.065 /
+    #: 0.039 alongside 0.00026 / 0.00036 / 0.00023 / 0.00032 -- silence
+    #: about four times in nine with the ORIGINAL wording. LTX-2.5's
+    #: audio is unreliable shot to shot; prompt length is not the lever,
+    #: and nothing here should be shortened in the belief that it is.
+    #:
+    #: FOURTH round, and the mistake was over-correction. "clean healthy
+    #: baby skin in an even tone" removed the dirt of round three and
+    #: took the child's ethnicity with it -- lighter skin, flatter nose
+    #: bridge, a different face on a Somali channel -- because "even
+    #: tone" is a smoothing instruction and "natural skin texture" had
+    #: been dropped in the same edit. Skin is now anchored explicitly
+    #: (deep brown Somali skin) with the texture clause restored, and
+    #: the hair is named (short soft dark curly) after round three
+    #: returned a wet-plastered scalp with a cracked crust on the crown.
+    #: The goat moved from "behind him" to "behind his shoulder" to get
+    #: its horns out of the 750-1050 band ari_bridge reserves for a face.
+    gen_style=(
+        "photorealistic handheld home-video footage, a close waist-up "
+        "shot of one Somali toddler sitting centred in frame with his "
+        "face toward the camera, wearing a bright patterned "
+        "short-sleeved shirt and matching shorts, deep brown Somali "
+        "skin, clean and even, with natural skin texture, a round head "
+        "with short soft dark curly hair, a soft rounded baby body with "
+        "a large head and short chubby limbs, one short-haired brown "
+        "goat with a smooth coat and small upright horns standing just "
+        "behind his shoulder, sunlit Somali courtyard with woven mats "
+        "and bright cloth, warm late-afternoon sun, camera at the "
+        "child's eye level in one steady composition, one clear moment "
+        "of reaction"),
+    #: "anthropomorphic" and "clothing on the animal" are here and not in
+    #: GEEL_SKETCH's list because for that niche they are the POINT. The
+    #: rest of this list is the same failure set: a generator asked for a
+    #: small child reaches for doll and waxy-skin territory unless told
+    #: not to.
+    #:
+    #: This list is NOT load-bearing on its own and should not be trusted
+    #: as though it were -- the framing above is what actually attacks
+    #: the cause. shot_00 proved it: "extra limbs", "deformed hands" and
+    #: "melted faces" were all already in this list and all three
+    #: happened anyway. What changed here is the AXIS. The old list said
+    #: "adult facial proportions on a child" and the face was the part
+    #: that came out right; it was the body that came back adult, with
+    #: shins about 1.8x head height where a toddler's are about 1x. The
+    #: seated goat's neck roughly doubled in length across the 57 frames,
+    #: so the stretch is named too.
+    gen_avoid=(
+        "cartoon, flat illustration, 3d render, plush toy, doll, waxy "
+        "uncanny skin, a naked child, bare chest, shirtless, undressed, "
+        "sunburnt orange skin, blotchy skin, dirty skin, mud on the "
+        "skin, bruises, rash, misshapen head, bald patches, muscular "
+        "chest, defined abs, adult torso, scowling, grimacing, "
+        "distressed, light skin, pale skin, waxy plastic skin, flaky "
+        "scalp, cracked skin on the head, thinning hair, wet plastered "
+        "hair, asymmetric eyes, dog, hyena, sheep, wolf, shaggy "
+        "matted fur, long "
+        "canine snout, hornless, a goat crowding the child, "
+        "adult facial proportions on a "
+        "child, adult body "
+        "proportions on a toddler, long adult legs on a small child, "
+        "large adult feet, lanky limbs, elongated stretching neck, "
+        "anthropomorphic animal, clothing on the goat, text, subtitles, "
+        "watermark, logo, dull grey light, wide empty establishing shot "
+        "with no subject, distant small subject, motion blur smear, "
+        "melted faces, extra limbs, deformed hands, extra fingers, "
+        "fused fingers, boneless rubbery arms, limbs changing shape "
+        "between frames, two children, several children, a group of "
+        "children, other people in the background, crowd, the child at "
+        "the edge of the frame, empty centre of frame, the child's face "
+        "turned away from the camera, back of the head, the framing "
+        "changing part-way through the shot"),
+    #: Inherited deliberately from GEEL_SKETCH: 1.9s is the reference
+    #: piece's median shot and the reason the format reads as comedy
+    #: rather than as an animation reel.
+    shot_seconds=1.9,
+    fps=30,
+    #: 33 x 1.9s = 62.7s of source, which is what ari_bridge's 62.5s
+    #: MASTER_TARGET_DURATION is expecting. The default stays low for the
+    #: same reason GEEL_SKETCH's does -- 33 shots is about six hours of
+    #: local render and nobody should start that by omitting a flag.
+    default_shots=12,
+    #: 9:16 rather than GEEL_SKETCH's 3:4. ari_bridge's post_processor
+    #: scale-to-covers then centre-crops to 1080x1920, so a 3:4 source
+    #: loses roughly an eighth of its width off each side. Rendering the
+    #: delivery frame natively costs nothing and crops nothing.
+    aspect="9:16",
+    #: Saturation 1.05, not GEEL_SKETCH's 1.16. That figure was set for a
+    #: sketch shot wide, where the subject is small and the grade is what
+    #: gives the frame its punch. This niche now fills the frame with a
+    #: child's face, and 1.16 on top of a prompt already asking for warm
+    #: low sun is what made the skin read as sunburnt. Contrast and the
+    #: unsharp pass are unchanged.
+    grade="eq=saturation=1.05:contrast=1.07,unsharp=5:5:0.5",
+    caption=_SKETCH_CAPS,
+    jumpcut=False,
+    enhance_speech="gentle",
+    keywords=("comedy", "reaction", "child", "animal", "photoreal",
+              "family", "detail"),
+    post_layer=True,
+)
+
 NICHES: dict[str, Niche] = {
-    n.name: n for n in (ASCENDRO_MIND, VIRAL_CLIPS, CINEMATIC_DOC, GEEL_SKETCH)
+    n.name: n for n in (ASCENDRO_MIND, VIRAL_CLIPS, CINEMATIC_DOC,
+                        GEEL_SKETCH, ARI_GOAT)
 }
 
 
