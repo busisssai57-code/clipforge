@@ -463,6 +463,13 @@ class ChainProvider(FakeProvider):
                  aspect_ratio="9:16", start_image=None):
         self.start_images.append(start_image)
         self.calls += 1
+        # Honour the script like FakeProvider does. Without this a
+        # failure-injection test cannot inject a failure and passes while
+        # proving nothing -- which is what the gap test did first time.
+        if self.script:
+            outcome = self.script.pop(0)
+            if outcome is not None:
+                raise outcome
         # A REAL file, not 16 zero bytes: the chain is built by pulling the
         # last frame out of the previous shot with ffmpeg, so a fake that
         # writes rubbish tests nothing and reports the feature as broken.
@@ -476,8 +483,16 @@ class ChainProvider(FakeProvider):
                          f"{self.name}-model")
 
 
-def test_continuity_chains_each_shot_from_the_last(ledger, clock, tmp_path):
-    """Shot 0 starts from text; every later shot starts from a frame."""
+def test_continuity_anchors_every_shot_to_the_same_frame(ledger, clock, tmp_path):
+    """Shot 0 starts from text; every later shot starts from THE ANCHOR.
+
+    Not from its immediate predecessor. A rolling chain compounds drift
+    twice over -- a shot is worst on its last frame, and that frame then
+    becomes the next shot's truth -- and by shot 2 of a real batch the
+    goat had fused with the child, three horns growing out of the
+    toddler's scalp. An anchor keeps every shot one generation from a
+    clean reference rather than N.
+    """
     local = ChainProvider("local")
     router = _router(ledger, clock, local)
     router.generate_sequence(brief="One. Two. Three.",
@@ -486,8 +501,42 @@ def test_continuity_chains_each_shot_from_the_last(ledger, clock, tmp_path):
                              continuity=True)
     assert local.start_images[0] is None, "the first shot has nothing to chain from"
     assert all(x is not None for x in local.start_images[1:]), (
-        "later shots must be seeded from the previous shot: %r"
-        % (local.start_images,))
+        "later shots must be seeded: %r" % (local.start_images,))
+    # THE anchor property: one reference, not a moving one.
+    seeds = set(map(str, local.start_images[1:]))
+    assert len(seeds) == 1, (
+        "every seeded shot must use the SAME anchor; a per-shot seed is "
+        "the rolling chain that compounded drift: %r" % (seeds,))
+    assert "anchor" in next(iter(seeds)), (
+        "the anchor is a named file, not shot N's trailing frame")
+
+
+def test_a_failed_shot_does_not_destroy_the_anchor(ledger, clock, tmp_path):
+    """A gap falsifies frame-continuity, not the identity of the scene.
+
+    When this was a rolling chain, clearing the seed after a failure was
+    right. An anchor asserts something weaker and still true -- same
+    child, same place -- so a missing beat must not send every later shot
+    back to text and change the wardrobe mid-piece.
+    """
+    local = ChainProvider("local")
+    local.script = [None, ProviderError("hiccup"), None, None]
+    router = _router(ledger, clock, local)
+    router.generate_sequence(brief="One. Two. Three. Four.",
+                             preset=get_preset("documentary"),
+                             out_dir=tmp_path / "seq", shots=4,
+                             continuity=True)
+    # The shot IMMEDIATELY after the gap must carry the anchor -- not be
+    # sent back to text and re-anchored on itself, which is what clearing
+    # the seed does and which a weaker assertion here did not catch.
+    assert local.start_images[2] is not None, (
+        "the beat after a gap must still be anchored, not restarted from "
+        "text: %r" % (local.start_images,))
+    assert str(local.start_images[2]) == str(local.start_images[1] or
+                                             local.start_images[2]), "same anchor"
+    seeded = {str(x) for x in local.start_images if x is not None}
+    assert len(seeded) == 1, (
+        "a gap must not mint a second anchor: %r" % (seeded,))
 
 
 def test_without_continuity_no_shot_is_seeded(ledger, clock, tmp_path):

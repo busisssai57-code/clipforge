@@ -798,6 +798,29 @@ def _generation_dims(aspect_ratio: str, *, budget: int = MAX_GEN_PIXELS,
                                      -(wh[0] * wh[1])))
 
 
+def first_frame(video: Path, dest: Path) -> Path | None:
+    """A video's FIRST frame -- the anchor for a chained sequence.
+
+    The least-drifted frame available: a shot accumulates error as it
+    denoises, so its last frame is its worst and its first is its best.
+    Chaining shot-to-shot from last frames compounds that twice over, and
+    it is what put three goat horns on a toddler's head by shot 3
+    (measured 2026-09-05). Anchoring on a first frame keeps every shot one
+    generation from a clean reference instead of N.
+    """
+    from clipforge.ffmpeg import require_binary, run
+
+    try:
+        run([str(require_binary("ffmpeg")), "-nostdin", "-hide_banner",
+             "-loglevel", "error", "-y", "-i", str(video),
+             "-frames:v", "1", "-q:v", "2", str(dest)], timeout=60.0)
+    except Exception as exc:  # noqa: BLE001 - degrade, never abort
+        log.warning("genvideo.first_frame_failed", video=str(video),
+                    error=str(exc)[:200])
+        return None
+    return dest if dest.is_file() else None
+
+
 def last_frame(video: Path, dest: Path) -> Path | None:
     """Extract a video's final frame — the seed for the next shot.
 

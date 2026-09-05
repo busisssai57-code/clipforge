@@ -81,6 +81,14 @@ class ShotOutcome:
     #: post layer can stamp them without re-parsing the screenplay and
     #: re-deriving a shot distribution that has already been decided.
     marks: list[str] = field(default_factory=list)
+    #: What is SPOKEN over this beat, carried for the same reason the
+    #: marks are. It is deliberately absent from `prompt`: dialogue is
+    #: what a character says, not what the camera sees, and feeding it to
+    #: a video model puts subtitles and mouth-shaped artefacts in frame.
+    #: Kept here so the post layer can burn it, or a voice can read it,
+    #: without re-parsing the screenplay -- which is what nothing did,
+    #: leaving a Somali sketch's punchline parsed and thrown away.
+    spoken: str = ""
 
     @property
     def ok(self) -> bool:
@@ -256,13 +264,17 @@ class GenerationRouter:
         # `build_storyboard`, which did honour it — which is why the flag
         # looked implemented from the UI side.
         marks: list[list[str]] = [[] for _ in range(count)]
+        # Prose briefs have no dialogue; screenplay mode fills this in.
+        lines: list[str] = ["" for _ in range(count)]
         if screenplay:
-            from clipforge.screenplay import to_beats_with_marks  # noqa: PLC0415
+            from clipforge.screenplay import (  # noqa: PLC0415
+                to_beats_with_dialogue)
 
-            pairs = to_beats_with_marks(brief, count)
+            pairs = to_beats_with_dialogue(brief, count)
             if pairs:
-                beats = [b for b, _ in pairs]
-                marks = [m for _, m in pairs]
+                beats = [b for b, _, _ in pairs]
+                marks = [m for _, m, _ in pairs]
+                lines = [t for _, _, t in pairs]
                 # The piece context handed to every shot becomes the
                 # PICTURE-only synopsis. Left as the raw script it put
                 # the dialogue back into each prompt one line after the
@@ -279,7 +291,7 @@ class GenerationRouter:
         out_dir.mkdir(parents=True, exist_ok=True)
         result = SequenceResult()
         try:
-            self._run_shots(result, beats, marks, brief=brief, preset=preset,
+            self._run_shots(result, beats, marks, lines, brief=brief, preset=preset,
                             out_dir=out_dir, count=count,
                             aspect_ratio=aspect_ratio, continuity=continuity)
         finally:
@@ -295,10 +307,28 @@ class GenerationRouter:
         return result
 
     def _run_shots(self, result: SequenceResult, beats: list[str],
-                   marks: list[list[str]], *, brief: str, preset: Preset,
+                   marks: list[list[str]], lines: list[str], *,
+                   brief: str, preset: Preset,
                    out_dir: Path, count: int, aspect_ratio: str,
                    continuity: bool) -> None:
         """The shot loop itself, so `generate_sequence` can wrap it."""
+        # THE ANCHOR, not a rolling chain. Set once from the first shot
+        # that succeeds, and reused by every later shot.
+        #
+        # Seeding each shot from the PREVIOUS shot's last frame compounds
+        # drift twice over: a shot is at its worst on its final frame, and
+        # that worst frame then becomes the next shot's starting truth.
+        # Measured 2026-09-05 on a three-shot batch -- by the end of shot
+        # 2 the goat had fused with the child and three horns were growing
+        # out of the toddler's scalp. Wardrobe continuity is worth nothing
+        # if the subject decays into a chimera by the third cut.
+        #
+        # An anchor keeps every shot ONE generation from a clean reference
+        # rather than N, so drift stays O(1) in sequence length. Shots are
+        # no longer frame-continuous with their immediate predecessor,
+        # which costs nothing in a format built on hard cuts: what has to
+        # match across a cut is the child, the wardrobe and the courtyard,
+        # and the anchor holds those better than a drifting chain did.
         seed_frame: Path | None = None
         for i in range(count):
             prompt = build_shot_prompt(brief, preset, shot_index=i,
@@ -314,18 +344,24 @@ class GenerationRouter:
                 log.error("genvideo.shot_failed", shot=i, error=str(exc)[:300])
                 result.shots.append(ShotOutcome(
                     i, "none", None, prompt, preset.shot_seconds,
-                    error=str(exc)[:300], marks=list(marks[i])))
+                    error=str(exc)[:300], marks=list(marks[i]),
+                    spoken=lines[i]))
                 result.degraded = True
-                seed_frame = None  # the chain is broken; do not span the gap
+                # The anchor SURVIVES a gap. When this was a rolling chain,
+                # clearing it was right: seeding the beat after a gap from
+                # before the gap asserted a continuity the piece did not
+                # have. An anchor asserts something weaker and true -- that
+                # this is the same child in the same place -- which a
+                # missing beat does not falsify.
                 continue
             result.shots.append(ShotOutcome(
                 i, gen.provider, gen.path, prompt, gen.seconds,
-                marks=list(marks[i])))
-            if continuity and gen.path is not None:
-                from clipforge.genvideo.providers import last_frame
+                marks=list(marks[i]), spoken=lines[i]))
+            if continuity and gen.path is not None and seed_frame is None:
+                from clipforge.genvideo.providers import first_frame
 
-                seed_frame = last_frame(
-                    Path(gen.path), out_dir / f"shot_{i:02d}.last.jpg")
+                seed_frame = first_frame(
+                    Path(gen.path), out_dir / "anchor.jpg")
             if gen.provider not in result.providers_used:
                 result.providers_used.append(gen.provider)
 

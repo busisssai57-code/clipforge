@@ -64,6 +64,67 @@ class Block:
                 "character": self.character, "notes": list(self.notes)}
 
 
+#: The scene-type token that opens a Fountain slug, e.g. ``EXT.``, ``INT./EXT.``
+#: The lookahead matters: without it ``INTERIOR COURTYARD`` matches ``INT``
+#: and the location silently becomes "erior courtyard".
+_SLUG_PLACE_RE = re.compile(
+    r"^(?P<place>INT\.?/EXT\.?|EXT\.?/INT\.?|I/E\.?|INT\.?|EXT\.?|EST\.?)"
+    r"(?=\s|$)\s*(?P<rest>.*)$", re.IGNORECASE)
+
+#: Fountain separates location from time-of-day with a spaced dash.
+_SLUG_TIME_RE = re.compile(r"\s+[-–—]+\s+")
+
+_PLACE_PROSE = {
+    "int": "interior",
+    "ext": "exterior",
+    "est": "exterior establishing",
+    "intext": "interior and exterior",
+    "extint": "interior and exterior",
+    "ie": "interior and exterior",
+}
+
+
+def describe_heading(heading: str) -> str:
+    """Turn a Fountain slug line into scene-setting prose.
+
+    A slug is production scaffolding. ``EXT. SUUQA KHUDAARTA - SUBAX`` is
+    a label a crew reads off a page, not a description of the picture,
+    and handed to a video model verbatim it is rendered AS TEXT: a short
+    all-caps string at the head of the prompt is the most reliable way
+    there is to burn a caption into the frame. It also silently outvotes
+    an ``avoid`` list that already says "text, subtitles, watermark" --
+    the positive prompt wins that argument every time.
+
+    This is the other half of the rule that keeps dialogue out of
+    :meth:`Shot.beat`, missed because a slug reads like description and
+    dialogue plainly does not.
+
+    The setting a slug encodes is real and worth keeping, so it is
+    CONVERTED rather than dropped: interior/exterior, the location and
+    the time of day, in lowercase prose the model reads as scene
+    description instead of as a title card.
+    """
+    text = (heading or "").strip().lstrip(".").strip()
+    if not text:
+        return ""
+    match = _SLUG_PLACE_RE.match(text)
+    if match is None:
+        # No scene-type token: a bare location line. Still a label, so it
+        # is still lowercased rather than passed through in caps.
+        return text.lower()
+    key = re.sub(r"[^a-z]", "", match.group("place").lower())
+    parts = [_PLACE_PROSE.get(key, "")]
+    halves = _SLUG_TIME_RE.split(match.group("rest").strip(), maxsplit=1)
+    where = halves[0].strip()
+    when = halves[1].strip() if len(halves) > 1 else ""
+    if where:
+        parts.append(where.lower())
+    if when:
+        parts.append(when.lower())
+    prose = ", ".join(p for p in parts if p)
+    return prose + "." if prose else ""
+
+
 @dataclass
 class Shot:
     """One generated shot, assembled from the blocks under a heading."""
@@ -80,12 +141,17 @@ class Shot:
     def beat(self) -> str:
         """The text handed to the prompt builder for this shot.
 
-        Heading and action only. Dialogue is deliberately EXCLUDED: it is
+        Setting and action only. Dialogue is deliberately EXCLUDED: it is
         what the characters say, not what the camera sees, and feeding
         spoken lines to a video model puts subtitles and mouth-shaped
         artefacts in the frame. It travels separately, to the voice.
+
+        The heading goes through :func:`describe_heading` for the same
+        reason: a raw slug is a production label, and an all-caps label
+        in the prompt comes back burned into the picture.
         """
-        parts = [self.heading] if self.heading else []
+        prose = describe_heading(self.heading)
+        parts = [prose] if prose else []
         parts.extend(self.action)
         return " ".join(p.strip() for p in parts if p.strip())
 
@@ -297,6 +363,47 @@ def to_beats(text: str, shots: int | None = None) -> list[str]:
     return [beat for beat, _marks in to_beats_with_marks(text, shots)]
 
 
+def to_beats_with_dialogue(
+        text: str, shots: int | None = None
+) -> list[tuple[str, list[str], str]]:
+    """Beats, marks AND the spoken line, redistributed together.
+
+    The dialogue was parsed correctly, kept out of the video prompt
+    correctly, and then dropped: nothing outside this module read
+    `Shot.spoken()`. For a Somali sketch whose punchline IS a line --
+    a toddler calling a goat "Taksi!" -- the joke never reached the
+    audience in any form: no voice, no subtitle, not even a manifest
+    entry something downstream could pick up.
+
+    It travels the same road the emoji marks do, for the same reason: a
+    second distribution pass that has to stay in step with this one
+    forever would drift, and the symptom would be a line landing on the
+    wrong shot. Merged scenes join their lines with a space; a repeated
+    tail beat carries NO line, exactly as it carries no mark -- one line
+    said once is the joke, said four times it is a stutter.
+    """
+    parsed = [s for s in to_shots(parse(text)) if s.beat()]
+    triples = [(s.beat(), stickers(s), s.spoken()) for s in parsed]
+    if not triples:
+        return []
+    if not shots or shots == len(triples):
+        return triples
+    if shots < len(triples):
+        out: list[tuple[str, list[str], str]] = []
+        per = len(triples) / float(shots)
+        for i in range(shots):
+            lo, hi = int(round(i * per)), int(round((i + 1) * per))
+            group = triples[lo:max(hi, lo + 1)]
+            out.append((" ".join(b for b, _, _ in group),
+                        [m for _, marks, _ in group for m in marks],
+                        " ".join(t for _, _, t in group if t).strip()))
+        return out
+    out = list(triples)
+    while len(out) < shots:
+        out.append((triples[-1][0], [], ""))
+    return out
+
+
 def to_beats_with_marks(
         text: str, shots: int | None = None) -> list[tuple[str, list[str]]]:
     """Beats and their punchline marks, redistributed together.
@@ -311,32 +418,12 @@ def to_beats_with_marks(
     algorithm that has to stay in step with this one forever, and the
     symptom of it drifting would be a punchline stamped on the wrong shot.
     """
-    parsed = [s for s in to_shots(parse(text)) if s.beat()]
-    pairs = [(s.beat(), stickers(s)) for s in parsed]
-    if not pairs:
-        return []
-    if not shots or shots == len(pairs):
-        return pairs
-    if shots < len(pairs):
-        # Merge neighbours rather than truncating: dropping the tail of a
-        # script silently loses the ending.
-        out: list[tuple[str, list[str]]] = []
-        per = len(pairs) / float(shots)
-        for i in range(shots):
-            lo, hi = int(round(i * per)), int(round((i + 1) * per))
-            group = pairs[lo:max(hi, lo + 1)]
-            out.append((" ".join(b for b, _ in group),
-                        [m for _, marks in group for m in marks]))
-        return out
-    # More shots than scenes: repeat the last beat rather than inventing
-    # material. The position hint in the prompt differentiates them, which
-    # is what split_into_beats does in the same situation. The mark is NOT
-    # repeated with it — one punchline is one punchline, and stamping the
-    # same emoji on four shots is how a joke stops being one.
-    out = list(pairs)
-    while len(out) < shots:
-        out.append((pairs[-1][0], []))
-    return out
+    # Delegates, so ONE redistribution exists. Two copies of this merge
+    # arithmetic would drift, and the symptom would be a punchline
+    # stamped on the wrong shot -- the exact failure the docstring above
+    # warns about.
+    return [(beat, marks) for beat, marks, _line
+            in to_beats_with_dialogue(text, shots)]
 
 
 def synopsis(text: str, limit: int = 320) -> str:
