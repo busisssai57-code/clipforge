@@ -42,6 +42,13 @@ class Preset:
     #: Cutting rhythm hint used when assembling shots into a sequence.
     cut_style: str
     keywords: tuple[str, ...] = field(default_factory=tuple)
+    #: Chain each shot from the previous shot's last frame (i2v), so the
+    #: cuts fall inside ONE continuous scene rather than five separate
+    #: ones. Off by default: a piece whose beats are deliberately
+    #: different moments should not assert a continuity it does not have.
+    #: On for any niche that is one scene, which is what a 33-shot sketch
+    #: of one child and one goat is.
+    continuity: bool = False
 
 
 DOCUMENTARY = Preset(

@@ -1107,7 +1107,10 @@ def generate(
                   f"shot(s) - {chosen.name}: {chosen.summary}[/]")
     result = router.generate_sequence(
         brief=brief, preset=chosen, out_dir=out_dir, shots=shot_count,
-        aspect_ratio=aspect_ratio, screenplay=screenplay)
+        aspect_ratio=aspect_ratio, screenplay=screenplay,
+        # The preset's own answer, not a constant. Omitting this is what
+        # kept `continuity` at its default for every run ever made.
+        continuity=chosen.continuity)
 
     if not result.paths:
         console.print("[red]no shots were generated[/]")

@@ -72,6 +72,16 @@ class Niche:
     post_layer: bool = False
     #: How long a hook card holds, when there is one.
     hook_seconds: float = 2.0
+    #: Chain shots from the previous shot's last frame. MEASURED need,
+    #: 2026-09-05: a five-shot ari_goat batch came back with the child in
+    #: a DIFFERENT shirt and a different courtyard in every shot -- five
+    #: good shots that cannot be cut into one afternoon. `continuity` was
+    #: fully implemented in `generate_sequence`, supported by the ltx25
+    #: provider (`SubprocessModelProvider.generate` declares
+    #: `start_image`), and passed by nobody: `grep -rn "continuity="`
+    #: outside router.py returned nothing, so it was always False. Same
+    #: dead-parameter shape as `--model`, `quantize` and `holdout`.
+    continuity: bool = False
 
 
 #: Small, quiet, centred type. The reference piece sets its line in modest
@@ -405,6 +415,10 @@ ARI_GOAT = Niche(
     caption=_SKETCH_CAPS,
     jumpcut=False,
     enhance_speech="gentle",
+    #: One child, one goat, one afternoon -- so the shots must be one
+    #: scene. See the field's own note for what five unchained shots
+    #: looked like.
+    continuity=True,
     keywords=("comedy", "reaction", "child", "animal", "photoreal",
               "family", "detail"),
     post_layer=True,
@@ -447,6 +461,7 @@ def niche_as_preset(niche: Niche):
         cut_style=("fast" if niche.shot_seconds <= 2.5
                    else "slow" if niche.shot_seconds >= 6.0 else "medium"),
         keywords=niche.keywords,
+        continuity=niche.continuity,
     )
 
 

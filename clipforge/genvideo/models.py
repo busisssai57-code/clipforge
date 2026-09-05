@@ -47,6 +47,36 @@ class ModelSpec:
     cost: float
     #: What this model is GOOD at. Matched against a piece's needs.
     strengths: frozenset[str]
+    #: Extra guidance passes, each costing a WHOLE transformer forward per
+    #: step. Counted 2026-09-05 in `LTX2Pipeline.__call__`: three separate
+    #: `self.transformer(...)` calls, guarded by
+    #:   cond_uncond    -- CFG, a batch of 2, so 2x compute
+    #:   uncond_stg     -- if stg_scale > 0 OR audio_stg_scale > 0
+    #:   uncond_modality-- if modality_scale > 1 OR audio_modality_scale > 1
+    #: The pipeline's own defaults (1.0 / 3.0, and 1.0 / 3.0 for audio) turn
+    #: BOTH extras on, so a 30-step shot is 120 transformer passes, not 60.
+    #: Wan2GP exposes skip-layer guidance as an optional knob for exactly
+    #: this reason. Held here rather than in config because they are
+    #: schedule properties of a checkpoint, like `steps` beside them.
+    #:
+    #: NOTE the `or`: the AUDIO scales alone keep both extra passes alive.
+    #: This model's audio has come back silent on every measured shot, so
+    #: that is two passes per step spent on a track the pipeline discards.
+    #: Attention kernel diffusers should dispatch to, or "" for whatever
+    #: torch picks. Wan2GP's signature speed lever and the one thing this
+    #: project had NO trace of -- `grep -ri sage_attn|flash_attn|
+    #: attention_backend clipforge/` returned zero hits before 2026-09-05.
+    #: diffusers 0.40 ships an `attention_backend` context manager;
+    #: `_native_*` variants need no extra package, while `_sage_*` and
+    #: `_flash_*` need sageattention / flash-attn installed (both absent
+    #: here, and this 3090 is sm86, which Sage supports).
+    #: Empty by default because an untested kernel swap is exactly the
+    #: kind of change that silently alters output.
+    attention_backend: str = ""
+    stg_scale: float = 1.0
+    audio_stg_scale: float = 1.0
+    modality_scale: float = 3.0
+    audio_modality_scale: float = 3.0
     #: Frame counts must be this many plus one (temporal VAE grouping).
     frame_group: int = 8
     #: Dimensions must be a multiple of this (latent patch grid).
@@ -381,6 +411,26 @@ def _snapshot_has_weights(snapshot: Path) -> bool:
     return any(f.is_file() and f.stat().st_size > 0
                for f in snapshot.rglob("*")
                if f.suffix in _WEIGHT_SUFFIXES)
+
+
+def guidance_passes_per_step(spec: ModelSpec) -> int:
+    """Transformer forward passes ONE denoising step costs for *spec*.
+
+    Counted from `LTX2Pipeline.__call__`, which invokes `self.transformer`
+    three times under three guards. CFG runs a batch of two, so it is two
+    passes' worth of compute in one call; the other two are whole extra
+    calls, each switched on by the VIDEO or the AUDIO scale.
+
+    This exists because "why does a 1.9 second shot take ten minutes" had
+    no answer anyone could compute. 30 steps x 4 passes x ~5s is 600s, and
+    that is the measured number.
+    """
+    passes = 2 if spec.guidance_scale > 1.0 else 1
+    if spec.stg_scale > 0.0 or spec.audio_stg_scale > 0.0:
+        passes += 1
+    if spec.modality_scale > 1.0 or spec.audio_modality_scale > 1.0:
+        passes += 1
+    return passes
 
 
 def select_model(*, needs: frozenset[str] | set[str] | None = None,

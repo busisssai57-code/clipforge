@@ -134,14 +134,21 @@ class SubprocessModelProvider:
         if loras:
             log.warning("genvideo.lora_unsupported", model=spec.key,
                         requested=len(loras),
-                        note="this model runs in a separate interpreter "
-                             "whose worker cannot apply LoRAs; the "
-                             "configured weights were NOT used")
-        if step_cache_threshold:
-            log.warning("genvideo.step_cache_unsupported", model=spec.key,
-                        requested=step_cache_threshold,
-                        note="the subprocess worker has no step cache; "
-                             "generation runs at full step count")
+                        note="this worker does not implement LoRA loading, "
+                             "so the configured weights were NOT used. NOT a "
+                             "limit of the model: LTX2Pipeline carries "
+                             "LTX2LoraLoaderMixin and load_lora_weights "
+                             "works. Unimplemented, not impossible -- the "
+                             "same wording that hid the step cache for "
+                             "months until someone checked the pipeline")
+        #: Wan2GP's TeaCache idea. This used to log
+        #: `step_cache_unsupported` and drop the value on the floor, which
+        #: was true of the worker as written and NOT true of the pipeline:
+        #: `LTX2VideoTransformer3DModel` carries diffusers' CacheMixin, so
+        #: the hook was there the whole time, one level below where
+        #: `LocalDiffusersProvider` looks for it. It is sent with every
+        #: request and the worker reports back what actually stuck.
+        self.step_cache_threshold = float(step_cache_threshold or 0.0)
 
     # ------------------------------------------------------------ status
 
@@ -204,10 +211,19 @@ class SubprocessModelProvider:
                          + extra)
 
     def supports_start_image(self) -> bool:
-        # The worker's generate op is text-to-video only. Saying False is
-        # what makes the router stop threading last frames through here,
-        # rather than passing one that is silently ignored.
-        return False
+        # True since 2026-09-05: the worker builds an
+        # LTX2ImageToVideoPipeline from the already-loaded components with
+        # `from_pipe` (no second 13 GB residency) and runs a shot that has
+        # a start frame through it.
+        #
+        # This returned False for as long as the worker was text-to-video
+        # only, and the comment here explained that saying so was "what
+        # makes the router stop threading last frames through". The router
+        # was not asking -- it introspected the signature, which declares
+        # `start_image` to satisfy the interface -- so it threaded them
+        # anyway and generate() dropped them. Both halves are fixed; this
+        # one has to stay honest, because the router now believes it.
+        return True
 
     # ------------------------------------------------------------ worker
 
@@ -388,7 +404,14 @@ class SubprocessModelProvider:
                    "frames": frames, "fps": float(fps),
                    "steps": self.spec.steps,
                    "guidance": self.spec.guidance_scale,
+                   "attention_backend": self.spec.attention_backend,
+                   "stg_scale": self.spec.stg_scale,
+                   "audio_stg_scale": self.spec.audio_stg_scale,
+                   "modality_scale": self.spec.modality_scale,
+                   "audio_modality_scale": self.spec.audio_modality_scale,
                    "seed": self.seed, "out": str(npy),
+                   "step_cache": self.step_cache_threshold,
+                   "start_image": str(start_image) if start_image else None,
                    "audio_out": str(wav_npy)}
         #: What was last asked of the worker. Kept because the size and
         #: schedule a shot was generated at are the first questions asked
@@ -461,7 +484,29 @@ class SubprocessModelProvider:
         finally:
             npy.unlink(missing_ok=True)
             wav_npy.unlink(missing_ok=True)
+        # Requested vs applied as separate facts. A cache that quietly
+        # declined to engage looks exactly like one that did, except in the
+        # wall clock -- and this project has shipped that defect enough
+        # times to spend a log line on it.
+        applied = float(reply.get("step_cache_applied", 0.0) or 0.0)
+        if self.step_cache_threshold and not applied:
+            log.warning("genvideo.step_cache_unsupported", model=self.spec.key,
+                        requested=self.step_cache_threshold,
+                        note="the worker could not engage a step cache; "
+                             "generation ran at full step count")
+        elif applied:
+            log.info("genvideo.step_cache", model=self.spec.key,
+                     requested=self.step_cache_threshold, applied=applied)
+        # Chained vs not, as a fact from the WORKER rather than from what
+        # the caller hoped. A frame that was handed over and ignored is
+        # exactly what produced a byte-identical "continuity" batch.
+        if start_image and not reply.get("chained"):
+            log.warning("genvideo.continuity_dropped", model=self.spec.key,
+                        note="a start frame was supplied and the worker did "
+                             "not chain from it; this shot is not continuous "
+                             "with the one before it")
         log.info("genvideo.worker_done", model=self.spec.key,
+                 step_cache=applied, chained=bool(reply.get("chained")),
                  load_s=reply.get("load_seconds"),
                  generate_s=reply.get("generate_seconds"),
                  audio_samples=reply.get("audio_samples", 0),

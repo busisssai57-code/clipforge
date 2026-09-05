@@ -39,12 +39,30 @@ log = get_logger(__name__)
 
 
 def _takes_start_image(provider: Any) -> bool:
-    """Whether this provider's generate() declares a start_image.
+    """Whether this provider can actually START FROM a frame.
 
-    Introspected, not assumed from the provider's name: a future provider
-    that gains i2v support should start receiving frames without anyone
-    remembering to edit a list here.
+    ASK THE PROVIDER FIRST. A provider may declare `start_image` in its
+    signature to satisfy the interface and still be text-to-video only:
+    `SubprocessModelProvider` did exactly that, and said so in a
+    `supports_start_image()` returning False whose comment explained the
+    whole point -- "saying False is what makes the router stop threading
+    last frames through here, rather than passing one that is silently
+    ignored". This function asked the SIGNATURE instead, so the router
+    believed the parameter and not the provider. Measured 2026-09-05: a
+    five-shot batch with continuity ON came back byte-identical to one
+    with it OFF, five last frames having been extracted, written to disk,
+    handed over and dropped.
+
+    Introspection stays as the fallback, for its original reason: a
+    provider that gains i2v support without adding the method should still
+    start receiving frames rather than waiting on someone to edit a list.
     """
+    declared = getattr(provider, "supports_start_image", None)
+    if callable(declared):
+        try:
+            return bool(declared())
+        except Exception:  # noqa: BLE001 - a provider that cannot answer is a no
+            return False
     try:
         return "start_image" in inspect.signature(provider.generate).parameters
     except (TypeError, ValueError):  # builtins / C-implemented callables

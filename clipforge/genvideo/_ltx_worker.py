@@ -30,6 +30,7 @@ must not be reimplemented in an environment that has no ffmpeg helper.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
@@ -109,27 +110,187 @@ def _load(model_id: str, quantize: str) -> object:
     return pipe
 
 
+def _apply_step_cache(pipe, threshold: float) -> float:
+    """Set the transformer's step cache to *threshold*; return what stuck.
+
+    Wan2GP's TeaCache idea, which this worker declined to implement for
+    months while the parent logged `step_cache_unsupported`. The hook is
+    real, it is just not on the PIPELINE: `LTX2Pipeline` has no CacheMixin,
+    while `LTX2VideoTransformer3DModel` does, and diffusers 0.40 ships
+    `FirstBlockCacheConfig(threshold=...)` -- a fixed threshold on a
+    measured residual, no sampling, which is why §3.2 still holds for a
+    given threshold even though CHANGING it changes output.
+
+    Set on EVERY request rather than at load: the pipeline is cached across
+    calls keyed on (model_id, quantize), so a threshold left on the
+    transformer would silently outlive the run that asked for it -- the
+    same unkeyed-cache defect the loader below already guards against.
+
+    Returns the threshold actually in force, so the parent can log
+    requested and applied as separate facts instead of assuming.
+    """
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None or not hasattr(transformer, "enable_cache"):
+        return 0.0
+    try:
+        transformer.disable_cache()
+    except Exception:  # noqa: BLE001 - nothing was enabled; that is fine
+        pass
+    if threshold <= 0:
+        return 0.0
+    try:
+        from diffusers import FirstBlockCacheConfig
+    except ImportError:
+        return 0.0
+    try:
+        transformer.enable_cache(FirstBlockCacheConfig(threshold=float(threshold)))
+    except Exception as exc:  # noqa: BLE001 - a cache is never worth a failed render
+        print(json.dumps({"log": "step_cache_failed", "error": str(exc)}),
+              flush=True)
+        return 0.0
+    return float(threshold)
+
+
+_I2V = None
+
+
+@contextlib.contextmanager
+def _attention(name: str):
+    """Dispatch attention to *name*, or do nothing if it is unavailable.
+
+    Wan2GP's headline speed lever. diffusers 0.40 exposes it as a context
+    manager; `_native_*` backends need no extra package, `_sage_*` and
+    `_flash_*` do. An unavailable backend must NOT fail the render -- a
+    kernel is an optimisation, not a requirement -- so this degrades to
+    torch's own choice and says which it used.
+    """
+    if not name:
+        yield
+        return
+    try:
+        from diffusers import attention_backend
+    except ImportError:
+        print(json.dumps({"log": "attention_backend_unavailable",
+                          "requested": name,
+                          "note": "this diffusers build has no dispatcher"}),
+              flush=True)
+        yield
+        return
+    try:
+        with attention_backend(name):
+            print(json.dumps({"log": "attention_backend", "applied": name}),
+                  flush=True)
+            yield
+    except Exception as exc:  # noqa: BLE001 - never lose a shot to a kernel
+        print(json.dumps({"log": "attention_backend_failed",
+                          "requested": name, "error": str(exc)[:160]}),
+              flush=True)
+        yield
+
+
+def _i2v_pipe(pipe):
+    """An image-to-video pipeline sharing *pipe*'s already-loaded weights.
+
+    `from_pipe` reuses the components rather than loading a second copy:
+    the transformer alone is ~13 GB on the card, and a second residency
+    would not fit beside the first even if it were free.
+
+    Cached at module level for the same reason `_PIPE` is -- rebuilding it
+    per shot would re-run component wiring 33 times a batch -- and reset
+    whenever the underlying pipe changes identity, so a reload of a
+    different checkpoint cannot be answered with the previous one's i2v
+    wrapper. That is the unkeyed-cache defect this file already carries a
+    comment about; it applies twice now.
+    """
+    global _I2V
+    if _I2V is not None and _I2V[0] is pipe:
+        return _I2V[1]
+    import torch
+    from diffusers import LTX2ImageToVideoPipeline
+
+    # `torch_dtype` is NOT optional here. from_pipe defaults to float32 and
+    # re-casts every component it can: the 4-bit modules refuse ("conversion
+    # to torch.float32 is not supported ... still in 4bit") but the VAE,
+    # vocoder and audio VAE DO convert, so the transformer keeps running
+    # bf16 while the VAE it feeds becomes fp32. MEASURED 2026-09-05: vae
+    # bfloat16 before from_pipe, float32 after, and the shot died on
+    # "Input type (struct c10::BFloat16) and bias type (float) should be
+    # the same". Saying the dtype keeps the reused components as they were.
+    built = LTX2ImageToVideoPipeline.from_pipe(pipe, torch_dtype=torch.bfloat16)
+    _I2V = (pipe, built)
+    return built
+
+
 def _generate(req: dict) -> dict:
     import numpy as np
     import torch
 
     pipe = _load(req["model_id"], req.get("quantize", "nf4"))
+    cache_applied = _apply_step_cache(pipe, float(req.get("step_cache", 0.0) or 0.0))
     t0 = time.time()
     # CPU generator: diffusers seeds the initial latents on the CPU, and
     # a device generator gives a different sample for the same integer.
-    result = pipe(
+    kw = dict(
         prompt=req["prompt"],
         negative_prompt=req.get("negative") or None,
         height=int(req["height"]), width=int(req["width"]),
         num_frames=int(req["frames"]), frame_rate=float(req["fps"]),
         num_inference_steps=int(req["steps"]),
         guidance_scale=float(req["guidance"]),
+        # Each of these can add a whole transformer pass per step. Sent
+        # explicitly rather than defaulted, because the pipeline's defaults
+        # turn both extras on and nothing said so.
+        stg_scale=float(req.get("stg_scale", 1.0)),
+        audio_stg_scale=float(req.get("audio_stg_scale", 1.0)),
+        modality_scale=float(req.get("modality_scale", 3.0)),
+        audio_modality_scale=float(req.get("audio_modality_scale", 3.0)),
         generator=torch.Generator("cpu").manual_seed(int(req["seed"])),
         output_type="pil")
+    # Wan2GP-style i2v chaining. The shot that has a start frame runs
+    # through the image-to-video pipeline so the cut lands inside one
+    # continuous scene; the first shot of a sequence, and any shot after a
+    # failed one, has no frame and runs from text.
+    backend = str(req.get("attention_backend") or "")
+    start = req.get("start_image")
+    chained = False
+    if start:
+        from PIL import Image
+
+        with Image.open(start) as handle:
+            seed_frame = handle.convert("RGB").copy()
+        seed_frame = seed_frame.resize((int(req["width"]), int(req["height"])))
+        active = _i2v_pipe(pipe)
+        _apply_step_cache(active, float(req.get("step_cache", 0.0) or 0.0))
+        # The i2v pipeline re-compresses the conditioning image through
+        # H.264 by default, because the model was trained on compressed
+        # video and a pristine frame is off-distribution. That needs PyAV.
+        # Without it the pipeline raises and the SHOT dies -- measured
+        # 2026-09-05, when a missing `av` turned the first chained shot of
+        # a batch into "no generation provider could produce this shot".
+        # A missing optional codec is not worth a failed render: fall back
+        # to crf=0 (no re-compression) and say so, rather than losing the
+        # beat entirely.
+        try:
+            import av  # noqa: F401
+            with _attention(backend):
+                result = active(image=seed_frame, **kw)
+        except ImportError:
+            print(json.dumps({"log": "i2v_no_pyav",
+                              "note": "PyAV missing; conditioning frame is "
+                                      "not re-compressed (image_crf=0)"}),
+                  flush=True)
+            with _attention(backend):
+                result = active(image=seed_frame, image_crf=0, **kw)
+        chained = True
+    else:
+        with _attention(backend):
+            result = pipe(**kw)
     frames = result.frames[0]
     arr = np.stack([np.asarray(im.convert("RGB")) for im in frames])
     np.save(req["out"], arr)
-    reply = {"ok": True, "npy": req["out"], "frames": int(arr.shape[0]),
+    reply = {"ok": True, "step_cache_applied": cache_applied,
+             "chained": chained,
+             "npy": req["out"], "frames": int(arr.shape[0]),
              "height": int(arr.shape[1]), "width": int(arr.shape[2]),
              "load_seconds": _LOAD_SECONDS,
              "generate_seconds": round(time.time() - t0, 1),

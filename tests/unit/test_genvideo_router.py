@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import subprocess
+
 import pytest
 
 from clipforge.genvideo.presets import get_preset
@@ -205,6 +207,285 @@ def test_everything_failing_raises_rather_than_returning_nothing(
         _shot(_router(ledger, clock, veo, local), tmp_path)
     assert "veo" in str(err.value) and "local" in str(err.value), (
         "the error must name what every provider said")
+
+
+# ------------------------------------------- i2v capability, honestly
+
+class HonestT2VProvider(FakeProvider):
+    """Declares start_image to satisfy the interface, cannot use it.
+
+    This is not hypothetical: SubprocessModelProvider was exactly this
+    until 2026-09-05, and the router threaded five last frames into it.
+    """
+
+    def supports_start_image(self) -> bool:
+        return False
+
+    def generate(self, *, prompt, seconds, fps, out_path, negative="",
+                 aspect_ratio="9:16", start_image=None):
+        return super().generate(prompt=prompt, seconds=seconds, fps=fps,
+                                out_path=out_path, negative=negative,
+                                aspect_ratio=aspect_ratio)
+
+
+def test_a_provider_that_says_it_cannot_chain_is_believed():
+    """The signature says yes and the provider says no. The provider wins.
+
+    Measured 2026-09-05: because this asked the signature, a five-shot
+    batch with continuity ON came back BYTE-IDENTICAL to one with it OFF.
+    The frames were extracted, written, handed over and dropped.
+    """
+    from clipforge.genvideo.router import _takes_start_image
+
+    assert _takes_start_image(HonestT2VProvider("t2v")) is False
+
+
+def test_a_provider_that_can_chain_still_receives_frames():
+    from clipforge.genvideo.router import _takes_start_image
+
+    class I2V(HonestT2VProvider):
+        def supports_start_image(self) -> bool:
+            return True
+
+    assert _takes_start_image(I2V("i2v")) is True
+
+
+def test_a_provider_with_no_opinion_falls_back_to_the_signature():
+    """The original behaviour, kept: a provider that gains i2v support
+    without adding the method should still start receiving frames."""
+    from clipforge.genvideo.router import _takes_start_image
+
+    assert _takes_start_image(ChainProvider("chain")) is True
+    assert _takes_start_image(FakeProvider("plain")) is False
+
+
+def test_the_ltx25_provider_now_declares_i2v():
+    from clipforge.genvideo.models import REGISTRY
+    from clipforge.genvideo.subproc import SubprocessModelProvider
+
+    assert SubprocessModelProvider(REGISTRY["ltx25"]).supports_start_image()
+
+
+def test_the_provider_puts_the_start_frame_in_the_request():
+    """Claiming i2v and not sending the frame is the same bug, one layer up.
+
+    A mutant that deleted this key left all 25 other tests green: the
+    provider said supports_start_image() -> True, the router threaded the
+    frame in, generate() accepted it and never forwarded it. Asserted
+    against the source because building a real request spawns the worker.
+    """
+    import inspect
+
+    from clipforge.genvideo import subproc
+
+    src = inspect.getsource(subproc.SubprocessModelProvider.generate)
+    assert '"start_image"' in src, (
+        "the request must carry the frame, or supports_start_image() lies")
+    assert "str(start_image) if start_image else None" in src, (
+        "and it must carry the CALLER's frame, not a constant")
+
+
+def test_the_worker_actually_runs_the_i2v_pipeline():
+    """Declaring i2v without doing it is the defect this replaced."""
+    import inspect
+
+    from clipforge.genvideo import _ltx_worker
+
+    src = inspect.getsource(_ltx_worker._generate)
+    assert 'req.get("start_image")' in src
+    assert "active(image=seed_frame" in src, (
+        "a start frame must reach the pipeline as `image=`")
+    assert "result = pipe(**kw)" in src, "the no-frame path must still exist"
+    built = inspect.getsource(_ltx_worker._i2v_pipe)
+    assert "from_pipe" in built, "a second full load would not fit on the card"
+
+
+# --------------------------------------------- guidance pass counting
+
+def test_the_shipped_schedule_costs_four_passes_a_step():
+    """Why a 1.9s shot takes ten minutes, as arithmetic.
+
+    LTX2Pipeline invokes self.transformer THREE times per step: the CFG
+    batch (2 passes' compute), an STG pass, and a modality-isolation pass.
+    The pipeline's own defaults switch both extras on and nothing in this
+    project said so, so 30 steps is 120 passes, not 60.
+    """
+    from clipforge.genvideo.models import REGISTRY, guidance_passes_per_step
+
+    spec = REGISTRY["ltx25"]
+    assert guidance_passes_per_step(spec) == 4
+    assert guidance_passes_per_step(spec) * spec.steps == 120
+
+
+def test_turning_off_the_extra_guidance_halves_the_passes():
+    import dataclasses
+
+    from clipforge.genvideo.models import REGISTRY, guidance_passes_per_step
+
+    lean = dataclasses.replace(REGISTRY["ltx25"], stg_scale=0.0,
+                               audio_stg_scale=0.0, modality_scale=1.0,
+                               audio_modality_scale=1.0)
+    assert guidance_passes_per_step(lean) == 2
+
+
+def test_the_audio_scales_alone_keep_both_extra_passes_alive():
+    """The `or` is the whole point, and it is expensive.
+
+    Zeroing only the VIDEO scales changes nothing: the pipeline's guards
+    are `stg_scale > 0 OR audio_stg_scale > 0`. This model's audio has
+    measured silent on every shot, so those are two passes per step spent
+    guiding a track that is thrown away.
+    """
+    import dataclasses
+
+    from clipforge.genvideo.models import REGISTRY, guidance_passes_per_step
+
+    half = dataclasses.replace(REGISTRY["ltx25"], stg_scale=0.0,
+                               modality_scale=1.0)
+    assert guidance_passes_per_step(half) == 4
+
+
+def test_the_scales_reach_the_worker_request():
+    import inspect
+
+    from clipforge.genvideo import subproc
+
+    src = inspect.getsource(subproc.SubprocessModelProvider.generate)
+    for key in ("stg_scale", "audio_stg_scale", "modality_scale",
+                "audio_modality_scale"):
+        assert f'"{key}"' in src, f"{key} must reach the worker"
+
+
+# ------------------------------------------------- Wan2GP step cache
+
+def test_the_subprocess_provider_carries_the_step_cache_threshold():
+    """It used to log `step_cache_unsupported` and drop the value.
+
+    That was true of the worker as written and false of the pipeline:
+    LTX2Pipeline has no CacheMixin, but LTX2VideoTransformer3DModel does,
+    so the hook was one level below where LocalDiffusersProvider looks. The
+    threshold must reach the request or the worker cannot act on it.
+    """
+    from clipforge.genvideo.models import REGISTRY
+    from clipforge.genvideo.subproc import SubprocessModelProvider
+
+    provider = SubprocessModelProvider(REGISTRY["ltx25"],
+                                       step_cache_threshold=0.05)
+    assert provider.step_cache_threshold == 0.05
+
+
+def test_the_worker_sets_the_cache_on_every_request_not_at_load():
+    """The pipeline is cached across calls keyed on (model_id, quantize).
+
+    A threshold left on the transformer would outlive the run that asked
+    for it -- the same unkeyed-cache defect the loader already guards
+    against. Asserted against the source because engaging it needs 13 GB
+    of weights and a card.
+    """
+    import inspect
+
+    from clipforge.genvideo import _ltx_worker
+
+    src = inspect.getsource(_ltx_worker)
+    assert "_apply_step_cache(pipe, float(req.get(\"step_cache\"" in src, (
+        "the cache must be set from the REQUEST, inside _generate")
+    apply_src = inspect.getsource(_ltx_worker._apply_step_cache)
+    assert "disable_cache" in apply_src, (
+        "each request must clear the previous request's cache state first")
+    assert "FirstBlockCacheConfig" in apply_src
+
+
+def test_a_zero_threshold_disables_rather_than_skips():
+    """0.0 must actively turn the cache OFF, not leave whatever was set."""
+    import inspect
+
+    from clipforge.genvideo import _ltx_worker
+
+    src = inspect.getsource(_ltx_worker._apply_step_cache)
+    disable_at = src.index("disable_cache")
+    guard_at = src.index("if threshold <= 0")
+    assert disable_at < guard_at, (
+        "disable_cache must run BEFORE the zero-threshold early return, "
+        "or a run at 0.0 inherits the previous run's cache")
+
+
+# ------------------------------------------------------- continuity
+
+class ChainProvider(FakeProvider):
+    """A provider that records the start_image it was handed per shot."""
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.start_images: list = []
+
+    def generate(self, *, prompt, seconds, fps, out_path, negative="",
+                 aspect_ratio="9:16", start_image=None):
+        self.start_images.append(start_image)
+        self.calls += 1
+        # A REAL file, not 16 zero bytes: the chain is built by pulling the
+        # last frame out of the previous shot with ffmpeg, so a fake that
+        # writes rubbish tests nothing and reports the feature as broken.
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10:duration=0.3",
+             "-pix_fmt", "yuv420p", str(out_path)],
+            check=True, capture_output=True)
+        return GenResult(Path(out_path), self.name, seconds, prompt,
+                         f"{self.name}-model")
+
+
+def test_continuity_chains_each_shot_from_the_last(ledger, clock, tmp_path):
+    """Shot 0 starts from text; every later shot starts from a frame."""
+    local = ChainProvider("local")
+    router = _router(ledger, clock, local)
+    router.generate_sequence(brief="One. Two. Three.",
+                             preset=get_preset("documentary"),
+                             out_dir=tmp_path / "seq", shots=3,
+                             continuity=True)
+    assert local.start_images[0] is None, "the first shot has nothing to chain from"
+    assert all(x is not None for x in local.start_images[1:]), (
+        "later shots must be seeded from the previous shot: %r"
+        % (local.start_images,))
+
+
+def test_without_continuity_no_shot_is_seeded(ledger, clock, tmp_path):
+    """The default must stay a genuine default, not a no-op flag."""
+    local = ChainProvider("local")
+    router = _router(ledger, clock, local)
+    router.generate_sequence(brief="One. Two. Three.",
+                             preset=get_preset("documentary"),
+                             out_dir=tmp_path / "seq", shots=3)
+    assert local.start_images == [None, None, None]
+
+
+def test_the_cli_passes_the_presets_continuity_through(): 
+    """The wiring, not the feature.
+
+    `continuity` was fully implemented in `generate_sequence`, supported by
+    the ltx25 provider, and passed by NOBODY -- the CLI called
+    generate_sequence without it, so every run ever made used the default.
+    A five-shot ari_goat batch on 2026-09-05 came back with the child in a
+    different shirt in every shot, which is what that looks like from the
+    outside. Asserted against the source because the real call renders.
+    """
+    import inspect
+
+    from clipforge import cli
+
+    src = inspect.getsource(cli)
+    assert "continuity=chosen.continuity" in src, (
+        "the CLI must hand generate_sequence the preset's own answer; "
+        "omitting it is what kept this feature off for every run")
+
+
+def test_the_one_scene_niche_asks_for_continuity():
+    """ari_goat is one child, one goat, one afternoon."""
+    from clipforge.niches import resolve_preset
+
+    assert resolve_preset("ari_goat").continuity is True
+    # And it stays a per-niche decision, not a new global default.
+    assert resolve_preset("documentary").continuity is False
 
 
 # ------------------------------------------------------- sequences

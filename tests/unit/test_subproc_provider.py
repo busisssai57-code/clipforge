@@ -488,10 +488,17 @@ def test_loras_this_worker_cannot_apply_are_reported(caplog):
     import logging
 
     with caplog.at_level(logging.WARNING):
-        SubprocessModelProvider(LTX_25, loras=["a.safetensors"],
-                                step_cache_threshold=0.3)
+        provider = SubprocessModelProvider(LTX_25, loras=["a.safetensors"],
+                                           step_cache_threshold=0.3)
     assert "lora_unsupported" in caplog.text
-    assert "step_cache_unsupported" in caplog.text
+    # Step caching is NO LONGER unsupported here, so it must not be
+    # reported as such. It was declined for as long as the worker had no
+    # hook; the hook turned out to be on the transformer rather than the
+    # pipeline (LTX2VideoTransformer3DModel carries diffusers' CacheMixin
+    # and LTX2Pipeline does not), so the threshold is now carried to the
+    # worker and the worker reports back what it managed to apply.
+    assert "step_cache_unsupported" not in caplog.text
+    assert provider.step_cache_threshold == 0.3
 
 
 def test_a_model_with_no_extra_controls_is_quiet(caplog):
