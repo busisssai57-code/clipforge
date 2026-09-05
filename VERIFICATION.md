@@ -3851,3 +3851,43 @@ failure.
 ### Gate
 
 **pytest 1378 passed, 5 skipped** and **`bta verify all` exit 0.**
+
+### Addendum: the dialogue now leaves the pipeline (same day)
+
+The section above closed with "the dialogue now reaches
+`ShotOutcome.spoken` and stops there. Nothing yet BURNS it as a subtitle
+or speaks it -- the road exists, the destination is not built." That was
+true when written and is no longer.
+
+`generate` writes **`sequence.srt`** beside `sequence.mp4`. SRT because
+everything downstream already reads it: the post layer can burn it, a
+player can show it, a translator can open it, and none of them need to
+know this pipeline exists -- a better contract than a bespoke JSON only
+`ari_bridge` could parse.
+
+Three details that make it correct rather than merely present:
+
+* **Timing follows the picture.** A failed shot produced no frames, so it
+  contributes no time and no line, and every later cue moves up. Getting
+  that wrong is a subtitle drifting out of sync for the rest of the video,
+  one beat at a time.
+* **Cues renumber.** A silent beat leaves no hole; the numbering belongs
+  to the subtitles, not to the shot index.
+* **No file when nothing is said.** An empty `.srt` beside a piece claims
+  dialogue and shows none -- the same shape of lie as an audio stream with
+  silence on it, which this project already had to fix downstream.
+
+Verified on a real screenplay-mode render of `ari_goat.fountain`:
+`chained=False/True/True`, and `sequence.srt` written with the Somali
+lines. Distribution checked at three shot counts -- at 3 shots the 11
+scenes merge and both lines share a cue (the documented merge rule), while
+at 11 and 33 they land on their own beats, shot 0 "Maxaad maqashay?" and
+shot 3 "Taksi!".
+
+**Still not done**: nothing BURNS the file into the picture. ari_channel's
+post layer stamps hook cards and emoji and could stamp this, but that is
+its work and it has not been asked to do it. The file exists and is
+correct; a viewer does not see it until something draws it.
+
+Gate: **pytest 1383 passed, 5 skipped**; `bta verify all` exit 0. Four
+mutants killed on the writer.
