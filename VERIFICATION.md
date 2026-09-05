@@ -3771,3 +3771,83 @@ attention dispatch -- including one that survived its first attempt
 (deleting `start_image` from the request left all 25 tests green: the
 provider claiming i2v while never sending the frame, the same defect one
 layer up).
+
+---
+
+## Two defects found by watching the output (2026-09-05, later)
+
+Both reported by the operator after the Wan2GP round, both real, and
+neither visible from any test that existed.
+
+### The chain was eating its own tail
+
+Continuity worked and the pieces still decayed. Seeding each shot from the
+PREVIOUS shot's LAST frame compounds drift twice over: a shot is at its
+worst on its final frame, and that worst frame then becomes the next
+shot's starting truth. By the end of shot 2 of a three-shot batch the goat
+had **fused with the child** -- three horns growing out of the toddler's
+scalp. Wardrobe continuity is worth nothing if the subject becomes a
+chimera by the third cut.
+
+The seed is now an **anchor**: taken once, from the first successful
+shot's FIRST frame (the least-drifted frame available), and reused by
+every later shot. Drift is O(1) in sequence length instead of O(n). Shots
+lose frame-continuity with their immediate predecessor, which costs
+nothing in a format built on hard cuts -- what has to match across a cut
+is the child, the wardrobe and the courtyard.
+
+A gap no longer destroys it, and that reversal is deliberate. Clearing the
+seed after a failure was right for a rolling chain: seeding the next beat
+from before a gap asserted a continuity the piece did not have. An anchor
+asserts something weaker and still true -- same child, same place -- which
+a missing beat does not falsify.
+
+**Verified on a 4-shot batch**: `chained=False/True/True/True`, and the
+final frame of the last shot shows a clean child and an anatomically
+correct goat where the rolling chain produced the chimera.
+
+### The dialogue never left the parser
+
+`screenplay.py` excludes dialogue from the video prompt on purpose, and
+says the line "travels separately, to the voice". **There was no voice.**
+Nothing outside that module read `Shot.spoken()`, `to_beats_with_marks`
+returned only `(beat, marks)`, and the manifest carried neither. For a
+Somali sketch whose punchline IS a line -- a toddler calling a goat
+"Taksi!" -- the joke reached the audience in no form: no speech, no
+subtitle, not even a record something downstream could read.
+
+It travels the road the emoji marks already use.
+`to_beats_with_dialogue` carries `(beat, marks, line)` through the same
+redistribution and `to_beats_with_marks` now DELEGATES to it, so only one
+merge arithmetic exists -- two would drift and land a punchline on the
+wrong shot, the failure its own docstring warns about. `ShotOutcome.spoken`
+carries it out. Merged scenes join their lines; a repeated tail beat
+carries none, exactly as it carries no mark.
+
+Verified on the real `ari_goat.fountain`: shot 0 carries "Maxaad
+maqashay?", shot 3 carries "Taksi!", emoji still land on 2/6/8/10, and
+neither line appears in any video prompt.
+
+### A test that could not fail
+
+The first gap test asserted only that SOMETHING after the gap was
+anchored. That passes whether or not the anchor survives, because a
+cleared anchor simply re-anchors on the next shot -- the mutant that wipes
+it left every test green. It now pins the shot IMMEDIATELY after the gap
+and that no second anchor is minted. Separately, `ChainProvider` ignored
+its own failure script, so the failure-injection test could not inject a
+failure.
+
+### Still open
+
+* The dialogue now reaches `ShotOutcome.spoken` and stops there. Nothing
+  yet BURNS it as a subtitle or speaks it -- the road exists, the
+  destination is not built, and that is said plainly rather than counted
+  as done.
+* `LocalDiffusersProvider` and `SubprocessModelProvider` still hold
+  duplicate control surfaces.
+* LoRAs remain unimplemented on the live path.
+
+### Gate
+
+**pytest 1378 passed, 5 skipped** and **`bta verify all` exit 0.**
