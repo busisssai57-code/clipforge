@@ -300,32 +300,66 @@ def test_the_worker_actually_runs_the_i2v_pipeline():
     assert "from_pipe" in built, "a second full load would not fit on the card"
 
 
+# ------------------------------------------------- attention dispatch
+
+@pytest.mark.parametrize("backend", ["", "_native_flash", "_not_a_backend"])
+def test_the_attention_context_yields_exactly_once(backend):
+    """A generator context manager may not yield twice.
+
+    The first version wrapped the body in try/except around a `with` and
+    yielded again from the handler, so ANY error inside the render came
+    back as "generator didn't stop after throw()" and a kernel that was
+    documented as optional killed the shot. Measured 2026-09-05: a whole
+    speed run lost to it.
+    """
+    from clipforge.genvideo import _ltx_worker
+
+    with pytest.raises(ValueError, match="boom"):
+        with _ltx_worker._attention(backend):
+            raise ValueError("boom")
+
+
+@pytest.mark.parametrize("backend", ["", "_not_a_backend"])
+def test_an_unusable_backend_still_runs_the_shot(backend):
+    """A kernel is an optimisation, not a requirement."""
+    from clipforge.genvideo import _ltx_worker
+
+    ran = False
+    with _ltx_worker._attention(backend):
+        ran = True
+    assert ran
+
+
 # --------------------------------------------- guidance pass counting
 
-def test_the_shipped_schedule_costs_four_passes_a_step():
-    """Why a 1.9s shot takes ten minutes, as arithmetic.
+def test_the_pipeline_defaults_would_cost_four_passes_a_step():
+    """Why a 1.9s shot took ten minutes, as arithmetic.
 
     LTX2Pipeline invokes self.transformer THREE times per step: the CFG
     batch (2 passes' compute), an STG pass, and a modality-isolation pass.
-    The pipeline's own defaults switch both extras on and nothing in this
-    project said so, so 30 steps is 120 passes, not 60.
+    ITS defaults (stg 1.0, modality 3.0) switch both extras on, so 30
+    steps is 120 passes. This pins what we would inherit by saying
+    nothing -- which is exactly what this project did until measured.
     """
-    from clipforge.genvideo.models import REGISTRY, guidance_passes_per_step
-
-    spec = REGISTRY["ltx25"]
-    assert guidance_passes_per_step(spec) == 4
-    assert guidance_passes_per_step(spec) * spec.steps == 120
-
-
-def test_turning_off_the_extra_guidance_halves_the_passes():
     import dataclasses
 
     from clipforge.genvideo.models import REGISTRY, guidance_passes_per_step
 
-    lean = dataclasses.replace(REGISTRY["ltx25"], stg_scale=0.0,
-                               audio_stg_scale=0.0, modality_scale=1.0,
-                               audio_modality_scale=1.0)
-    assert guidance_passes_per_step(lean) == 2
+    as_pipeline_ships = dataclasses.replace(
+        REGISTRY["ltx25"], stg_scale=1.0, audio_stg_scale=1.0,
+        modality_scale=3.0, audio_modality_scale=3.0)
+    assert guidance_passes_per_step(as_pipeline_ships) == 4
+    assert guidance_passes_per_step(as_pipeline_ships) * 30 == 120
+
+
+def test_our_schedule_costs_two_passes_a_step():
+    """MEASURED: 616.9s at 4 passes, 344.7s at 2, and the faster frame is
+    not worse. The extras are off because they bought nothing here."""
+    from clipforge.genvideo.models import REGISTRY, guidance_passes_per_step
+
+    spec = REGISTRY["ltx25"]
+    assert guidance_passes_per_step(spec) == 2
+    assert guidance_passes_per_step(spec) * spec.steps == 60
 
 
 def test_the_audio_scales_alone_keep_both_extra_passes_alive():
@@ -340,9 +374,16 @@ def test_the_audio_scales_alone_keep_both_extra_passes_alive():
 
     from clipforge.genvideo.models import REGISTRY, guidance_passes_per_step
 
-    half = dataclasses.replace(REGISTRY["ltx25"], stg_scale=0.0,
-                               modality_scale=1.0)
-    assert guidance_passes_per_step(half) == 4
+    # Start from what the PIPELINE ships, since our own spec now has the
+    # audio scales off too -- the trap is only visible from the defaults
+    # you inherit by saying nothing.
+    shipped = dataclasses.replace(
+        REGISTRY["ltx25"], stg_scale=1.0, audio_stg_scale=1.0,
+        modality_scale=3.0, audio_modality_scale=3.0)
+    half = dataclasses.replace(shipped, stg_scale=0.0, modality_scale=1.0)
+    assert guidance_passes_per_step(half) == 4, (
+        "zeroing only the video scales changes nothing: the guards are "
+        "`stg_scale > 0 OR audio_stg_scale > 0`")
 
 
 def test_the_scales_reach_the_worker_request():

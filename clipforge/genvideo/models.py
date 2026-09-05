@@ -73,10 +73,18 @@ class ModelSpec:
     #: Empty by default because an untested kernel swap is exactly the
     #: kind of change that silently alters output.
     attention_backend: str = ""
-    stg_scale: float = 1.0
-    audio_stg_scale: float = 1.0
-    modality_scale: float = 3.0
-    audio_modality_scale: float = 3.0
+    #: MEASURED 2026-09-05, same seed and prompt, one shot each:
+    #:   4 passes/step (the pipeline's defaults)  616.9 s
+    #:   2 passes/step (both extras off)          344.7 s   1.79x
+    #: and the faster frame is not worse -- side by side the cheek
+    #: mottling is reduced, the eyes are better defined and the fabric is
+    #: crisper. So these defaults bought nothing here and cost 1.79x.
+    #: Defaulted OFF for that reason; raise them per model if a checkpoint
+    #: is ever measured to need them.
+    stg_scale: float = 0.0
+    audio_stg_scale: float = 0.0
+    modality_scale: float = 1.0
+    audio_modality_scale: float = 1.0
     #: Frame counts must be this many plus one (temporal VAE grouping).
     frame_group: int = 8
     #: Dimensions must be a multiple of this (latent patch grid).

@@ -167,25 +167,33 @@ def _attention(name: str):
     if not name:
         yield
         return
+    # Enter the backend EXPLICITLY rather than wrapping the body in a
+    # try/except around a `with`. The first version did the latter and
+    # yielded a second time from the handler when the body raised, which
+    # is illegal for a generator context manager -- every failure inside
+    # the render surfaced as "generator didn't stop after throw()", and a
+    # kernel that was supposed to be optional killed the shot. Setup
+    # failures are tolerated here; failures INSIDE the render are not
+    # ours to swallow and propagate untouched.
+    cm = None
     try:
         from diffusers import attention_backend
-    except ImportError:
-        print(json.dumps({"log": "attention_backend_unavailable",
-                          "requested": name,
-                          "note": "this diffusers build has no dispatcher"}),
-              flush=True)
-        yield
-        return
-    try:
-        with attention_backend(name):
-            print(json.dumps({"log": "attention_backend", "applied": name}),
-                  flush=True)
-            yield
-    except Exception as exc:  # noqa: BLE001 - never lose a shot to a kernel
+
+        cm = attention_backend(name)
+        cm.__enter__()
+    except Exception as exc:  # noqa: BLE001 - a kernel is an optimisation
         print(json.dumps({"log": "attention_backend_failed",
                           "requested": name, "error": str(exc)[:160]}),
               flush=True)
+        cm = None
+    else:
+        print(json.dumps({"log": "attention_backend", "applied": name}),
+              flush=True)
+    try:
         yield
+    finally:
+        if cm is not None:
+            cm.__exit__(None, None, None)
 
 
 def _i2v_pipe(pipe):
