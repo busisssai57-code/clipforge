@@ -1140,6 +1140,19 @@ def generate(
     console.print(f"[bold green]{stitched}[/] "
                   f"({result.ok_count} shot(s), "
                   f"~{result.ok_count * chosen.shot_seconds:.0f}s)")
+
+    # The last stop for the script's dialogue. It reached ShotOutcome and
+    # went no further, which is a data structure and not a joke anybody
+    # hears. SRT because everything downstream already reads it -- the post
+    # layer can burn it, a player can show it, a translator can open it --
+    # and none of them need to know this pipeline exists. No file is
+    # written when nothing is said: an empty .srt beside a piece claims
+    # dialogue and shows none.
+    from clipforge.screenplay import write_dialogue_srt  # noqa: PLC0415
+
+    srt = write_dialogue_srt(result.shots, out_dir / "sequence.srt")
+    if srt is not None:
+        console.print(f"[green]dialogue: {srt}[/]")
     _write_manifest(manifest, kind="generate",
                     outputs=[str(stitched.resolve())],
                     extra={"shots": result.ok_count,

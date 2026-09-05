@@ -80,3 +80,75 @@ def test_the_shot_outcome_carries_the_line():
     out = ShotOutcome(0, "p", None, "prompt", 1.9, spoken="Taksi!")
     assert out.spoken == "Taksi!"
     assert ShotOutcome(1, "p", None, "prompt", 1.9).spoken == ""
+
+
+# ---------------------------------------------- the line reaching a viewer
+
+def _shot(i, spoken="", seconds=1.9, path="x.mp4"):
+    from pathlib import Path as _P
+
+    from clipforge.genvideo.router import ShotOutcome
+
+    return ShotOutcome(i, "p", _P(path) if path else None, "prompt",
+                       seconds, spoken=spoken)
+
+
+def test_srt_times_each_line_to_its_own_shot(tmp_path):
+    from clipforge.screenplay import write_dialogue_srt
+
+    dest = write_dialogue_srt(
+        [_shot(0, "Maxaad maqashay?"), _shot(1), _shot(2, "Taksi!")],
+        tmp_path / "s.srt")
+    body = dest.read_text(encoding="utf-8")
+    assert "00:00:00,000 --> 00:00:01,900" in body
+    assert "Maxaad maqashay?" in body
+    # shot 2 starts after two 1.9s shots, whether or not shot 1 spoke
+    assert "00:00:03,800 --> 00:00:05,700" in body
+    assert "Taksi!" in body
+
+
+def test_cues_renumber_rather_than_skipping(tmp_path):
+    """A silent beat must not leave a hole in the numbering."""
+    from clipforge.screenplay import write_dialogue_srt
+
+    body = write_dialogue_srt(
+        [_shot(0, "one"), _shot(1), _shot(2, "two")],
+        tmp_path / "s.srt").read_text(encoding="utf-8")
+    numbers = [ln for ln in body.split(chr(10)) if ln.strip().isdigit()]
+    assert numbers == ["1", "2"]
+
+
+def test_no_file_when_nothing_is_said(tmp_path):
+    """An empty .srt claims dialogue and shows none -- the same shape of
+    lie as an audio stream with silence on it."""
+    from clipforge.screenplay import write_dialogue_srt
+
+    dest = tmp_path / "s.srt"
+    assert write_dialogue_srt([_shot(0), _shot(1, "   ")], dest) is None
+    assert not dest.exists()
+
+
+def test_a_failed_shot_contributes_no_time_and_no_line(tmp_path):
+    """It produced no picture, so the piece is shorter and every later
+    cue moves up. Timing off by a missing beat is a subtitle drifting out
+    of sync for the rest of the video."""
+    from clipforge.screenplay import write_dialogue_srt
+
+    body = write_dialogue_srt(
+        [_shot(0, "one"), _shot(1, "lost", path=None), _shot(2, "two")],
+        tmp_path / "s.srt").read_text(encoding="utf-8")
+    assert "lost" not in body
+    assert "00:00:01,900 --> 00:00:03,800" in body, (
+        "the surviving third beat must start at 1.9s, not 3.8s")
+
+
+def test_the_generate_command_writes_it():
+    """Wiring, not formatting. The road existed and stopped one step
+    short before."""
+    import inspect
+
+    from clipforge import cli
+
+    src = inspect.getsource(cli)
+    assert "write_dialogue_srt(result.shots" in src
+    assert "sequence.srt" in src

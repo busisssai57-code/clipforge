@@ -463,3 +463,64 @@ def summary(text: str) -> dict:
         "shot_count": len(shots),
         "word_count": len((text or "").split()),
     }
+
+
+def _srt_time(seconds: float) -> str:
+    """SRT wants HH:MM:SS,mmm."""
+    if seconds < 0:
+        seconds = 0.0
+    ms = int(round(seconds * 1000))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    sec, ms = divmod(ms, 1000)
+    return "{:02d}:{:02d}:{:02d},{:03d}".format(h, m, sec, ms)
+
+
+def dialogue_srt(lines: "list[tuple[float, float, str]]") -> str:
+    """Subtitle text for (start, end, line) triples, skipping empty ones.
+
+    The last stop on the road the dialogue now travels. It reached
+    `ShotOutcome.spoken` and went no further, which is a data structure,
+    not a joke anybody hears -- a Somali sketch whose punchline is
+    "Taksi!" delivers nothing if the line only exists in memory.
+
+    SRT because it is the format every downstream thing already reads:
+    the post layer can burn it, a player can show it, a translator can
+    open it, and none of them need to know this pipeline exists.
+    """
+    out: list[str] = []
+    n = 0
+    for start, end, text in lines:
+        text = (text or "").strip()
+        if not text:
+            continue
+        n += 1
+        out.append(str(n))
+        out.append("{} --> {}".format(_srt_time(start), _srt_time(end)))
+        out.append(text)
+        out.append("")
+    return chr(10).join(out)
+
+
+def write_dialogue_srt(shots, dest: "Path") -> "Path | None":
+    """Write `dest` from shot outcomes, or return None if nothing is said.
+
+    No file is better than an empty one: a zero-cue .srt beside a piece
+    claims there is dialogue and shows none, which is the same shape of
+    lie as an audio stream with silence on it.
+    """
+    lines: list[tuple[float, float, str]] = []
+    clock = 0.0
+    for shot in shots:
+        span = float(getattr(shot, "seconds", 0.0) or 0.0)
+        # A failed shot contributes no picture, so it contributes no time
+        # and no line. Its beat is missing from the piece entirely.
+        if getattr(shot, "path", None) is None:
+            continue
+        lines.append((clock, clock + span, getattr(shot, "spoken", "") or ""))
+        clock += span
+    body = dialogue_srt(lines)
+    if not body.strip():
+        return None
+    dest.write_text(body, encoding="utf-8")
+    return dest
