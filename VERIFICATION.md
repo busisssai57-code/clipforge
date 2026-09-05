@@ -3653,3 +3653,121 @@ collected, nothing unreported. Checked explicitly, because an earlier run
 this session printed 1346 and the gap turned out to be the concurrent
 screenplay work landing in the tree mid-session — not the silent
 non-execution of 2026-08-20, but worth confirming rather than assuming.
+
+---
+
+## Our own upgraded Wan2GP: the parity was in the provider that does not run (2026-09-05)
+
+The operator's brief was to stop cherry-picking features and turn this
+codebase into its own upgraded Wan2GP. The first thing an audit found was
+that the parity work had already been done -- in the wrong place.
+
+### The scattering, measured
+
+    providers.py                     1006 lines
+      LocalDiffusersProvider          394   unreachable (needs a downloaded
+                                            non-interpreter model; wan22 is
+                                            not downloaded)
+      VeoProvider                     142   dead (cloud off since 2026-08-05)
+      shared helpers                 ~470   live
+
+    the path that actually renders LTX-2.5:
+      subproc.py 513 + _ltx_worker.py 318 = 831 lines
+
+**536 of 1006 lines are unreachable on this machine, and every Wan2GP
+control lived in them.** `_apply_loras`, `_apply_step_cache`,
+`_quantization_config` are all `LocalDiffusersProvider` methods. The
+executing provider had one of the four features, and it was broken.
+
+### Continuity was wired to a provider that refused it
+
+`SubprocessModelProvider.supports_start_image()` returned False and its
+comment explained why: "saying False is what makes the router stop
+threading last frames through here, rather than passing one that is
+silently ignored." `router._takes_start_image()` asked the SIGNATURE
+instead, which declares `start_image` to satisfy the interface.
+
+Two careful-looking mechanisms disagreeing, with the wrong one wired up.
+Proven by hashing: a five-shot batch with continuity ON came back
+**byte-identical** to one with it OFF, five last frames having been
+extracted, written to disk, handed over and dropped.
+
+Two real bugs surfaced fixing it:
+
+* **PyAV missing.** The i2v pipeline re-compresses the conditioning frame
+  through H.264 because the model was trained on compressed video. The
+  shot died. Installed, and the worker now falls back to `image_crf=0`
+  rather than losing a beat.
+* **`from_pipe` silently casts.** It defaults to float32 and re-casts what
+  it can: the 4-bit modules refuse, the VAE converts, and a bf16
+  transformer then feeds an fp32 VAE. Found with a two-minute probe (vae
+  `bfloat16` before, `float32` after) rather than eleven-minute guesses.
+
+### The speed answer was a default nobody had read
+
+`LTX2Pipeline` invokes `self.transformer` **three times per step**: the
+CFG batch (2 passes of compute), a spatio-temporal guidance pass, and a
+modality-isolation pass. Its defaults switch both extras on, so 30 steps
+was **120 transformer passes**, not 60.
+
+    4 passes/step   616.9 s          3-shot batch: 616.9 / 660.2 / 678.3
+    2 passes/step   344.7 s  1.79x   3-shot batch: 322.6 / 324.2 / 330.6
+
+**2.0x end to end. A 33-shot piece goes from ~6.0 h to ~3.0 h.** And the
+faster frame is not worse -- side by side at the same seed it has less
+cheek mottling, better-defined eyes and crisper fabric.
+
+The guards are `video OR audio`, so zeroing only the video scales changes
+nothing -- and this model's audio measured silent on 9 of 9 text-to-video
+shots. Two passes a step, on every shot ever rendered, guiding a track
+that `has_audio` then discards.
+
+### Negative results, recorded rather than dropped
+
+* **Attention backend.** Wan2GP's signature lever, and `grep -ri
+  'sage_attn|flash_attn|attention_backend' clipforge/` returned ZERO hits
+  before today. Wired -- and then measured to be worth nothing here:
+  `_native_flash` is incompatible with this model (`attn_mask` is not
+  supported; LTX pads prompts) and `_native_efficient` gives 346.5 s
+  against 344.7, because torch already dispatches there. Sage would need
+  installing and is unproven.
+* **Step cache.** Built and wired (the hook is on
+  `LTX2VideoTransformer3DModel`, not the pipeline, which is why the
+  in-process provider's probe never found it) but NOT measured. It stays
+  at its 0.0 default: an unmeasured approximation is not a speed result.
+
+### A bug of mine that cost a run
+
+`_attention` wrapped the body in try/except around a `with` and yielded a
+SECOND time from the handler. A generator context manager may yield once,
+so every error inside a render surfaced as "generator didn't stop after
+throw()" -- a kernel documented as optional was killing shots, and it hid
+the real `attn_mask` error for a whole speed run. Setup failures are
+tolerated now; failures inside the render propagate untouched.
+
+### Still true, and said out loud
+
+* **LoRAs remain unimplemented on the live path.** The warning used to say
+  the worker "cannot" apply them. `LTX2Pipeline` carries
+  `LTX2LoraLoaderMixin` and `load_lora_weights` works -- unimplemented,
+  not impossible, the same wording that hid the step cache for months.
+  Reworded, not built, because there are no LoRA weights here to prove it
+  against and this project's rule is that a feature is not done until
+  something has run it.
+* `LocalDiffusersProvider` and `SubprocessModelProvider` still hold two
+  copies of the control surface. Today closed the capability gap; it did
+  not merge them, and they can drift again.
+
+### Gate
+
+**pytest 1371 passed, 5 skipped** and **`bta verify all` exit 0**. Proven
+on a real 3-shot batch at the new defaults: `chained=False/True/True`,
+wardrobe, goat, courtyard and mat holding across all three against a batch
+where the shirt changed every 1.9 s, and audio audible on both chained
+shots (0.0133, 0.0147) where every text-to-video shot was silent.
+
+Mutants: 12 killed across continuity, step cache, guidance counting and
+attention dispatch -- including one that survived its first attempt
+(deleting `start_image` from the request left all 25 tests green: the
+provider claiming i2v while never sending the frame, the same defect one
+layer up).
