@@ -1320,7 +1320,18 @@ def _apply_post_layer(stitched: Path, *, result, niche_name: str,
                 seconds.append(float(shot.seconds))
         spec = spec_from_shots(
             seconds, marks, hook=hook or "", watermark=handle or "",
-            hook_seconds=niche.hook_seconds)
+            hook_seconds=niche.hook_seconds,
+            # The script's dialogue, burned in. It already reaches
+            # `sequence.srt`, and a sidecar is not a subtitle anyone
+            # watching a TikTok sees -- nothing in that player will load
+            # it. For a sketch whose punchline is a line, this is the
+            # difference between telling the joke and shipping a silent
+            # clip of a baby.
+            # getattr, not attribute access: this is handed shot-shaped
+            # objects from more than one place, and a post layer must not
+            # refuse to stamp a hook because a caller's shot predates the
+            # dialogue field.
+            spoken=[getattr(s, "spoken", "") for s in ok])
         # `sequence.mp4` is the FINISHED piece, always. The dashboard
         # lists `*/sequence.mp4`, so writing the stamped version beside
         # it under another name would have shown the operator the cut

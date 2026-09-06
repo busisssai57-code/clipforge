@@ -85,6 +85,15 @@ class Sticker:
 
 
 @dataclass(frozen=True)
+class Subtitle:
+    """One spoken line, held for exactly the shot that says it."""
+
+    text: str
+    start: float
+    end: float
+
+
+@dataclass(frozen=True)
 class PostSpec:
     """Everything the post layer stamps on a finished sequence."""
 
@@ -98,10 +107,20 @@ class PostSpec:
     #: else's mark on your own video is not.
     watermark: str = ""
     stickers: tuple[Sticker, ...] = field(default_factory=tuple)
+    #: Dialogue burned into the picture. The script's lines reached
+    #: `sequence.srt` and stopped: a subtitle file beside a video is not
+    #: a subtitle anyone watching a TikTok sees, because nothing in that
+    #: player will ever load it. For a sketch whose punchline is a line,
+    #: burning it in is the difference between telling the joke and
+    #: shipping a silent clip of a baby.
+    subtitles: tuple[Subtitle, ...] = field(default_factory=tuple)
     #: Fractions of the frame, so one spec renders at any size.
     hook_size: float = 0.062
     watermark_size: float = 0.030
     sticker_size: float = 0.155
+    #: Smaller than the hook: the hook is an ask read once, a subtitle is
+    #: read while the picture is doing the work.
+    subtitle_size: float = 0.040
 
     def is_empty(self) -> bool:
         return not (self.hook or self.watermark or self.stickers)
@@ -112,6 +131,12 @@ class PostSpec:
 #: covers the face the shot is about, and away from the very bottom where
 #: the platform's own UI sits.
 _STICKER_SLOTS = ((0.76, 0.42), (0.24, 0.55), (0.72, 0.66), (0.28, 0.34))
+
+#: Where a spoken line sits. Low, under everything: the sticker slots
+#: occupy 0.34-0.66 and ari_bridge reserves 750-1050 of a 1920 frame
+#: (0.39-0.55) for a face, so a subtitle any higher lands on the joke or
+#: on the child. Above the handle at H-0.035 and clear of it.
+_SUBTITLE_Y = 0.845
 
 
 def _pillow():
@@ -269,6 +294,23 @@ def build_overlay(spec: PostSpec, *, width: int, height: int,
         chain = f"[v{idx}]"
         idx += 1
 
+    for si, sub in enumerate(spec.subtitles):
+        if not sub.text.strip():
+            continue
+        # A rendered card, not drawtext. The module docstring explains
+        # why: drawtext's filter syntax eats colons, commas and quotes,
+        # and a Somali line is exactly the sort of text that will one day
+        # contain an apostrophe and silently break the whole graph.
+        card = render_card(sub.text, width=int(width * 0.86),
+                           size_px=max(10, int(height * spec.subtitle_size)),
+                           dest=work_dir / f"sub{si}.png", uppercase=False)
+        inputs += ["-i", str(card)]
+        steps.append(
+            f"{chain}[{idx}:v]overlay=x=(W-w)/2:y=H*{_SUBTITLE_Y:.3f}-h/2:"
+            f"enable='between(t,{sub.start:.3f},{sub.end:.3f})'[v{idx}]")
+        chain = f"[v{idx}]"
+        idx += 1
+
     if spec.watermark.strip():
         mark = render_card(spec.watermark, width=int(width * 0.6),
                            size_px=max(8, int(height * spec.watermark_size)),
@@ -332,7 +374,8 @@ def apply_post(src: Path, dest: Path, spec: PostSpec, *,
 
 def spec_from_shots(shot_seconds: list[float], sticker_marks: list[list[str]],
                     *, hook: str = "", watermark: str = "",
-                    hook_seconds: float = 2.0) -> PostSpec:
+                    hook_seconds: float = 2.0,
+                    spoken: list[str] | None = None) -> PostSpec:
     """Turn per-shot marks into a timed spec.
 
     ``sticker_marks[i]`` is what shot ``i`` was marked with in the script.
@@ -340,9 +383,16 @@ def spec_from_shots(shot_seconds: list[float], sticker_marks: list[list[str]],
     beat, and a sticker that outlives its cut reads as a rendering fault.
     """
     stickers: list[Sticker] = []
+    subtitles: list[Subtitle] = []
     t = 0.0
     n = 0
     for i, seconds in enumerate(shot_seconds):
+        # The line is held for its shot and no longer, exactly like a
+        # sticker: dialogue that outlives its cut is being said by the
+        # wrong picture.
+        line = (spoken[i] if spoken and i < len(spoken) else "") or ""
+        if line.strip():
+            subtitles.append(Subtitle(line.strip(), t, t + seconds))
         marks = sticker_marks[i] if i < len(sticker_marks) else []
         for emoji in marks:
             stickers.append(Sticker(emoji=emoji, start=round(t, 3),
@@ -350,7 +400,7 @@ def spec_from_shots(shot_seconds: list[float], sticker_marks: list[list[str]],
             n += 1
         t += seconds
     return PostSpec(hook=hook, hook_seconds=hook_seconds, watermark=watermark,
-                    stickers=tuple(stickers))
+                    stickers=tuple(stickers), subtitles=tuple(subtitles))
 
 
 #: A piece whose shots differ by more than this is one that plays silent

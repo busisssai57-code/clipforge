@@ -304,7 +304,10 @@ LTX_25 = ModelSpec(
            "renders: 512x896x25 in ~58 s at 13.27 GB VRAM, every one "
            "byte-identical at the same seed. "
            "Envelope numbers are still the card's — select it explicitly "
-           "with --model ltx25."),
+           "with --model ltx25. Its interpreter's dependencies are pinned "
+           "in requirements-ltx25.txt: PyAV is in there and is NOT "
+           "optional, because the i2v path re-compresses its conditioning "
+           "frame through H.264 and raises without it."),
 )
 
 REGISTRY: dict[str, ModelSpec] = {
