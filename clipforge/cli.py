@@ -1138,6 +1138,8 @@ def generate(
     # nameable. Reported and not corrected: see report_audio_spread.
     from clipforge.socialpost import report_audio_spread  # noqa: PLC0415
 
+    if not chosen_niche_keeps_audio(chosen.name):
+        stitched = _drop_scratch_audio(stitched)
     spread = report_audio_spread(list(result.paths))
     if spread is not None:
         console.print(f"[yellow]audio: shots differ by {spread[0]:.0f} dB "
@@ -1283,6 +1285,51 @@ def _slug(text: str, limit: int = 48) -> str:
     return (out[:limit] or "piece").rstrip("-")
 
 
+def chosen_niche_keeps_audio(niche_name: str) -> bool:
+    """Whether this niche ships the generation model's own audio."""
+    from clipforge.niches import NICHES
+
+    niche = NICHES.get(niche_name)
+    return True if niche is None else bool(niche.model_audio)
+
+
+def _drop_scratch_audio(stitched: Path) -> Path:
+    """Strip the model's audio, leaving the picture untouched.
+
+    The channel spec calls native model audio a SCRATCH layer and builds
+    the real mix in post. What it actually delivered here was low-level
+    hiss for two shots and a laugh from nowhere in the third -- and a bed
+    can be laid under silence but not under hiss, so the scratch has to
+    come off before the post layer, not be mixed with it.
+
+    Never raises: a run that has spent GPU-hours does not fail on an
+    audio strip. If ffmpeg refuses, the piece keeps its scratch track and
+    says so.
+    """
+    import subprocess
+
+    from clipforge.ffmpeg import require_binary
+
+    dest = stitched.with_name("muted.mp4")
+    try:
+        proc = subprocess.run(
+            [str(require_binary("ffmpeg")), "-nostdin", "-hide_banner", "-y",
+             "-loglevel", "error", "-i", str(stitched), "-c:v", "copy", "-an",
+             str(dest)], capture_output=True, text=True, timeout=300.0)
+    except Exception as exc:  # noqa: BLE001 - degrade, never abort
+        log.warning("genvideo.scratch_audio_kept", error=str(exc)[:200])
+        return stitched
+    if proc.returncode != 0 or not dest.is_file():
+        log.warning("genvideo.scratch_audio_kept",
+                    error=(proc.stderr or "")[-200:])
+        return stitched
+    dest.replace(stitched)
+    log.info("genvideo.scratch_audio_dropped", path=str(stitched),
+             note="the model's audio is a scratch layer for this niche; "
+                  "the post layer supplies the real mix")
+    return stitched
+
+
 def _apply_post_layer(stitched: Path, *, result, niche_name: str,
                       hook: str | None, handle: str | None) -> Path:
     """Stamp hook card, punchline stickers and handle — or don't.
@@ -1299,7 +1346,11 @@ def _apply_post_layer(stitched: Path, *, result, niche_name: str,
     if niche is None or not niche.post_layer:
         return stitched
     ok = [s for s in result.shots if s.ok]
-    marks = [list(s.marks) for s in ok]
+    # A niche that does not want emoji gets none. The marks still travel
+    # with their beats -- the screenplay parsed them and something else
+    # may yet want them -- they are simply not stamped.
+    marks = ([list(s.marks) for s in ok] if niche.stickers
+             else [[] for _ in ok])
     if not (hook or handle or any(marks)):
         return stitched
 

@@ -72,6 +72,25 @@ class Niche:
     post_layer: bool = False
     #: How long a hook card holds, when there is one.
     hook_seconds: float = 2.0
+    #: Stamp punchline emoji at all. Off for ari_goat on operator
+    #: instruction ("no more emojis") and consistent with the channel's
+    #: own spec, whose negative block bans on-screen text overlays and
+    #: whose design calls for burned Somali TEXT -- a title and the
+    #: punchline -- not emoji decoration.
+    stickers: bool = True
+    #: Whether the generation model's own audio belongs in the delivered
+    #: piece. Off for ari_goat: the channel spec calls native model audio
+    #: "serviceable for ambient/foley but... a SCRATCH LAYER", with the
+    #: final mix built in post from a dhaanto bed, goat foley and the
+    #: child's laugh at designed levels.
+    #:
+    #: MEASURED on a delivered piece, which is what the operator actually
+    #: heard: shot 0 at -84 dBFS of low-level noise (entropy 0.06 -- not
+    #: silence, hiss), shot 1 the same, and shot 2 at -27 with a -2.1
+    #: peak of laughter arriving from nowhere. White noise, then a laugh
+    #: with no cause. Keeping it is worse than having none, because a bed
+    #: can be laid under silence and cannot be laid under hiss.
+    model_audio: bool = True
     #: Chain shots from the previous shot's last frame. MEASURED need,
     #: 2026-09-05: a five-shot ari_goat batch came back with the child in
     #: a DIFFERENT shirt and a different courtyard in every shot -- five
@@ -325,6 +344,31 @@ ARI_GOAT = Niche(
     #: audio is unreliable shot to shot; prompt length is not the lever,
     #: and nothing here should be shortened in the belief that it is.
     #:
+    #: FIFTH round, against the channel's own production spec, which the
+    #: operator supplied after calling the output trash. It named the
+    #: fault precisely and it was not a rendering fault at all: the
+    #: wardrobe was WEST AFRICAN. "bright patterned shirt" reliably
+    #: produces an "Angelina" dashiki -- a Vlisco wax print designed in
+    #: the Netherlands in 1962-63, a staple in Nigeria and Ghana and the
+    #: American diaspora, and not Somali dress. For an audience that is
+    #: 54.6% Somalia, 13.3% Ethiopia and 11.2% Kenya, that reads as
+    #: "generically African", not "one of us", which on a channel whose
+    #: whole moat is Horn-of-Africa specificity is a strategic leak
+    #: rather than a pedantic one.
+    #:
+    #: So the wardrobe is now named in Somali terms: koofiyad (the
+    #: embroidered cap), khamiis (plain cream tunic, gold thread at the
+    #: collar only), macawiis (WOVEN indigo-and-white stripe, never
+    #: printed petals). The spec's other corrections come with it --
+    #: the goat is an indigenous Galla with ribbed horns and wattles
+    #: rather than a generic brown one; the biome is acacia-commiphora
+    #: savanna on ochre sand, because lush green broadleaf trees are a
+    #: documented AI error that breaks it; the light is hard
+    #: HIGH-ANGLE LATE-MORNING at ~70 degrees, not the late-afternoon
+    #: warmth that was here; and the optics are stated (85mm, f2.2,
+    #: camera at the child's head height) because the reference frames
+    #: were reverse-engineered to them.
+    #:
     #: FOURTH round, and the mistake was over-correction. "clean healthy
     #: baby skin in an even tone" removed the dirt of round three and
     #: took the child's ethnicity with it -- lighter skin, flatter nose
@@ -337,18 +381,26 @@ ARI_GOAT = Niche(
     #: The goat moved from "behind him" to "behind his shoulder" to get
     #: its horns out of the 750-1050 band ari_bridge reserves for a face.
     gen_style=(
-        "photorealistic handheld home-video footage, a close waist-up "
-        "shot of one Somali toddler sitting centred in frame with his "
-        "face toward the camera, wearing a bright patterned "
-        "short-sleeved shirt and matching shorts, deep brown Somali "
-        "skin, clean and even, with natural skin texture, a round head "
-        "with short soft dark curly hair, a soft rounded baby body with "
-        "a large head and short chubby limbs, one short-haired brown "
-        "goat with a smooth coat and small upright horns standing just "
-        "behind his shoulder, sunlit Somali courtyard with woven mats "
-        "and bright cloth, warm late-afternoon sun, camera at the "
-        "child's eye level in one steady composition, one clear moment "
-        "of reaction"),
+        "photorealistic documentary footage, a close waist-up shot of "
+        "one Somali toddler sitting centred in frame with his face "
+        "toward the camera, medium-brown skin with natural skin "
+        "texture, fine vellus hair and visible pores, short cropped "
+        "dark hair, wearing a white embroidered koofiyad cap and a "
+        "plain cream cotton khamiis tunic with fine gold-thread collar "
+        "embroidery over a woven indigo-and-white striped macawiis "
+        "wrap, barefoot, a soft rounded toddler body with a large head "
+        "and short chubby limbs, one indigenous Somali Galla goat "
+        "beside him, lean dairy frame, white coat with tan patches, "
+        "long curved ribbed horns, pendulous ears, wattles under the "
+        "jaw, Somali acacia and commiphora savanna, ochre-tan "
+        "compacted sand with scattered pebbles, pale sage desert scrub, "
+        "flat-topped vachellia tortilis and myrrh scrub behind, hazy "
+        "low hills, hard high-angle late-morning sun with short hard "
+        "shadows and warm sand-bounce fill, light heat haze, 85mm lens "
+        "at f2.2, shallow depth of field, camera at the child head "
+        "height at eye level in one steady composition, natural warm "
+        "grade with Portra-like skin and protected highlights, filmic "
+        "contrast, fine grain, one clear moment of reaction"),
     #: "anthropomorphic" and "clothing on the animal" are here and not in
     #: GEEL_SKETCH's list because for that niche they are the POINT. The
     #: rest of this list is the same failure set: a generator asked for a
@@ -366,30 +418,36 @@ ARI_GOAT = Niche(
     #: seated goat's neck roughly doubled in length across the 57 frames,
     #: so the stretch is named too.
     gen_avoid=(
-        "cartoon, flat illustration, 3d render, plush toy, doll, waxy "
-        "uncanny skin, a naked child, bare chest, shirtless, undressed, "
-        "sunburnt orange skin, blotchy skin, dirty skin, mud on the "
-        "skin, bruises, rash, misshapen head, bald patches, muscular "
-        "chest, defined abs, adult torso, scowling, grimacing, "
-        "distressed, light skin, pale skin, waxy plastic skin, flaky "
-        "scalp, cracked skin on the head, thinning hair, wet plastered "
-        "hair, asymmetric eyes, dog, hyena, sheep, wolf, shaggy "
-        "matted fur, long "
-        "canine snout, hornless, a goat crowding the child, "
-        "adult facial proportions on a "
-        "child, adult body "
-        "proportions on a toddler, long adult legs on a small child, "
-        "large adult feet, lanky limbs, elongated stretching neck, "
-        "anthropomorphic animal, clothing on the goat, text, subtitles, "
-        "watermark, logo, dull grey light, wide empty establishing shot "
-        "with no subject, distant small subject, motion blur smear, "
-        "melted faces, extra limbs, deformed hands, extra fingers, "
-        "fused fingers, boneless rubbery arms, limbs changing shape "
-        "between frames, two children, several children, a group of "
-        "children, other people in the background, crowd, the child at "
-        "the edge of the frame, empty centre of frame, the child's face "
-        "turned away from the camera, back of the head, the framing "
-        "changing part-way through the shot"),
+        # The channel spec's own negative block, which is more thorough
+        # than anything guessed here and carries two entries no amount of
+        # staring at frames would have produced: "wax-print dashiki" and
+        # "West African clothing" name the exact failure that made the
+        # operator call the output trash, and "lush green broadleaf
+        # trees" names a documented AI error that silently relocates the
+        # piece out of the Horn of Africa.
+        "plastic skin, waxy skin, airbrushed skin, doll face, porcelain "
+        "skin, overly smooth skin, uncanny valley, dead eyes, "
+        "cross-eyed, asymmetric eyes, deformed face, merged faces, "
+        "morphing, identity drift, face melt, extra fingers, missing "
+        "fingers, fused fingers, deformed hands, extra limbs, bad "
+        "anatomy, warping, flicker, temporal inconsistency, background "
+        "shifting, floating objects, duplicate goat, extra horns, "
+        "subtitles, captions, text overlays, watermark, logo, garbled "
+        "text, on-screen text, oversaturation, neon, HDR bloom, soap "
+        "opera effect, cartoon, anime, 3d render, CGI, lush green "
+        "broadleaf trees, wax-print dashiki, West African clothing, "
+        # Kept from the measured rounds before the spec arrived: these
+        # were each a real render on this box, not a precaution.
+        "adult body proportions on a toddler, long adult legs on a "
+        "small child, light skin, dirty skin, mud on the skin, bruises, "
+        "misshapen head, flaky scalp, thinning hair, wet plastered "
+        "hair, a naked child, bare chest, shirtless, dog, hyena, sheep, "
+        "wolf, shaggy matted fur, long canine snout, hornless, two "
+        "children, several children, a group of children, other people "
+        "in the background, crowd, the child at the edge of the frame, "
+        "empty centre of frame, the child's face turned away from the "
+        "camera, back of the head, the framing changing part-way "
+        "through the shot"),
     #: Inherited deliberately from GEEL_SKETCH: 1.9s is the reference
     #: piece's median shot and the reason the format reads as comedy
     #: rather than as an animation reel.
@@ -419,6 +477,8 @@ ARI_GOAT = Niche(
     #: scene. See the field's own note for what five unchained shots
     #: looked like.
     continuity=True,
+    stickers=False,
+    model_audio=False,
     keywords=("comedy", "reaction", "child", "animal", "photoreal",
               "family", "detail"),
     post_layer=True,
