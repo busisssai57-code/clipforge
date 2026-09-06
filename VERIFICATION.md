@@ -3891,3 +3891,77 @@ correct; a viewer does not see it until something draws it.
 
 Gate: **pytest 1383 passed, 5 skipped**; `bta verify all` exit 0. Four
 mutants killed on the writer.
+
+---
+
+## Closing the gaps I had been listing as open (2026-09-05, final)
+
+Asked what was missing to call this done, and to apply it rather than
+report it. Three things were, and two are now closed.
+
+### The joke reaches the viewer
+
+The script's lines were parsed, kept out of the video prompt, carried
+through redistribution, and written to `sequence.srt` -- and stopped
+there. **A sidecar is not a subtitle anyone watching a TikTok sees**,
+because nothing in that player will ever load it. For a sketch whose
+punchline IS a line, that was a silent clip of a baby.
+
+The post layer stamps them now, following the pattern it already uses for
+the hook card: a rendered PNG on a time window, NOT drawtext. The module
+docstring explains why -- drawtext's filter syntax eats colons, commas and
+quotes, and a Somali line is exactly the sort of text that will one day
+carry an apostrophe and silently break the whole graph.
+
+Placement is the design. `_SUBTITLE_Y = 0.845`: the sticker slots occupy
+0.34-0.66 and ari_bridge reserves 750-1050 of a 1920 frame (0.39-0.55) for
+a face, so a line any higher lands on the punchline or on the child. Drawn
+before the watermark so a handle never vanishes under it, and held for its
+own shot and no longer -- dialogue that outlives its cut is being said by
+the wrong picture.
+
+**Verified on a real render**: "Maxaad maqashay? Taksi!" burned at the
+bottom of the delivered piece, clear of the child and the emoji, absent on
+the shot that says nothing. Five mutants killed.
+
+### The interpreter is pinned
+
+`.venv-ltx25` had no requirements file, so the environment LTX-2.5 renders
+in existed only as whatever happened to be installed.
+`requirements-ltx25.txt` records it -- pinned from what has actually
+rendered, not what the model card asks for -- and says why the venv must
+be separate at all (diffusers 0.40 needs huggingface-hub>=1.23, whisperx
+pins <1.0).
+
+PyAV is in it with the reasoning attached, because it reads optional and
+is not: the i2v path re-compresses its conditioning frame through H.264
+and RAISES without it. The worker degrades to `image_crf=0` rather than
+losing a beat, which means a venv rebuilt without that line still renders
+and just quietly stops matching the model's training distribution. That
+silent downgrade is what the file exists to prevent.
+
+### The audio detector earned its place immediately
+
+The spread warning added earlier the same day fired on this render in
+production: **"audio: shots differ by 57 dB (shot_00 quietest, shot_02
+loudest)"**. Before it, nothing said a word about a piece that plays 3.8
+seconds of silence and then jumps to the edge of clipping.
+
+### Still open, deliberately
+
+* **LoRAs remain unimplemented on the live path.** The pipeline supports
+  them (`LTX2LoraLoaderMixin`, `load_lora_weights`), the warning has been
+  corrected from "cannot" to "does not implement", and the feature is not
+  built -- because there are no LoRA weights on this machine to prove it
+  against, and this project's rule is that a feature is not done until
+  something has run it. Building it blind would be the exact defect the
+  ledger keeps recording.
+* **`LocalDiffusersProvider` and `SubprocessModelProvider` still hold
+  duplicate control surfaces.** 394 unreachable lines against 831 live
+  ones. Merging them is a refactor with no behavioural change and real
+  risk, and it wants its own round rather than the tail of this one.
+* **The step cache is built and unmeasured**, so it stays at 0.0.
+
+### Gate
+
+**pytest 1397 passed, 5 skipped**; `bta verify all` exit 0.
