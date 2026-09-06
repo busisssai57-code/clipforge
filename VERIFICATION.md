@@ -3965,3 +3965,97 @@ seconds of silence and then jumps to the edge of clipping.
 ### Gate
 
 **pytest 1397 passed, 5 skipped**; `bta verify all` exit 0.
+
+---
+
+## The spec arrived, and the picture had been wrong the whole time (2026-09-05)
+
+The operator called the output trash, listed what was wrong with it, and
+supplied the channel's own production spec. It named a fault that no
+amount of staring at frames would have produced.
+
+### The wardrobe was West African
+
+`"bright patterned shirt"` reliably produces an **"Angelina" dashiki** -- a
+Vlisco wax print designed in the Netherlands in 1962-63, a staple in
+Nigeria, Ghana and the American diaspora, and **not Somali dress**. For an
+audience that is 54.6% Somalia, 13.3% Ethiopia and 11.2% Kenya that reads
+as "generically African" rather than "one of us", which on a channel whose
+whole moat is Horn-of-Africa specificity is a strategic leak, not a
+pedantic one.
+
+Four rounds of prompt work had been spent polishing a culturally wrong
+picture. Every measurement in those rounds was sound and none of them
+could have found this, because the frames were internally consistent and
+the fault was in what they depicted.
+
+The wardrobe is now named: **koofiyad** (embroidered cap), **khamiis**
+(plain cream tunic, gold thread at the collar only), **macawiis** (woven
+indigo-and-white stripe, never printed petals), barefoot. With it come the
+spec's other corrections -- an indigenous **Galla** goat with ribbed horns
+and wattles; **acacia-commiphora savanna** on ochre sand, because lush
+green broadleaf trees are a documented AI error that relocates the piece
+out of the Horn; hard **high-angle late-morning** light, not the
+late-afternoon warmth that was here; stated optics (85mm, f2.2, camera at
+the child's head height); and a Portra-like grade with protected
+highlights.
+
+The negative block is the spec's own, carrying two entries only domain
+knowledge produces: `wax-print dashiki` and `West African clothing`.
+
+### No more emoji
+
+On instruction, and consistent with the spec: its negative block bans
+on-screen text overlays and its design calls for burned Somali TEXT -- a
+title and the punchline -- not emoji decoration. `Niche.stickers` makes it
+a per-niche choice; GEEL_SKETCH keeps them, since for that niche they are
+the point. The marks still travel with their beats; they are simply not
+stamped.
+
+### The model's audio was hiss and a laugh from nowhere
+
+MEASURED on the piece the operator heard: shots at -84.3 and -74.4 dBFS
+with entropy 0.06 -- **noise, not silence** -- and a third at -26.9 with a
+-2.1 peak of laughter with no cause. The spec had already ruled: native
+model audio is "a scratch layer", with the real mix built in post.
+`INCLUDE_SOURCE_AUDIO` is False and `Niche.model_audio` drops it upstream.
+
+**The consequence was the harder half.** Without the scratch track
+carrying the mix, a master built to -14.0 LUFS came out at **-19.8**, and
+raising every layer 6 dB moved it by **0.0** -- the filter normalises, so
+its input level is irrelevant. The bed levels were never the cause and
+were put back rather than left tuned to a wrong theory.
+
+`correct_loudness` closes it with one bounded pass after the measurement
+the pipeline already takes: a linear gain moves integrated loudness by
+exactly its own amount, so it is arithmetic rather than a second guess.
+Two traps, both found by measuring:
+
+* **It must feed a limiter.** A master can be 5 LU quiet AND already at
+  the peak ceiling -- sparse loud stings over a quiet bed. Bare gain
+  capped by headroom corrected it by 0.0.
+* **It must limit harder than the main chain.** `alimiter` caps SAMPLE
+  peaks and the spec is a TRUE peak. Limiting at the main chain's -2.0
+  dBFS came back at -0.0 dBTP and breached the -1.0 ceiling.
+  `CORRECTION_CEILING_LINEAR` (-5.0 dBFS) exists only because of that.
+
+### Two tests that passed while proving nothing
+
+Asserting the two ceiling CONSTANTS differ passes while the code reaches
+for the other one. Asserting an on-target master is byte-unchanged passes
+even when the correction runs, because ffmpeg fails on a fake mp4 and the
+function degrades. Both now watch for the encode itself. Four mutants
+killed after that; two before.
+
+### Not yet done
+
+The spec's biggest strategic point is untouched: **the payoff is
+back-loaded**. It says the edit front-loads setup and puts the belly-laugh
+at 6-10s, while the decision is made at 0:01 -- so the piece should cold-
+open on the laugh. That is an editorial restructure of shot ORDER, not a
+prompt change, and it wants its own round.
+
+### Gate
+
+**clipforge: pytest 1397 passed, 5 skipped; `bta verify all` exit 0.**
+**ari_channel: 93 passed.**
