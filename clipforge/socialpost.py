@@ -351,3 +351,77 @@ def spec_from_shots(shot_seconds: list[float], sticker_marks: list[list[str]],
         t += seconds
     return PostSpec(hook=hook, hook_seconds=hook_seconds, watermark=watermark,
                     stickers=tuple(stickers))
+
+
+#: A piece whose shots differ by more than this is one that plays silent
+#: and then jumps. 20 dB is roughly the step from "quiet room" to
+#: "conversation" -- audible as a fault rather than as dynamics.
+AUDIO_SPREAD_WARN_DB = 20.0
+
+
+def audio_spread(levels: "dict[str, float | None]") -> "tuple[float, str, str] | None":
+    """The loudest and quietest measurable shot, and the gap between them.
+
+    Pure, so the threshold is testable without encoding anything. Returns
+    None when fewer than two shots could be measured -- one shot has no
+    spread, and an unmeasurable one is not evidence of a quiet one.
+    """
+    known = {k: v for k, v in levels.items() if v is not None}
+    if len(known) < 2:
+        return None
+    lo_k = min(known, key=lambda k: known[k])
+    hi_k = max(known, key=lambda k: known[k])
+    return known[hi_k] - known[lo_k], lo_k, hi_k
+
+
+def measure_mean_dbfs(video: "Path") -> "float | None":
+    """Mean volume of *video* in dBFS, or None if it cannot be measured."""
+    import re
+    import subprocess
+
+    from clipforge.ffmpeg import require_binary
+
+    try:
+        proc = subprocess.run(
+            [str(require_binary("ffmpeg")), "-nostdin", "-hide_banner",
+             "-i", str(video), "-af", "volumedetect", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=60.0)
+    except Exception:  # noqa: BLE001 - a measurement is never worth a run
+        return None
+    hit = re.search(r"mean_volume:\s*(-?\d+(?:\.\d+)?) dB", proc.stderr or "")
+    return float(hit.group(1)) if hit else None
+
+
+def report_audio_spread(paths: "list[Path]") -> "tuple[float, str, str] | None":
+    """Warn when a sequence's shots are wildly different in loudness.
+
+    MEASURED on a delivered three-shot sequence 2026-09-05: -84.3 and
+    -74.4 dBFS for the first two shots and -26.9 for the third. That is
+    3.8 seconds of silence and then a jump to the edge of clipping, in a
+    5.7-second piece.
+
+    It is REPORTED, not corrected, and the distinction matters. Loudness
+    normalisation cannot fix it: EBU R128 gates silence out, so the
+    integrated measurement reflects only the shot that has audio, and
+    that shot already sits at the true-peak ceiling. A loudnorm pass was
+    tried on this exact file and moved it by 0.0 LUFS. Nothing can create
+    sound in a shot the model returned silent.
+
+    Handling belongs downstream, where ari_channel's post layer excludes
+    inaudible tracks and lets the music bed carry the piece. This exists
+    so an operator who plays a raw sequence knows why it sounds broken.
+    """
+    levels = {p.name: measure_mean_dbfs(p) for p in paths}
+    found = audio_spread(levels)
+    if found is None:
+        return None
+    spread, quietest, loudest = found
+    if spread < AUDIO_SPREAD_WARN_DB:
+        return None
+    log.warning("genvideo.audio_spread", spread_db=round(spread, 1),
+                quietest=quietest, loudest=loudest,
+                levels={k: v for k, v in levels.items() if v is not None},
+                note="shots differ enough that the piece will play silent "
+                     "and then jump; the model returned no audio for some "
+                     "of them, and no normalisation can create it")
+    return found

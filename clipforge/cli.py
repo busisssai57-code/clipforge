@@ -1134,6 +1134,16 @@ def generate(
         console.print(f"[red]assembly failed: {exc}[/]")
         raise typer.Exit(1)
 
+    # Say it before the post layer, while the shots are still individually
+    # nameable. Reported and not corrected: see report_audio_spread.
+    from clipforge.socialpost import report_audio_spread  # noqa: PLC0415
+
+    spread = report_audio_spread(list(result.paths))
+    if spread is not None:
+        console.print(f"[yellow]audio: shots differ by {spread[0]:.0f} dB "
+                      f"({spread[1]} quietest, {spread[2]} loudest) - the "
+                      f"piece will play silent and then jump[/]")
+
     stitched = _apply_post_layer(
         stitched, result=result, niche_name=chosen.name, hook=hook,
         handle=handle if handle is not None else cfg.genvideo.handle)
