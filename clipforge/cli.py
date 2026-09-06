@@ -1317,16 +1317,15 @@ def _drop_scratch_audio(stitched: Path) -> Path:
              "-loglevel", "error", "-i", str(stitched), "-c:v", "copy", "-an",
              str(dest)], capture_output=True, text=True, timeout=300.0)
     except Exception as exc:  # noqa: BLE001 - degrade, never abort
-        log.warning("genvideo.scratch_audio_kept", error=str(exc)[:200])
+        console.print(f"[yellow]could not drop the scratch audio ({exc}); "
+                      f"keeping it[/]")
         return stitched
     if proc.returncode != 0 or not dest.is_file():
-        log.warning("genvideo.scratch_audio_kept",
-                    error=(proc.stderr or "")[-200:])
+        console.print("[yellow]could not drop the scratch audio; keeping it[/]")
         return stitched
     dest.replace(stitched)
-    log.info("genvideo.scratch_audio_dropped", path=str(stitched),
-             note="the model's audio is a scratch layer for this niche; "
-                  "the post layer supplies the real mix")
+    console.print("[green]audio: dropped the model's scratch track "
+                  "(the post layer supplies the real mix)[/]")
     return stitched
 
 

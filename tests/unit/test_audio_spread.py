@@ -57,3 +57,51 @@ def test_generate_reports_it():
 
     src = inspect.getsource(cli)
     assert "report_audio_spread(list(result.paths))" in src
+
+
+# ------------------------------------- dropping the model's scratch audio
+
+def test_dropping_scratch_audio_actually_runs(tmp_path):
+    """The SUCCESS path, on a real file.
+
+    It shipped with `log.warning` in a module that has no `log`, so the
+    whole command died with NameError AFTER the audio was stripped and
+    after GPU-hours had been spent. 1397 tests passed, because every one
+    of them exercised the guard clauses and none reached the end of the
+    function. A degrade path that is the only tested path is not tested.
+    """
+    import subprocess
+
+    from clipforge.cli import _drop_scratch_audio
+    from clipforge.ffmpeg import require_binary
+
+    src = tmp_path / "seq.mp4"
+    subprocess.run(
+        [str(require_binary("ffmpeg")), "-nostdin", "-hide_banner", "-y",
+         "-loglevel", "error",
+         "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10:duration=0.5",
+         "-f", "lavfi", "-i", "sine=frequency=300:duration=0.5",
+         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-shortest", str(src)],
+        check=True, capture_output=True)
+
+    def streams(path):
+        out = subprocess.run(
+            [str(require_binary("ffprobe")), "-v", "error",
+             "-show_entries", "stream=codec_type",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, check=True)
+        return set(out.stdout.split())
+
+    assert streams(src) == {"video", "audio"}
+    out = _drop_scratch_audio(src)
+    assert out == src
+    assert streams(src) == {"video"}, "the audio track must be gone"
+
+
+def test_a_niche_that_wants_its_audio_keeps_it():
+    from clipforge.cli import chosen_niche_keeps_audio
+
+    assert chosen_niche_keeps_audio("ari_goat") is False
+    assert chosen_niche_keeps_audio("geel_sketch") is True
+    assert chosen_niche_keeps_audio("no_such_niche") is True
