@@ -241,7 +241,8 @@ class GenerationRouter:
                           out_dir: Path, shots: int | None = None,
                           aspect_ratio: str = "9:16",
                           continuity: bool = False,
-                          screenplay: bool = False) -> SequenceResult:
+                          screenplay: bool = False,
+                          anchor: Path | None = None) -> SequenceResult:
         """Generate a whole piece, shot by shot.
 
         A failed shot does not abort the sequence: five good shots and one
@@ -291,7 +292,8 @@ class GenerationRouter:
         out_dir.mkdir(parents=True, exist_ok=True)
         result = SequenceResult()
         try:
-            self._run_shots(result, beats, marks, lines, brief=brief, preset=preset,
+            self._run_shots(result, beats, marks, lines, anchor=anchor,
+                            brief=brief, preset=preset,
                             out_dir=out_dir, count=count,
                             aspect_ratio=aspect_ratio, continuity=continuity)
         finally:
@@ -308,6 +310,7 @@ class GenerationRouter:
 
     def _run_shots(self, result: SequenceResult, beats: list[str],
                    marks: list[list[str]], lines: list[str], *,
+                   anchor: Path | None = None,
                    brief: str, preset: Preset,
                    out_dir: Path, count: int, aspect_ratio: str,
                    continuity: bool) -> None:
@@ -329,7 +332,15 @@ class GenerationRouter:
         # which costs nothing in a format built on hard cuts: what has to
         # match across a cut is the child, the wardrobe and the courtyard,
         # and the anchor holds those better than a drifting chain did.
-        seed_frame: Path | None = None
+        # A SUPPLIED anchor beats a generated one, and beats it from shot
+        # zero. Locking composition and wardrobe to a picture is the only
+        # lever that actually works here: text does not win the argument.
+        # A negative prompt naming "a woven mat", "a metal gate" and "two
+        # children" produced a seated child on a woven mat in front of a
+        # metal gate, with two children on it. Changing the seed moved the
+        # composition more than any wording did.
+        seed_frame: Path | None = Path(anchor) if anchor else None
+        supplied = seed_frame is not None
         for i in range(count):
             prompt = build_shot_prompt(brief, preset, shot_index=i,
                                        total_shots=count, beat=beats[i])
@@ -357,7 +368,8 @@ class GenerationRouter:
             result.shots.append(ShotOutcome(
                 i, gen.provider, gen.path, prompt, gen.seconds,
                 marks=list(marks[i]), spoken=lines[i]))
-            if continuity and gen.path is not None and seed_frame is None:
+            if (continuity and gen.path is not None and seed_frame is None
+                    and not supplied):
                 from clipforge.genvideo.providers import first_frame
 
                 seed_frame = first_frame(

@@ -578,6 +578,49 @@ def test_the_one_scene_niche_asks_for_continuity():
     assert resolve_preset("documentary").continuity is False
 
 
+def test_a_supplied_anchor_locks_every_shot_including_the_first(
+        ledger, clock, tmp_path):
+    """Text does not win the composition argument; a picture does.
+
+    MEASURED 2026-09-05: a negative prompt naming "a woven mat", "a metal
+    gate" and "two children" produced a seated child on a woven mat in
+    front of a metal gate -- with two children on it. Changing the seed
+    moved the composition more than any wording did. So the operator gets
+    to hand in the frame, which is the spec's Ingredients-to-Video idea.
+    """
+    ref = tmp_path / "ref.png"
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=1:duration=0.1",
+         "-frames:v", "1", str(ref)], check=True, capture_output=True)
+
+    local = ChainProvider("local")
+    router = _router(ledger, clock, local)
+    router.generate_sequence(brief="One. Two. Three.",
+                             preset=get_preset("documentary"),
+                             out_dir=tmp_path / "seq", shots=3,
+                             continuity=True, anchor=ref)
+    assert local.start_images[0] is not None, (
+        "a supplied anchor must lock SHOT ZERO too -- that is the shot "
+        "whose composition everything else inherits")
+    assert all(str(x) == str(ref) for x in local.start_images), (
+        "every shot uses the supplied frame, not one generated from "
+        "shot 0: %r" % (local.start_images,))
+
+
+def test_without_a_supplied_anchor_shot_zero_still_generates_one(
+        ledger, clock, tmp_path):
+    """The old behaviour survives when nothing is handed in."""
+    local = ChainProvider("local")
+    router = _router(ledger, clock, local)
+    router.generate_sequence(brief="One. Two. Three.",
+                             preset=get_preset("documentary"),
+                             out_dir=tmp_path / "seq", shots=3,
+                             continuity=True)
+    assert local.start_images[0] is None
+    assert all(x is not None for x in local.start_images[1:])
+
+
 # ------------------------------------------------------- sequences
 
 def test_a_sequence_keeps_going_when_one_shot_fails(ledger, clock, tmp_path):

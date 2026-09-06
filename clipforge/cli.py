@@ -965,6 +965,14 @@ def generate(
         clip_it: bool = typer.Option(
             False, "--clip/--no-clip",
             help="Run the generated piece through the clip DAG"),
+        anchor: Path = typer.Option(
+            None, "--anchor",
+            help="A reference still every shot starts from. This is the "
+                 "spec's Ingredients-to-Video idea: composition and "
+                 "wardrobe are LOCKED by a picture instead of argued for "
+                 "in text. Text alone does not win that argument -- a "
+                 "negative prompt naming a mat, a gate and two children "
+                 "produced all three."),
         aspect: str = typer.Option(
             None, "--aspect",
             help="9:16, 16:9, 3:4, 4:5 or 1:1. Overrides the niche's own "
@@ -1108,6 +1116,7 @@ def generate(
     result = router.generate_sequence(
         brief=brief, preset=chosen, out_dir=out_dir, shots=shot_count,
         aspect_ratio=aspect_ratio, screenplay=screenplay,
+        anchor=_cli_value(anchor, None),
         # The preset's own answer, not a constant. Omitting this is what
         # kept `continuity` at its default for every run ever made.
         continuity=chosen.continuity)

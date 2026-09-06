@@ -381,9 +381,12 @@ ARI_GOAT = Niche(
     #: The goat moved from "behind him" to "behind his shoulder" to get
     #: its horns out of the 750-1050 band ari_bridge reserves for a face.
     gen_style=(
-        "photorealistic documentary footage, a close waist-up shot of "
-        "one Somali toddler sitting centred in frame with his face "
-        "toward the camera, medium-brown skin with natural skin "
+        "photorealistic documentary footage, a wide full-body two-shot "
+        "of one Somali toddler standing barefoot on open sand beside "
+        "one adult goat that stands taller than he does, the child "
+        "looking up at the goat and the goat inclining its head down "
+        "toward him, both animals and child complete in frame from head "
+        "to feet, medium-brown skin with natural skin texture, "
         "texture, fine vellus hair and visible pores, short cropped "
         "dark hair, wearing a white embroidered koofiyad cap and a "
         "plain cream cotton khamiis tunic with fine gold-thread collar "
@@ -392,13 +395,14 @@ ARI_GOAT = Niche(
         "and short chubby limbs, one indigenous Somali Galla goat "
         "beside him, lean dairy frame, white coat with tan patches, "
         "long curved ribbed horns, pendulous ears, wattles under the "
-        "jaw, Somali acacia and commiphora savanna, ochre-tan "
+        "jaw, open Somali acacia and commiphora savanna, ochre-tan "
         "compacted sand with scattered pebbles, pale sage desert scrub, "
         "flat-topped vachellia tortilis and myrrh scrub behind, hazy "
         "low hills, hard high-angle late-morning sun with short hard "
         "shadows and warm sand-bounce fill, light heat haze, 85mm lens "
-        "at f2.2, shallow depth of field, camera at the child head "
-        "height at eye level in one steady composition, natural warm "
+        "at f2.2, shallow depth of field, camera low at the child head "
+        "height looking slightly up so the goat towers, one steady "
+        "composition, natural warm "
         "grade with Portra-like skin and protected highlights, filmic "
         "contrast, fine grain, one clear moment of reaction"),
     #: "anthropomorphic" and "clothing on the animal" are here and not in
@@ -447,7 +451,17 @@ ARI_GOAT = Niche(
         "in the background, crowd, the child at the edge of the frame, "
         "empty centre of frame, the child's face turned away from the "
         "camera, back of the head, the framing changing part-way "
-        "through the shot"),
+        "through the shot, "
+        # The composition faults the operator identified by holding this
+        # render against the reference that earned 428K views: a seated
+        # child cropped at the lap with a goat's head floating behind
+        # it, on a woven mat in front of a concrete gatepost. The
+        # reference is a full-body two-shot on open sand where the goat
+        # towers over a standing toddler -- the SIZE CONTRAST is the
+        # joke, and a waist-up crop cannot tell it.
+        "a seated child, a cropped or half-visible goat, a goat smaller "
+        "than the child, a woven mat, a concrete wall, a metal gate, a "
+        "fence, a courtyard, a close-up portrait"),
     #: Inherited deliberately from GEEL_SKETCH: 1.9s is the reference
     #: piece's median shot and the reason the format reads as comedy
     #: rather than as an animation reel.
