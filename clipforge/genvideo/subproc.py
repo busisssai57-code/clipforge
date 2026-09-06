@@ -113,7 +113,8 @@ class SubprocessModelProvider:
                  repo_root: Path | None = None,
                  quantize: str = "",
                  loras: list[str] | None = None,
-                 step_cache_threshold: float = 0.0) -> None:
+                 step_cache_threshold: float = 0.0,
+                 loop_strength: float = 0.0) -> None:
         self.spec = spec
         self.model_id = spec.model_id
         self.name = f"{spec.key}-subprocess"
@@ -149,6 +150,8 @@ class SubprocessModelProvider:
         #: `LocalDiffusersProvider` looks for it. It is sent with every
         #: request and the worker reports back what actually stuck.
         self.step_cache_threshold = float(step_cache_threshold or 0.0)
+        #: Pin the LAST frame as well as the first. See Niche.loop_strength.
+        self.loop_strength = float(loop_strength or 0.0)
 
     # ------------------------------------------------------------ status
 
@@ -412,6 +415,7 @@ class SubprocessModelProvider:
                    "seed": self.seed, "out": str(npy),
                    "step_cache": self.step_cache_threshold,
                    "start_image": str(start_image) if start_image else None,
+                   "loop_strength": self.loop_strength,
                    "audio_out": str(wav_npy)}
         #: What was last asked of the worker. Kept because the size and
         #: schedule a shot was generated at are the first questions asked

@@ -1086,7 +1086,16 @@ def generate(
     # key through two task payloads to a subprocess call that never
     # passed it on. The registry's own note said "select it explicitly
     # with --model ltx25"; there was no such flag.
+    # The niche's answer, resolved BEFORE the router is built, because
+    # the providers are constructed there and the knob lives on them.
+    from clipforge.niches import resolve_preset as _rp  # noqa: PLC0415
+
+    try:
+        _loop = float(_rp(preset_name or "").loop_strength) if preset_name else 0.0
+    except Exception:  # noqa: BLE001 - an unknown preset is not a crash here
+        _loop = 0.0
     router = build_router(cfg, ws, api_key=key, needs=_needs,
+                          loop_strength=_loop,
                           aspect_ratio=aspect_ratio,
                           prefer=_cli_value(model, None))
 

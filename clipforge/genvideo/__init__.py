@@ -30,6 +30,14 @@ __all__ = [
 
 
 def build_router(cfg, ws, *, api_key: str | None = None,
+                 # Passed straight to the subprocess provider, NOT put in
+                 # `_wan_controls`. That dict is splatted into
+                 # LocalDiffusersProvider on two paths -- including the
+                 # fallback taken by any machine with no weights -- and a
+                 # knob only the LTX worker implements becomes a TypeError
+                 # raised INSIDE an except block, which reports as the
+                 # original ValueError and hides itself.
+                 loop_strength: float = 0.0,
                  needs: set[str] | frozenset[str] | None = None,
                  prefer: str | None = None,
                  aspect_ratio: str | None = None) -> GenerationRouter:
@@ -111,7 +119,8 @@ def build_router(cfg, ws, *, api_key: str | None = None,
             providers.append(SubprocessModelProvider(
                 spec, seed=gv.local_seed, quantize=controls["quantize"],
                 loras=controls["loras"],
-                step_cache_threshold=controls["step_cache_threshold"]))
+                step_cache_threshold=controls["step_cache_threshold"],
+                loop_strength=loop_strength))
         else:
             # `spec` goes in as well as its steps and guidance: the
             # envelope (max_pixels, dim_multiple, frame_group) and the

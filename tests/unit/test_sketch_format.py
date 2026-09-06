@@ -69,8 +69,11 @@ def test_screenplay_mode_cuts_on_scenes_not_full_stops(tmp_path):
     provider, router = _router(tmp_path)
     router.generate_sequence(brief=SCRIPT, preset=PRESET, out_dir=tmp_path,
                              shots=2, screenplay=True)
-    assert "SUUQ" in provider.prompts[0]
-    assert "MAXKAMAD" in provider.prompts[1]
+    # Case-insensitive: a slug is now prosified to lowercase before it
+    # reaches the prompt (an all-caps label comes back drawn into the
+    # frame). What this test is about is WHERE the cut falls, not casing.
+    assert "suuq" in provider.prompts[0].lower()
+    assert "maxkamad" in provider.prompts[1].lower()
 
 
 def test_dialogue_never_reaches_a_generated_prompt(tmp_path):
@@ -179,11 +182,20 @@ def test_cut_style_is_derived_from_pacing_not_asserted():
     assert niche_as_preset(VIRAL_CLIPS).cut_style == "medium"
 
 
-def test_the_sketch_asks_for_the_post_layer_and_the_others_do_not():
-    """A hook card on a documentary is a change of format, not of style."""
+def test_only_the_fast_cutting_formats_ask_for_the_post_layer():
+    """A hook card on a documentary is a change of format, not of style.
+
+    Keyed on the cutting rhythm rather than on a list of names: the post
+    layer belongs to the sketch formats, and a niche added later must not
+    be able to acquire one -- or lose one -- quietly. 2.5s is already the
+    threshold `niche_as_preset` uses to call a cut "fast".
+    """
     assert GEEL_SKETCH.post_layer is True
-    assert not any(n.post_layer for n in NICHES.values()
-                   if n.name != "geel_sketch")
+    for niche in NICHES.values():
+        is_sketch = niche.shot_seconds <= 2.5
+        assert niche.post_layer is is_sketch, (
+            "{}: post_layer={} but shot_seconds={}".format(
+                niche.name, niche.post_layer, niche.shot_seconds))
 
 
 def test_the_sketch_resolves_by_name_like_any_other_preset():
@@ -229,7 +241,7 @@ def test_the_piece_context_is_still_present_after_the_fix(tmp_path):
     from clipforge.genvideo.presets import build_storyboard
 
     board = build_storyboard(SCRIPT, PRESET, 2, screenplay=True)
-    assert "MAXKAMAD" in board[0]["prompt"], board[0]["prompt"]
+    assert "maxkamad" in board[0]["prompt"].lower(), board[0]["prompt"]
 
 
 def test_a_long_script_does_not_bury_the_beat_in_context():

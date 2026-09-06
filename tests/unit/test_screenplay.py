@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import pytest
 
-from clipforge.screenplay import (parse, summary, title_page, to_beats,
+import re
+
+from clipforge.screenplay import (describe_heading, parse, summary,
+                                  title_page, to_beats,
                                   to_beats_with_marks, to_shots)
 
 
@@ -142,6 +145,38 @@ def test_dialogue_never_reaches_the_video_prompt():
     assert "I paid last year" not in beat
 
 
+def test_a_slugline_never_reaches_the_video_prompt_as_a_label():
+    """The other half of the dialogue rule, and it was missed because a
+    slug READS like description where dialogue plainly does not.
+
+    ``EXT. SUUQA KHUDAARTA - SUBAX`` is a label a crew reads off a page.
+    A short all-caps string at the head of a prompt is the most reliable
+    way there is to make a video model draw a caption, and it outvotes an
+    ``avoid`` list that already forbids one. Observed on a real LTX-2.5
+    render: the slug came back burned across the frame, misspelled the
+    way diffusion models misspell text.
+    """
+    beat = to_shots(parse(SCRIPT))[0].beat()
+    assert "EXT." not in beat
+    assert "INT." not in beat
+    assert not re.search(r"[A-Z]{3,}", beat), beat
+
+
+def test_the_setting_a_slugline_carries_survives_as_prose():
+    """Interior/exterior, where, and when are real information the model
+    should have. The label is dropped; the setting is not."""
+    assert describe_heading("EXT. SUUQA KHUDAARTA - SUBAX") == (
+        "exterior, suuqa khudaarta, subax.")
+    assert describe_heading("INT./EXT. CAR - NIGHT") == (
+        "interior and exterior, car, night.")
+
+
+def test_a_location_beginning_with_int_is_not_read_as_interior():
+    """Without a boundary guard ``INT`` matches inside ``INTERIOR`` and
+    the location silently becomes "erior courtyard"."""
+    assert describe_heading("INTERIOR COURTYARD") == "interior courtyard"
+
+
 def test_a_script_with_no_heading_is_still_one_shot():
     """Three action lines and no slugline is a scene. Dropping it for
     lack of a heading would silently discard the whole brief."""
@@ -263,3 +298,4 @@ def test_a_repeated_beat_does_not_repeat_its_punchline():
     text = f"EXT. A - DAY\n\nOne. [[\U0001F602]]\n"
     pairs = to_beats_with_marks(text, 3)
     assert [m for _b, m in pairs] == [["\U0001F602"], [], []]
+

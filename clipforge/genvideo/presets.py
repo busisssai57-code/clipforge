@@ -49,6 +49,8 @@ class Preset:
     #: On for any niche that is one scene, which is what a 33-shot sketch
     #: of one child and one goat is.
     continuity: bool = False
+    #: See Niche.loop_strength: pin the last frame as well as the first.
+    loop_strength: float = 0.0
 
 
 DOCUMENTARY = Preset(
@@ -233,3 +235,44 @@ def build_storyboard(brief: str, preset: Preset, shots: int | None = None,
             "preset": preset.name,
         })
     return storyboard
+
+
+def beat_conflicts(beat: str, avoid: str) -> list[str]:
+    """Phrases the BEAT asks for that the preset's avoid list forbids.
+
+    A beat is prepended to the shot prompt and lands FIRST, so it wins.
+    That makes a stale screenplay stronger than every correction in the
+    niche, silently.
+
+    MEASURED 2026-09-05, and it cost four rounds. `gen_avoid` had "a
+    woven mat", "a metal gate" and "a seated child" in it while the
+    script's own beat said "a Somali toddler in a bright patterned shirt
+    SITS ALONE ON A WOVEN MAT ... exterior, COURTYARD GATE". Every render
+    came back with a seated child on a mat at a gate wearing the West
+    African print the channel spec had just ruled out, and the prompt
+    work looked like it was being ignored when it was being contradicted.
+
+    The division this restores: a BEAT says what HAPPENS, a niche says
+    what it LOOKS LIKE. When a script starts describing wardrobe and set
+    dressing it is competing with the niche, and the older of the two
+    usually wins for no better reason than word order.
+
+    Matching is on whole phrases, lowercased, longest first, and only for
+    avoid entries of two words or more -- single words like "crowd" or
+    "text" collide with ordinary prose and would cry wolf on every beat.
+    """
+    beat_l = (beat or "").lower()
+    hits: list[str] = []
+    for phrase in (p.strip().lower() for p in (avoid or "").split(",")):
+        if len(phrase.split()) < 2:
+            continue
+        # "a woven mat" should match "on a woven mat"; drop a leading
+        # article so the phrase matches the way a writer would type it.
+        needle = phrase
+        for article in ("a ", "an ", "the "):
+            if needle.startswith(article):
+                needle = needle[len(article):]
+                break
+        if needle and needle in beat_l:
+            hits.append(phrase)
+    return sorted(set(hits), key=len, reverse=True)

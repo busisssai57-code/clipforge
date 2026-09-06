@@ -28,7 +28,8 @@ from pathlib import Path
 import inspect
 from typing import Any, Callable, Sequence
 
-from clipforge.genvideo.presets import (Preset, build_shot_prompt,
+from clipforge.genvideo.presets import (Preset, beat_conflicts,
+                                        build_shot_prompt,
                                         split_into_beats)
 from clipforge.genvideo.providers import (GenResult, Provider, ProviderError,
                                           ProviderUnavailable, QuotaExhausted)
@@ -344,6 +345,17 @@ class GenerationRouter:
         for i in range(count):
             prompt = build_shot_prompt(brief, preset, shot_index=i,
                                        total_shots=count, beat=beats[i])
+            # A beat lands FIRST in the prompt, so a stale script beats
+            # every correction in the niche and does it silently. Said out
+            # loud, per shot, because four rounds of prompt work looked
+            # ignored when it was being contradicted.
+            clash = beat_conflicts(beats[i], preset.avoid)
+            if clash:
+                log.warning("genvideo.beat_conflicts_niche", shot=i,
+                            asks_for=clash,
+                            note="the script's own beat asks for things "
+                                 "this niche forbids; the beat is first in "
+                                 "the prompt and will win")
             dest = out_dir / f"shot_{i:02d}.mp4"
             try:
                 gen = self.generate_shot(

@@ -91,6 +91,20 @@ class Niche:
     #: with no cause. Keeping it is worse than having none, because a bed
     #: can be laid under silence and cannot be laid under hiss.
     model_audio: bool = True
+    #: Condition the LAST frame of every shot as well as the first, at
+    #: this strength. 0.0 is off.
+    #:
+    #: An anchor pins frame ZERO and nothing holds the shot after it.
+    #: MEASURED on a 1.9s anchored render: the framing pushed in far
+    #: enough to crop the goat's horns off the top, the goat's neck
+    #: stretched, and the child's hand became a single elongated stick
+    #: finger. Pinning both ends stops the drift and is also the channel
+    #: spec's frames-to-video loop -- "the last frame flows back into the
+    #: cold-open first frame; a seamless loop drives rewatches".
+    #:
+    #: Below 1.0 deliberately: at 1.0 the end IS the start and the beat
+    #: has nowhere to move.
+    loop_strength: float = 0.0
     #: Chain shots from the previous shot's last frame. MEASURED need,
     #: 2026-09-05: a five-shot ari_goat batch came back with the child in
     #: a DIFFERENT shirt and a different courtyard in every shot -- five
@@ -493,6 +507,7 @@ ARI_GOAT = Niche(
     continuity=True,
     stickers=False,
     model_audio=False,
+    loop_strength=0.6,
     keywords=("comedy", "reaction", "child", "animal", "photoreal",
               "family", "detail"),
     post_layer=True,
@@ -536,6 +551,7 @@ def niche_as_preset(niche: Niche):
                    else "slow" if niche.shot_seconds >= 6.0 else "medium"),
         keywords=niche.keywords,
         continuity=niche.continuity,
+        loop_strength=niche.loop_strength,
     )
 
 

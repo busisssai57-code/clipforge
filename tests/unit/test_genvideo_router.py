@@ -293,11 +293,49 @@ def test_the_worker_actually_runs_the_i2v_pipeline():
 
     src = inspect.getsource(_ltx_worker._generate)
     assert 'req.get("start_image")' in src
-    assert "active(image=seed_frame" in src, (
-        "a start frame must reach the pipeline as `image=`")
     assert "result = pipe(**kw)" in src, "the no-frame path must still exist"
+    # The i2v call moved into its own helper when end-conditioning was
+    # added; the frame must still reach the pipeline as `image=`.
+    i2v = inspect.getsource(_ltx_worker._i2v_generate)
+    assert "active(image=seed_frame" in i2v, (
+        "a start frame must reach the pipeline as `image=`")
     built = inspect.getsource(_ltx_worker._i2v_pipe)
     assert "from_pipe" in built, "a second full load would not fit on the card"
+
+
+def test_end_conditioning_pins_both_ends_of_the_shot():
+    """An anchor holds frame ZERO and nothing holds the shot after it.
+
+    MEASURED on a 1.9s anchored render: the framing pushed in far enough
+    to crop the goat's horns off the top, the goat's neck stretched, and
+    the child's hand became a single elongated stick finger. The shot
+    after it had the goat rear up and the child end on the ground.
+    """
+    import inspect
+
+    from clipforge.genvideo import _ltx_worker
+
+    src = inspect.getsource(_ltx_worker._generate)
+    assert "LTX2VideoCondition" in src
+    assert "index=0, strength=1.0" in src, "the first frame is pinned hard"
+    assert "index=last" in src, "the LAST frame must be pinned too"
+    assert 'req.get("loop_strength", 0.0)' in src
+
+
+def test_the_loop_knob_reaches_the_request():
+    import inspect  # noqa: PLC0415
+
+    from clipforge.genvideo import subproc
+
+    assert '"loop_strength"' in inspect.getsource(
+        subproc.SubprocessModelProvider.generate)
+
+
+def test_only_the_one_scene_niche_asks_for_it():
+    from clipforge.niches import resolve_preset  # noqa: PLC0415
+
+    assert resolve_preset("ari_goat").loop_strength > 0
+    assert resolve_preset("documentary").loop_strength == 0.0
 
 
 # ------------------------------------------------- attention dispatch

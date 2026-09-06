@@ -152,6 +152,26 @@ def _apply_step_cache(pipe, threshold: float) -> float:
 
 
 _I2V = None
+_COND = None
+
+
+def _cond_pipe(pipe):
+    """A condition pipeline sharing *pipe*'s loaded weights.
+
+    Same `from_pipe` reasoning as `_i2v_pipe`, including the dtype: leave
+    `torch_dtype` off and it re-casts the VAE to float32 while the
+    transformer stays 4-bit, which is the "Input type (BFloat16) and bias
+    type (float)" failure this file already paid for once.
+    """
+    global _COND
+    if _COND is not None and _COND[0] is pipe:
+        return _COND[1]
+    import torch
+    from diffusers import LTX2ConditionPipeline
+
+    built = LTX2ConditionPipeline.from_pipe(pipe, torch_dtype=torch.bfloat16)
+    _COND = (pipe, built)
+    return built
 
 
 @contextlib.contextmanager
@@ -229,6 +249,31 @@ def _i2v_pipe(pipe):
     return built
 
 
+def _i2v_generate(active, seed_frame, kw, backend):
+    """Run the image-to-video path, tolerating a missing PyAV.
+
+    The i2v pipeline re-compresses its conditioning image through H.264
+    because the model was trained on compressed video and a pristine
+    frame is off-distribution. Without PyAV it RAISES -- measured, a
+    missing `av` turned the first chained shot of a batch into "no
+    generation provider could produce this shot". A missing optional
+    codec is not worth a failed render.
+    """
+    import json as _json
+
+    try:
+        import av  # noqa: F401
+        with _attention(backend):
+            return active(image=seed_frame, **kw), True
+    except ImportError:
+        print(_json.dumps({"log": "i2v_no_pyav",
+                           "note": "PyAV missing; conditioning frame is "
+                                   "not re-compressed (image_crf=0)"}),
+              flush=True)
+        with _attention(backend):
+            return active(image=seed_frame, image_crf=0, **kw), True
+
+
 def _generate(req: dict) -> dict:
     import numpy as np
     import torch
@@ -267,32 +312,42 @@ def _generate(req: dict) -> dict:
         with Image.open(start) as handle:
             seed_frame = handle.convert("RGB").copy()
         seed_frame = seed_frame.resize((int(req["width"]), int(req["height"])))
-        active = _i2v_pipe(pipe)
-        _apply_step_cache(active, float(req.get("step_cache", 0.0) or 0.0))
-        # The i2v pipeline re-compresses the conditioning image through
-        # H.264 by default, because the model was trained on compressed
-        # video and a pristine frame is off-distribution. That needs PyAV.
-        # Without it the pipeline raises and the SHOT dies -- measured
-        # 2026-09-05, when a missing `av` turned the first chained shot of
-        # a batch into "no generation provider could produce this shot".
-        # A missing optional codec is not worth a failed render: fall back
-        # to crf=0 (no re-compression) and say so, rather than losing the
-        # beat entirely.
-        try:
-            import av  # noqa: F401
+        # END-CONDITIONING. An anchor pins frame ZERO and nothing holds
+        # the shot after it: measured on a 1.9s anchored render, the
+        # framing pushed in far enough to crop the goat's horns off the
+        # top, the goat's neck stretched, and the child's hand became a
+        # single elongated stick finger. Conditioning the LAST frame as
+        # well pins both ends, which is also the channel spec's
+        # frames-to-video loop ("the last frame flows back into the
+        # cold-open first frame -- a seamless loop drives rewatches").
+        #
+        # Strength below 1.0 on the tail so the shot can still MOVE: at
+        # 1.0 the end is the start and the beat has nowhere to go.
+        loop = float(req.get("loop_strength", 0.0) or 0.0)
+        if loop > 0:
+            from diffusers.pipelines.ltx2.pipeline_ltx2_condition import (
+                LTX2VideoCondition)
+
+            active = _cond_pipe(pipe)
+            _apply_step_cache(active, float(req.get("step_cache", 0.0) or 0.0))
+            last = max(int(req["frames"]) - 1, 0)
+            kw["conditions"] = [
+                LTX2VideoCondition(frames=seed_frame, index=0, strength=1.0),
+                LTX2VideoCondition(frames=seed_frame, index=last,
+                                   strength=loop),
+            ]
             with _attention(backend):
-                result = active(image=seed_frame, **kw)
-        except ImportError:
-            print(json.dumps({"log": "i2v_no_pyav",
-                              "note": "PyAV missing; conditioning frame is "
-                                      "not re-compressed (image_crf=0)"}),
-                  flush=True)
-            with _attention(backend):
-                result = active(image=seed_frame, image_crf=0, **kw)
-        chained = True
+                result = active(**kw)
+            chained = True
+        else:
+            active = _i2v_pipe(pipe)
+            _apply_step_cache(active,
+                              float(req.get("step_cache", 0.0) or 0.0))
+            result, chained = _i2v_generate(active, seed_frame, kw, backend)
     else:
         with _attention(backend):
             result = pipe(**kw)
+
     frames = result.frames[0]
     arr = np.stack([np.asarray(im.convert("RGB")) for im in frames])
     np.save(req["out"], arr)
