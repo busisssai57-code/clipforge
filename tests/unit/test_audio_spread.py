@@ -105,3 +105,14 @@ def test_a_niche_that_wants_its_audio_keeps_it():
     assert chosen_niche_keeps_audio("ari_goat") is False
     assert chosen_niche_keeps_audio("geel_sketch") is True
     assert chosen_niche_keeps_audio("no_such_niche") is True
+
+
+def test_the_spread_is_only_reported_when_the_audio_survives():
+    """Warning about a 58 dB spread on a track just discarded is noise
+    about noise, and leaves an operator unsure which line to believe."""
+    import inspect
+
+    from clipforge import cli
+
+    src = inspect.getsource(cli)
+    assert "report_audio_spread(list(result.paths)) if keeps_audio else None" in src

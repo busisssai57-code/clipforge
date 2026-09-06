@@ -1138,9 +1138,14 @@ def generate(
     # nameable. Reported and not corrected: see report_audio_spread.
     from clipforge.socialpost import report_audio_spread  # noqa: PLC0415
 
-    if not chosen_niche_keeps_audio(chosen.name):
+    keeps_audio = chosen_niche_keeps_audio(chosen.name)
+    if not keeps_audio:
         stitched = _drop_scratch_audio(stitched)
-    spread = report_audio_spread(list(result.paths))
+    # Only worth saying when the audio SURVIVES. Reporting a 58 dB spread
+    # on a track that was just discarded is noise about noise, and an
+    # operator reading it would reasonably wonder which of the two lines
+    # to believe.
+    spread = report_audio_spread(list(result.paths)) if keeps_audio else None
     if spread is not None:
         console.print(f"[yellow]audio: shots differ by {spread[0]:.0f} dB "
                       f"({spread[1]} quietest, {spread[2]} loudest) - the "
