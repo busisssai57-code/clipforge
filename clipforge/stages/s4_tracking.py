@@ -151,6 +151,12 @@ FACE_CROP_HALF_WIDTH_FRAC = 0.30
 MIN_FACE_CROP_PX = 40
 
 
+#: A track needs at least this many face samples in a shot before it can be
+#: framed on. Matches the minimum evidence _mar_activity demands: below it,
+#: a "face" is one lucky detection on a head that is turned away.
+_MIN_FACE_SAMPLES = 3
+
+
 def _mar_activity(series: list[tuple[float, float]],
                   sample_period: float) -> float:
     """Speech activity in |ΔMAR| PER SECOND, dropout-gaps excluded.
@@ -194,6 +200,18 @@ def _select_shot_subject(mar_series: dict[int, list[tuple[float, float]]],
         best, runner = scored[0], (scored[1] if len(scored) > 1 else None)
         if runner is None or best[0] >= 1.3 * runner[0]:
             return best[1], "mar"
+
+    # Presence fallback, but a face comes first. Raw presence asks only "who
+    # is on screen most", and a person facing away scores full presence with
+    # zero mouth activity — which is exactly how a real clip opened on the
+    # back of someone's head while the tracker reported a confident subject.
+    # A track the landmarker never saw a face on is a body box, so prefer the
+    # most-present track that showed a face at all, and fall through to raw
+    # presence only when nobody did.
+    faced = {tid: p for tid, p in presence.items()
+             if len(mar_series.get(tid, ())) >= _MIN_FACE_SAMPLES}
+    if faced:
+        return max(faced, key=faced.get), "presence"
     return max(presence, key=presence.get), "presence"
 
 

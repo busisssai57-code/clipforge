@@ -138,6 +138,89 @@ def _add_auto_emoji(word: str) -> str:
 _HOLD_MAX_S = 1.6
 
 
+#: A gap this long between two words is a breath, and a caption may break on
+#: it with no punctuation to justify it — ASR routinely drops the comma a
+#: speaker clearly implies, and the pause is the more reliable signal.
+_BREATH_S = 0.35
+
+#: A soft break is only worth taking once the line can stand on its own.
+#: Below this it just trades one fragment for two.
+_SOFT_MIN_WORDS = 3
+
+_SENTENCE_END = re.compile(r"[.!?…][\"'’”)\]]*$")
+_CLAUSE_END = re.compile(r"[,;:—–][\"'’”)\]]*$")
+
+
+def _phrase_break(raw: str) -> str:
+    """How strongly a caption may break after this word.
+
+    Judged on the RAW transcript token, before uppercasing and before
+    ``_add_auto_emoji`` appends anything — a trailing emoji would otherwise
+    hide the very punctuation the break depends on.
+    """
+    token = raw.strip()
+    if _SENTENCE_END.search(token):
+        return "hard"
+    if _CLAUSE_END.search(token):
+        return "soft"
+    return ""
+
+
+def _rebalance(groups: list[list[tuple[float, float, str]]],
+               cap: int) -> list[list[tuple[float, float, str]]]:
+    """Even out a break that leaves a single word alone on screen.
+
+    Usually the orphan is pulled back into the previous event. When that one
+    is already at the cap there is nothing to pull into, so a word is pushed
+    forward instead — two short lines read better than a full line followed
+    by one stranded word.
+    """
+    for i in range(len(groups) - 1, 0, -1):
+        if len(groups[i]) != 1:
+            continue
+        if len(groups[i - 1]) < cap:
+            groups[i - 1].append(groups[i].pop())
+        elif len(groups[i - 1]) > 2:
+            groups[i].insert(0, groups[i - 1].pop())
+    return [g for g in groups if g]
+
+
+def _group_words(words: list[tuple[float, float, str]],
+                 flags: list[str], per_line: int,
+                 max_lines: int) -> list[list[tuple[float, float, str]]]:
+    """Group words into caption events at phrase boundaries.
+
+    The sketch sliced ``words`` every ``per_line * max_lines`` entries, so the
+    break fell wherever the count ran out: after a dangling preposition,
+    inside a name, mid-clause. A viewer reads a caption as one unit, so it has
+    to break where the speaker breaks — at sentence punctuation, at a clause
+    comma once the line can stand alone, or at an audible breath. The word
+    count stays a hard ceiling rather than the primary rule.
+    """
+    cap = max(1, per_line * max_lines)
+    groups: list[list[tuple[float, float, str]]] = []
+    cur: list[tuple[float, float, str]] = []
+    for i, word in enumerate(words):
+        cur.append(word)
+        if len(cur) >= cap:
+            groups.append(cur)
+            cur = []
+            continue
+        flag = flags[i] if i < len(flags) else ""
+        if flag == "hard":
+            groups.append(cur)
+            cur = []
+            continue
+        if len(cur) >= _SOFT_MIN_WORDS:
+            gap = (words[i + 1][0] - word[1]) if i + 1 < len(words) else 0.0
+            if flag == "soft" or gap >= _BREATH_S:
+                groups.append(cur)
+                cur = []
+    if cur:
+        groups.append(cur)
+    return _rebalance(groups, cap)
+
+
 def _pop_events(groups: list[list[tuple[float, float, str]]],
                 abs_start: float, per_line: int, max_lines: int,
                 highlight: str, emphasis_colour: str) -> list[str]:
@@ -255,7 +338,15 @@ class S5Subtitles(Stage[SubtitleArtifact]):
         animation = str(params.get("animation", "karaoke"))
         hook_text = str(params.get("hook_text", "") or "").strip()
         hook_seconds = float(params.get("hook_seconds", 3.0))
-        auto_emojis = bool(params.get("auto_emojis", True))
+        # Default OFF. socialpost.py:13 already records that colour emoji
+        # render as monochrome tofu unless a CBDT/COLR font is in play, and
+        # it solves that by drawing stickers as images. The subtitle path
+        # burns the codepoint straight into an .ass with a text font, so it
+        # gets the tofu: a real render put a substituted box in the middle
+        # of "KEEP IT A STRAIGHT UP SECRET". A missing emoji is invisible; a
+        # .notdef rectangle is a defect the viewer sees. The knob stays for
+        # anyone who has wired a colour font into libass.
+        auto_emojis = bool(params.get("auto_emojis", False))
 
         # Words inside the window, in absolute stream time. A word is kept if
         # it OVERLAPS the window rather than being strictly contained: the
@@ -274,7 +365,7 @@ class S5Subtitles(Stage[SubtitleArtifact]):
             from clipforge.pacing import TimeMap  # noqa: PLC0415
             tmap = TimeMap(keeps)
 
-        words: list[tuple[float, float, str]] = []
+        decorated: list[tuple[float, float, str, str]] = []
         for seg in transcript.segments:
             for w in seg.words:
                 if w.start is None or w.end is None:
@@ -294,13 +385,15 @@ class S5Subtitles(Stage[SubtitleArtifact]):
                     rel_e = max(rel_s + 0.02,
                                 tmap.to_compressed(w_end - abs_start))
                     w_start, w_end = abs_start + rel_s, abs_start + rel_e
-                words.append((w_start, w_end, text))
-        words.sort(key=lambda t: (t[0], t[1]))
+                decorated.append((w_start, w_end, text,
+                                  _phrase_break(str(w.text))))
+        decorated.sort(key=lambda t: (t[0], t[1]))
+        words = [(a, b, t) for a, b, t, _ in decorated]
+        flags = [f for *_, f in decorated]
 
-        # Group into lines of at most `per_line` words, then into events of at
-        # most `max_lines` lines.
-        groups = [words[i:i + per_line * max_lines]
-                  for i in range(0, len(words), per_line * max_lines)]
+        # Group into events at phrase boundaries, capped at
+        # `per_line * max_lines` words.
+        groups = _group_words(words, flags, per_line, max_lines)
 
         events: list[str] = []
         if animation == "pop":

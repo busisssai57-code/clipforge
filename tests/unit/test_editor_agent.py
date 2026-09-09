@@ -65,3 +65,43 @@ def test_editor_agent_execution(tmp_path: Path) -> None:
     assert "tiktok" in artifact.captions
     assert "#Shorts" in artifact.hashtags
     assert len(artifact.title_variations) >= 2
+
+
+# --- Hook grounding ------------------------------------------------------
+#
+# S3 writes the hook with frames and transcript in front of a VL model, and
+# the model confabulated. A real run burned "UNSEEN MOMENTS FROM 'THE BIG
+# BANG THEORY' REVEAL THE MAGIC" onto a clip about a creator's business.
+# Nothing named a show. The editor took the hook unconditionally.
+
+from clipforge.stages.s3_5_editor import _hook_is_grounded  # noqa: E402
+
+_SAID = (
+    "i mean people you know the show is headed then keep it a straight up "
+    "secret when they asked monica to see it according to august none of "
+    "them know we brainstorm all kinds of different outcomes"
+)
+
+
+def test_the_hallucinated_hook_from_the_real_run_is_rejected():
+    assert not _hook_is_grounded(
+        "UNSEEN MOMENTS FROM 'THE BIG BANG THEORY' REVEAL THE MAGIC", _SAID)
+
+
+def test_an_invented_proper_noun_is_rejected():
+    assert not _hook_is_grounded("MrBeast reveals his Netflix deal", _SAID)
+
+
+def test_a_generic_hook_with_no_footing_in_the_clip_is_rejected():
+    assert not _hook_is_grounded("You will not believe what happens next",
+                                 _SAID)
+
+
+def test_an_honest_paraphrase_still_wins():
+    assert _hook_is_grounded("They kept the whole show a secret from Monica",
+                             _SAID)
+
+
+def test_an_empty_hook_is_never_grounded():
+    assert not _hook_is_grounded("", _SAID)
+    assert not _hook_is_grounded("   ", _SAID)

@@ -91,3 +91,71 @@ def test_the_final_word_does_not_vanish_instantly():
     s, e = _spans(events)[0]
     assert e - s >= 0.6, (
         f"last word shown for only {e - s:.2f}s; it needs a readable tail")
+
+
+# --- Phrase-boundary grouping -------------------------------------------
+#
+# The sketch sliced the word list every `per_line * max_lines` entries, so a
+# caption broke wherever the counter ran out. A real run burned these onto a
+# clip: "THEY ASKED MONICA TO SEE IT. ACCORDING TO", "WE BRAINSTORM ALL",
+# "THEN KEEP IT A STRAIGHT UP SECRET. [emoji] WHEN". Every one ends mid-clause.
+
+from clipforge.stages.s5_subtitles import (  # noqa: E402
+    _group_words, _phrase_break,
+)
+
+_DANGLING = {
+    "to", "of", "and", "or", "but", "the", "a", "an", "for", "with", "at",
+    "in", "on", "from", "by", "as", "that", "when", "if", "all", "is", "was",
+}
+
+
+def _lay_out(sentence: str, *, gap: float = 0.02):
+    """Words on a steady cadence, so only punctuation can force a break."""
+    words, flags, t = [], [], 0.0
+    for tok in sentence.split():
+        words.append((t, t + 0.28, tok.upper()))
+        flags.append(_phrase_break(tok))
+        t += 0.28 + gap
+    return words, flags
+
+
+def test_no_caption_ends_on_a_dangling_function_word():
+    words, flags = _lay_out(
+        "When they asked Monica to see it, according to August, none of "
+        "them know. Then keep it a straight up secret."
+    )
+    for group in _group_words(words, flags, 4, 2):
+        last = group[-1][2].rstrip(".,!?;:").lower()
+        assert last not in _DANGLING, (
+            f"caption ends on {last!r}: " + " ".join(w[2] for w in group)
+        )
+
+
+def test_a_sentence_end_always_closes_the_caption():
+    words, flags = _lay_out("Keep it a secret. When they asked her to see it.")
+    groups = _group_words(words, flags, 4, 2)
+    first = " ".join(w[2] for w in groups[0])
+    assert first.endswith("SECRET."), first
+
+
+def test_a_breath_breaks_a_caption_that_punctuation_does_not():
+    words, flags = _lay_out("we brainstorm all kinds of different outcomes")
+    # Widen the gap after "all" — ASR dropped the comma the speaker implied.
+    words[2] = (words[2][0], words[2][1] - 0.0, words[2][2])
+    words = [w if i != 3 else (w[0] + 0.6, w[1] + 0.6, w[2])
+             for i, w in enumerate(words)]
+    groups = _group_words(words, flags, 4, 2)
+    assert " ".join(w[2] for w in groups[0]) == "WE BRAINSTORM ALL"
+
+
+def test_the_word_cap_is_still_a_ceiling():
+    words, flags = _lay_out(" ".join(["word"] * 40))
+    for group in _group_words(words, flags, 4, 2):
+        assert len(group) <= 8
+
+
+def test_a_break_never_strands_a_single_word():
+    words, flags = _lay_out("Keep it a straight up secret when they asked.")
+    for group in _group_words(words, flags, 4, 2):
+        assert len(group) > 1, " ".join(w[2] for w in group)

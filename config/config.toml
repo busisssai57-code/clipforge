@@ -33,8 +33,8 @@ compute_type = "float16"
 vram_budget_gb = 8.0
 
 [s2]                          # candidate prefilter â€” CPU heuristics
-window_min_s = 30.0
-window_max_s = 60.0
+window_min_s = 15.0           # short-form lives at 15-35 s; the old 30-60
+window_max_s = 35.0           # put the FLOOR above the format's ceiling
 top_k = 10
 nms_iou = 0.25
 

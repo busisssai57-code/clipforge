@@ -525,8 +525,12 @@ class S6Render(Stage[ClipArtifact]):
             # name (Resumability Law — a killed render must not leave a
             # truncated .mp4 that looks finished), and ffmpeg infers the
             # muxer from the extension, which `.partial` is not.
+            # -ar 48000: with no rate asked for, ffmpeg carries the source's
+            # through, and a real render shipped 96 kHz AAC because the VOD
+            # had it. Every short-form target expects 48 kHz; anything else
+            # gets resampled by the platform, or refused.
             base += ["-pix_fmt", "yuv420p",
-                     "-c:a", "aac", "-b:a", audio_bitrate,
+                     "-c:a", "aac", "-b:a", audio_bitrate, "-ar", "48000",
                      "-movflags", "+faststart", "-f", "mp4", str(partial)]
             return base
 

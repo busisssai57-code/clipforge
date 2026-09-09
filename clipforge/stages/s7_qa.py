@@ -76,6 +76,98 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
+#: Sampling positions inside the clip, as fractions of its duration. Fixed
+#: rather than random: this stage is under the Determinism Law like any
+#: other, and a check that samples different frames each run cannot be
+#: replayed against a past verdict.
+_PERCEPTUAL_TAPS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+
+#: Head keypoints in the COCO pose layout: nose, eyes, ears. A person whose
+#: head is turned away still yields a confident BODY box, which is exactly
+#: how a clip of the back of someone's head passed every check S7 had.
+_HEAD_KEYPOINTS = (0, 1, 2, 3, 4)
+_KEYPOINT_TAU = 0.5
+
+#: Share of sampled frames that must show a head. A real render scored 6/9
+#: and read as unwatchable, so half is too generous.
+_FACE_MIN_RATIO = 0.7
+
+#: A caption ending on one of these is a fragment: the phrase it opened is
+#: finished on the NEXT card, so the viewer reads half a thought and waits.
+_DANGLING_TAIL = frozenset("""
+to of and or but the a an for with at in on from by as that when if is was
+were are be been so than then into out up over about while which who
+""".split())
+
+_ASS_OVERRIDE = re.compile(r"\{[^}]*\}")
+
+
+def _ass_dialogue_lines(ass_path: Path) -> list[str]:
+    """Readable text of each Dialogue event, override tags stripped."""
+    lines: list[str] = []
+    for raw in ass_path.read_text(encoding="utf-8",
+                                  errors="replace").splitlines():
+        if not raw.startswith("Dialogue:"):
+            continue
+        text = raw.split(",", 9)[-1] if raw.count(",") >= 9 else ""
+        text = _ASS_OVERRIDE.sub("", text).replace("\\N", " ")
+        text = " ".join(text.split())
+        if text:
+            lines.append(text)
+    return lines
+
+
+def _faces_visible(clip_path: Path,
+                   duration_s: float) -> tuple[list[bool], str]:
+    """(one flag per sampled tap, note).
+
+    Per-tap rather than a bare count: the first tap carries the hook, and a
+    clip whose opening frame is the back of a head is finished before it
+    starts, however good its average is.
+
+    Measured from the file, never from S4's framing_mode: a tracker reporting
+    'speaker' is a claim, and a body box is not a face.
+    """
+    try:
+        import cv2  # noqa: PLC0415
+    except Exception as err:  # pragma: no cover - cv2 is a hard dep of S4
+        return ([], f"opencv unavailable: {type(err).__name__}")
+    model_path = Path(__file__).resolve().parents[2] / "yolo11m-pose.pt"
+    if not model_path.exists():
+        return ([], f"pose model missing at {model_path.name}")
+    try:
+        from ultralytics import YOLO  # noqa: PLC0415
+        model = YOLO(str(model_path))
+    except Exception as err:
+        return ([], f"ultralytics unavailable: {type(err).__name__}")
+
+    cap = cv2.VideoCapture(str(clip_path))
+    hits: list[bool] = []
+    try:
+        for frac in _PERCEPTUAL_TAPS:
+            cap.set(cv2.CAP_PROP_POS_MSEC, duration_s * frac * 1000.0)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            found = False
+            res = model.predict(frame, device="cpu", verbose=False)
+            for r in res:
+                kp = getattr(r, "keypoints", None)
+                if kp is None or kp.conf is None:
+                    continue
+                conf = kp.conf.cpu().numpy()
+                if conf.size and any(
+                        float(person[i]) >= _KEYPOINT_TAU
+                        for person in conf for i in _HEAD_KEYPOINTS
+                        if i < len(person)):
+                    found = True
+                    break
+            hits.append(found)
+    finally:
+        cap.release()
+    return (hits, "")
+
+
 class S7QualityGate(Stage[QAArtifact]):
     name = "s7_qa"
     version = "1"
@@ -261,6 +353,51 @@ class S7QualityGate(Stage[QAArtifact]):
             check("framing-recorded", "warn",
                   campath.framing_mode in ("speaker", "center", "dual_pane"),
                   campath.framing_mode, "an honest framing_mode")
+
+        # ---- 8. Perceptual: is this clip actually watchable? --------------
+        #
+        # Every check above this line passed a real render whose captions all
+        # broke mid-clause, whose hook named a television show nobody in the
+        # footage mentioned, and two of whose nine sampled frames were the
+        # back of a head. They passed because a container check cannot see
+        # any of that. These can.
+        if audio is not None:
+            rate = str(audio.get("sample_rate", ""))
+            check("audio-sample-rate", "fail", rate == "48000",
+                  f"{rate or 'unknown'} Hz",
+                  "48000 Hz — every short-form target expects it, and with "
+                  "no -ar the source's rate (96 kHz on a real VOD) passes "
+                  "straight through")
+
+        if subtitles is not None and Path(subtitles.ass_path).exists():
+            events = _ass_dialogue_lines(Path(subtitles.ass_path))
+            dangling = [e for e in events
+                        if e.split()[-1].strip(".,!?;:…").lower()
+                        in _DANGLING_TAIL]
+            check("caption-phrasing", "fail", not dangling,
+                  (f"{len(dangling)}/{len(events)} events end mid-phrase, "
+                   f"e.g. {dangling[0]!r}") if dangling
+                  else f"all {len(events)} events end on a complete phrase",
+                  "no caption ends on a dangling function word")
+
+        if dur > 0:
+            hits, note = _faces_visible(clip_path, dur)
+            if note:
+                check("face-visible", "warn", False, note,
+                      "a face detector available to measure head visibility")
+            elif hits:
+                seen, sampled = sum(hits), len(hits)
+                check("face-visible", "warn",
+                      seen / sampled >= _FACE_MIN_RATIO,
+                      f"a head is visible in {seen}/{sampled} sampled frames",
+                      f"a visible head in at least {_FACE_MIN_RATIO:.0%} of "
+                      "sampled frames — a body box is not a face, and the "
+                      "back of a head reads as a dead shot")
+                check("opening-face", "warn", hits[0],
+                      "head visible at the first tap" if hits[0]
+                      else "no head visible at the first tap",
+                      "a face in the opening frame, which is the one "
+                      "carrying the hook and the thumbnail")
 
         return self._finish(cache_key, clip, checks)
 

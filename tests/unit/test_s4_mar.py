@@ -253,3 +253,55 @@ def test_production_tau_default_is_per_second():
     """0.18 /s — the old 0.03 was per-SAMPLE units; leaving it while the
     metric moved to /s would make every shot trivially clear tau."""
     assert S4Config().mar_activity_tau == 0.18
+
+
+# --- Presence fallback must not frame a head that is turned away ---------
+#
+# Raw presence asks only "who is on screen most". A person facing away holds
+# a full body box for the whole shot and never yields a face sample, so they
+# won the fallback outright — a real clip opened on the back of a head while
+# the artifact recorded a confident subject.
+
+from clipforge.stages.s4_tracking import (  # noqa: E402
+    _MIN_FACE_SAMPLES, _select_shot_subject,
+)
+
+
+def _flat_series(n: int, value: float = 0.2):
+    """A face seen n times with no mouth movement: detectable, not speaking."""
+    return [(i * 0.1, value) for i in range(n)]
+
+
+def test_the_most_present_track_loses_when_it_never_shows_a_face():
+    # Track 1 dominates the frame and is turned away; track 2 is smaller but
+    # faces camera. Neither is speaking, so MAR cannot decide.
+    tid, method = _select_shot_subject(
+        mar_series={2: _flat_series(6)},
+        presence={1: 0.95, 2: 0.30},
+        tau=0.5, sample_period=0.1)
+    assert tid == 2, "framed the body box over the only visible face"
+    assert method == "presence"
+
+
+def test_raw_presence_still_decides_when_nobody_shows_a_face():
+    tid, method = _select_shot_subject(
+        mar_series={}, presence={1: 0.95, 2: 0.30},
+        tau=0.5, sample_period=0.1)
+    assert (tid, method) == (1, "presence")
+
+
+def test_one_lucky_detection_does_not_qualify_as_a_face():
+    thin = _flat_series(_MIN_FACE_SAMPLES - 1)
+    tid, _ = _select_shot_subject(
+        mar_series={2: thin}, presence={1: 0.95, 2: 0.30},
+        tau=0.5, sample_period=0.1)
+    assert tid == 1, "a sub-threshold face count was treated as evidence"
+
+
+def test_a_speaking_subject_still_beats_a_more_present_silent_one():
+    speaking = [(i * 0.1, 0.2 + (i % 2) * 0.5) for i in range(8)]
+    tid, method = _select_shot_subject(
+        mar_series={2: speaking, 1: _flat_series(8)},
+        presence={1: 0.95, 2: 0.30},
+        tau=0.5, sample_period=0.1)
+    assert (tid, method) == (2, "mar")
