@@ -738,13 +738,13 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
 
                 # hook_text rides in params (it is per-clip DATA that changes
                 # the output bytes, so it must be in the cache key);
-                # viral_fast style implies uppercase karaoke.
+                # Case comes from [s5], which was measured off
+                # a competitor's shipped output, not from a profile.
                 subs = s5.run(input_digest=campath.cache_key, job_id=job_id,
                               params={**s5_params,
                                       "hook_text": editor_art.hook_text,
                                       "keep_intervals": w_keeps,
-                                      "uppercase": cfg.editor.style_profile
-                                      == "viral_fast"},
+                                      "uppercase": cfg.s5.uppercase},
                               transcript_artifact=transcript,
                               campath_artifact=campath)
                 console.print(f"  {subs.line_count} subtitle events, "

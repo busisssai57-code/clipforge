@@ -144,12 +144,12 @@ class S5Config(_StrictModel):
     outline: float = Field(3.0, ge=0)
     shadow: float = Field(1.0, ge=0)
     margin_v: int = Field(260, ge=0, description="Vertical margin inside 9:16 safe area")
-    max_words_per_line: int = Field(4, ge=1, le=8)
-    max_lines: int = Field(2, ge=1, le=2)
+    max_words_per_line: int = Field(3, ge=1, le=8)
+    max_lines: int = Field(1, ge=1, le=2)
     #: "pop" = one event per word, active word scaled and coloured (the
     #: short-form look). "karaoke" = a single swept line, calmer and cheaper.
     animation: Literal["pop", "karaoke"] = "pop"
-    uppercase: bool = True
+    uppercase: bool = False
 
 
 class S6Config(_StrictModel):

@@ -466,16 +466,21 @@ class S5Subtitles(Stage[SubtitleArtifact]):
             " OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut,"
             " ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow,"
             " Alignment, MarginL, MarginR, MarginV, Encoding",
+            # BorderStyle 3, not 1: a filled card behind the words rather
+            # than a stroke around them. Measured off OpusClip's shipped
+            # shorts - every caption sits in a dark box, which is what keeps
+            # it legible over bright footage. `outline` is the box PADDING
+            # in this mode, not a stroke width.
             f"Style: Karaoke,{font},{font_size},{highlight},{base},"
-            f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
+            f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,3,"
             f"{outline:g},{shadow:g},2,60,60,{margin_v},1",
             # Hook headline: top-anchored (alignment 8), larger than the
             # karaoke line, yellow-on-black. The first seconds decide
             # whether a viewer stays; a silent visual start with no framing
             # text is one of the things that made the output read as raw.
-            f"Style: Hook,{font},{int(font_size * 1.25)},{highlight},"
-            f"{highlight},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
-            f"{outline + 1:g},{shadow:g},8,60,60,180,1",
+            f"Style: Hook,{font},{int(font_size * 1.05)},&H00000000,"
+            f"&H00000000,&H00FFFFFF,&H80000000,-1,0,0,0,100,100,0,0,3,"
+            f"{outline:g},{shadow:g},8,60,60,180,1",
             "",
             "[Events]",
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR,"

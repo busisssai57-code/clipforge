@@ -106,14 +106,26 @@ my your his her its our their no
 _ASS_OVERRIDE = re.compile(r"\{[^}]*\}")
 
 
-def _ass_dialogue_lines(ass_path: Path) -> list[str]:
-    """Readable text of each Dialogue event, override tags stripped."""
+def _ass_dialogue_lines(ass_path: Path,
+                        style: str | None = None) -> list[str]:
+    """Readable text of each Dialogue event, override tags stripped.
+
+    ``style`` restricts to one ASS style. The hook headline is a Dialogue
+    event like any other, and it is a deliberately long single card -- left
+    in the pool it re-armed the long-card phrasing rule that short karaoke
+    captions are meant to be exempt from.
+    """
     lines: list[str] = []
     for raw in ass_path.read_text(encoding="utf-8",
                                   errors="replace").splitlines():
         if not raw.startswith("Dialogue:"):
             continue
-        text = raw.split(",", 9)[-1] if raw.count(",") >= 9 else ""
+        fields = raw.split(",", 9)
+        if len(fields) < 10:
+            continue
+        if style is not None and fields[3].strip() != style:
+            continue
+        text = fields[-1]
         text = _ASS_OVERRIDE.sub("", text).replace("\\N", " ")
         text = " ".join(text.split())
         if text:
@@ -393,8 +405,16 @@ class S7QualityGate(Stage[QAArtifact]):
                   "straight through")
 
         if subtitles is not None and Path(subtitles.ass_path).exists():
-            events = _ass_dialogue_lines(Path(subtitles.ass_path))
-            dangling = [e for e in events if _ends_mid_phrase(e)]
+            events = _ass_dialogue_lines(Path(subtitles.ass_path), "Karaoke")
+            # Only meaningful for long cards. Short-form karaoke ships 1-3
+            # words per card by design -- OpusClip's own output reads
+            # "ability to", "from your", "for any" -- so every card is a
+            # fragment on purpose and "ends on a function word" stops being
+            # evidence of anything. The defect this catches is a LONG card
+            # sliced by a counter instead of by the sentence.
+            longest = max((len(e.split()) for e in events), default=0)
+            dangling = ([e for e in events if _ends_mid_phrase(e)]
+                        if longest >= 6 else [])
             check("caption-phrasing", "fail", not dangling,
                   (f"{len(dangling)}/{len(events)} events end mid-phrase, "
                    f"e.g. {dangling[0]!r}") if dangling
