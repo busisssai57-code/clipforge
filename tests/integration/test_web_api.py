@@ -267,30 +267,8 @@ def test_a_missing_watchlist_is_an_empty_list_with_a_note(ws, monkeypatch):
 
 # --------------------------------------------------- control endpoints
 
-def test_generate_request_validation(ws):
-    with pytest.raises(HTTPException) as err:
-        web.start_generation(web.GenerateRequest(brief=""))
-    assert err.value.status_code == 400
-
-    with pytest.raises(HTTPException) as err:
-        web.start_generation(web.GenerateRequest(brief="test", preset="invalid"))
-    assert err.value.status_code == 400
 
 
-def test_start_generation_spawns_task(ws, monkeypatch):
-    spawned = []
-
-    def mock_spawn(kind, desc, args):
-        spawned.append((kind, desc, args))
-        return "task-123"
-
-    monkeypatch.setattr(web, "_spawn_task", mock_spawn)
-    res = web.start_generation(web.GenerateRequest(brief="A sunset over ocean", preset="documentary", shots=4))
-    assert res["status"] == "started"
-    assert res["task_id"] == "task-123"
-    assert len(spawned) == 1
-    assert spawned[0][0] == "generate"
-    assert "A sunset over ocean" in spawned[0][2]
 
 
 def test_start_process_spawns_task(ws, monkeypatch):
@@ -308,26 +286,8 @@ def test_start_process_spawns_task(ws, monkeypatch):
     assert spawned[0][0] == "process"
 
 
-def test_reset_quota_clears_exhaustion(ws):
-    ledger_file = ws.root / "genvideo_quota.json"
-    ledger_file.write_text('{"providers":{"veo":{"exhausted_until":9999999999.0,"error_streak":5}}}', encoding="utf-8")
-    
-    res = web.reset_quota()
-    assert res["status"] == "reset"
-    
-    # Check that exhausted_until was cleared
-    import json
-    data = json.loads(ledger_file.read_text(encoding="utf-8"))
-    assert data["providers"]["veo"]["exhausted_until"] == 0.0
-    assert data["providers"]["veo"]["error_streak"] == 0
 
 
-def test_preview_storyboard(ws):
-    res = web.preview_storyboard(web.StoryboardRequest(brief="Deep underwater ocean discovery. Exploring coral reefs.", preset="documentary", shots=2))
-    assert res["brief"].startswith("Deep underwater")
-    assert len(res["shots"]) == 2
-    assert "prompt" in res["shots"][0]
-    assert res["shots"][0]["seconds"] == 6.0
 
 
 

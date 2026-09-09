@@ -93,19 +93,3 @@ ingest_concurrency = 4
 gpu_concurrency = 1           # LAW â€” exactly one GPU stage at a time
 render_concurrency = 2        # NVENC consumer session cap
 queue_maxsize = 32            # bounded queues => backpressure, not OOM
-
-[genvideo]
-enabled = true
-# LOCAL. Generation runs entirely on the local diffusers model; the Veo
-# provider is not even constructed, so no brief text reaches Google.
-# Operator decision, 2026-08-05 — same call as [s3] above.
-use_cloud = false
-# Smoke-validation uses the fast variant: identical endpoint, identical
-# long-running-operation polling, identical download path, lower cost.
-# Switch to "veo-3.1-generate-preview" for full quality.
-cloud_model = "veo-3.1-fast-generate-preview"
-local_model_id = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
-local_steps = 30
-preset = "documentary"
-shots = 6
-aspect_ratio = "9:16"

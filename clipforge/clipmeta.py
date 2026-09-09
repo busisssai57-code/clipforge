@@ -51,12 +51,12 @@ log = get_logger(__name__)
 #: window and the candidate must not be claimed.
 _WINDOW_TOLERANCE_S = 1.0
 
-#: Sidecar renders share the clip's stem with a suffix (``.broll.mp4``,
+#: Sidecar renders share the clip's stem with a suffix (``.draft.mp4``,
 #: ``.es.mp4``). They are their own gallery entries but resolve against
 #: the SAME artifact chain — the stem to look up is the part before the
 #: suffix, so a dub inherits its parent's transcript, score and QA rather
 #: than showing up as an unscored orphan.
-_SIDECAR_SUFFIXES = (".broll", ".draft", ".upscaled", ".vo")
+_SIDECAR_SUFFIXES = (".draft", ".upscaled", ".vo")
 
 
 def _language_suffixes() -> tuple[str, ...]:

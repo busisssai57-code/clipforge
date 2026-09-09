@@ -261,16 +261,6 @@ def _confined_clip(ws: Workspace, filename: str, *,
     return candidate
 
 
-def _safe_generated_path(ws: Workspace, slug: str, filename: str) -> Path:
-    """Resolve a generated video path strictly inside generated/."""
-    gen_root = (Path(ws.root) / "generated").resolve()
-    candidate = (gen_root / slug / filename).resolve()
-    if not candidate.is_relative_to(gen_root):
-        log.warning("web.path_escape_blocked", requested=f"{slug}/{filename}")
-        raise HTTPException(status_code=400, detail="invalid path")
-    if not candidate.is_file():
-        raise HTTPException(status_code=404, detail="file not found")
-    return candidate
 
 
 # -------------------------------------------------- task tracking
@@ -682,41 +672,6 @@ class GeneratedDeleteRequest(BaseModel):
     slug: str
 
 
-@app.post("/api/generated/delete")
-def delete_generated(req: GeneratedDeleteRequest) -> dict[str, Any]:
-    """Trash one generated piece — the sequence and all of its shots.
-
-    Generated pieces had no delete path at all: the gallery could show a
-    forty-shot experiment and offer no way to remove it, so the folder
-    grew until someone went to Explorer. Same rule as clips: it moves to
-    workspace/trash rather than being unlinked.
-    """
-    ws = _workspace()
-    gen_root = (Path(ws.root) / "generated").resolve()
-    target = (gen_root / req.slug).resolve()
-    # Resolve, then prove containment — never validate the string.
-    if not target.is_relative_to(gen_root) or target == gen_root:
-        log.warning("web.generated_escape_blocked", requested=req.slug[:200])
-        raise HTTPException(400, "invalid piece name")
-    if not target.is_dir():
-        raise HTTPException(404, "no such generated piece")
-
-    trash = Path(ws.root) / "trash" / "generated"
-    trash.mkdir(parents=True, exist_ok=True)
-    dest = trash / target.name
-    # Never clobber a previous trashing of the same slug.
-    n = 1
-    while dest.exists():
-        dest = trash / f"{target.name} ({n})"
-        n += 1
-    try:
-        target.replace(dest)
-    except OSError as exc:
-        log.error("web.generated_delete_failed", slug=req.slug,
-                  error=str(exc)[:200])
-        raise HTTPException(500, f"could not move it: {exc}") from exc
-    log.info("web.generated_trashed", slug=req.slug, dest=str(dest))
-    return {"status": "trashed", "slug": req.slug, "trash": str(dest)}
 
 
 @app.get("/api/clips/stream/{filename}")
@@ -941,83 +896,12 @@ def list_capabilities() -> list[dict[str, Any]]:
     return summary()
 
 
-@app.get("/api/models")
-def list_models() -> list[dict[str, Any]]:
-    """Generation models, whether their weights are present, and what each
-    is good at. ``usable`` is the only field a UI should gate on."""
-    from clipforge.genvideo.models import describe_registry
-
-    return describe_registry()
 
 
-@app.get("/api/generated")
-def list_generated() -> list[dict[str, Any]]:
-    """Generated video pieces on disk, newest first."""
-    ws = _workspace()
-    gen_dir = Path(ws.root) / "generated"
-    out: list[dict[str, Any]] = []
-    if not gen_dir.is_dir():
-        return out
-    for seq in sorted(gen_dir.glob("*/sequence.mp4"),
-                      key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
-        shots = sorted(seq.parent.glob("shot_*.mp4"))
-        try:
-            size_mb = round(seq.stat().st_size / (1024 * 1024), 2)
-        except OSError:
-            continue
-        out.append({
-            "slug": seq.parent.name,
-            "shots": len(shots),
-            "size_mb": size_mb,
-            "created_at": seq.stat().st_mtime,
-            # `url` is what the gallery binds to; `sequence_url` is kept
-            # because the name says what the file is.
-            "url": f"/api/generated/stream/{seq.parent.name}/sequence.mp4",
-            "sequence_url": f"/api/generated/stream/{seq.parent.name}/sequence.mp4",
-            "shot_urls": [
-                f"/api/generated/stream/{seq.parent.name}/{s.name}"
-                for s in shots
-            ],
-        })
-    return out
 
 
-@app.get("/api/generated/stream/{slug}/{filename}")
-def stream_generated(slug: str, filename: str) -> FileResponse:
-    """Stream a generated video file."""
-    ws = _workspace()
-    path = _safe_generated_path(ws, slug, filename)
-    media_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
-    return FileResponse(path, media_type=media_type)
 
 
-@app.get("/api/generated/status")
-def generation_status() -> list[dict[str, Any]]:
-    """Provider quota status — reads the same ledger the router writes."""
-    ws = _workspace()
-    ledger_path = Path(ws.root) / "genvideo_quota.json"
-    providers: list[dict[str, Any]] = []
-    try:
-        blob = _json.loads(ledger_path.read_text(encoding="utf-8"))
-        now = time.time()
-        for name, st in sorted((blob.get("providers") or {}).items()):
-            until = float(st.get("exhausted_until", 0.0) or 0.0)
-            calls = int(st.get("calls", 0) or 0)
-            secs = float(st.get("seconds_generated", 0.0) or 0.0)
-            available = until <= now
-            providers.append({
-                "name": name,
-                "available": available,
-                "available_in_s": max(0, until - now) if not available else 0,
-                "calls": calls,
-                "seconds_generated": round(secs, 1),
-            })
-    except FileNotFoundError:
-        pass
-    except Exception:  # noqa: BLE001 - reporting never raises
-        providers.append({"name": "ledger", "available": False,
-                          "error": "unreadable"})
-    return providers
 
 
 @app.get("/api/tasks")
@@ -1057,126 +941,18 @@ def stage_estimates() -> dict[str, Any]:
 
 # ================================================ CONTROL ENDPOINTS
 
-class GenerateRequest(BaseModel):
-    brief: str
-    preset: str = "documentary"
-    shots: int = 6
-    aspect_ratio: str = "9:16"
-    clip_it: bool = False
-    #: The dashboard's niche picker sends the selected look as `niche`
-    #: and the toggle as `clip`. Both were silently dropped: unknown
-    #: fields are ignored by default, so "also run it through the
-    #: clipper" never reached the CLI. Accept both spellings and fold
-    #: them in rather than leaving a control that does nothing.
-    niche: str | None = None
-    clip: bool | None = None
-    #: Same flag as the storyboard preview, so what was previewed is what
-    #: gets generated.
-    screenplay: bool = False
-    #: Post-layer text. Both optional: a screenplay carries its own hook
-    #: in the title page, and the handle falls back to [genvideo] handle.
-    hook: str | None = None
-    handle: str | None = None
-
-    def resolved_preset(self) -> str:
-        return (self.niche or self.preset or "documentary").strip()
-
-    def resolved_clip(self) -> bool:
-        return bool(self.clip_it or self.clip)
 
 
-class StoryboardRequest(BaseModel):
-    brief: str
-    preset: str = "documentary"
-    shots: int = 6
-    #: Read the brief as Fountain: one beat per SCENE, and dialogue kept
-    #: out of the picture prompt.
-    screenplay: bool = False
 
 
 class ScreenplayRequest(BaseModel):
     text: str
 
 
-@app.post("/api/screenplay")
-def parse_screenplay(req: ScreenplayRequest) -> dict[str, Any]:
-    """Typed blocks, shots and speakers for the editor's live formatting.
-
-    Parsed on the SERVER even though it is only formatting, so the editor
-    and the generator cannot disagree about where a shot begins — a second
-    parser in JavaScript is a second answer to that question, and the one
-    the operator sees would be the one that is wrong.
-    """
-    from clipforge import screenplay
-
-    return screenplay.summary(req.text or "")
 
 
-@app.post("/api/storyboard")
-def preview_storyboard(req: StoryboardRequest) -> dict[str, Any]:
-    """Generate a storyboard breakdown preview without running GPU inference."""
-    from clipforge.genvideo.presets import build_storyboard
-    from clipforge.niches import resolve_preset
-    if not req.brief.strip():
-        raise HTTPException(400, "brief is required")
-    try:
-        preset = resolve_preset(req.preset)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-    shots = build_storyboard(req.brief, preset, req.shots,
-                             screenplay=req.screenplay)
-    return {"brief": req.brief, "preset": req.preset,
-            "screenplay": req.screenplay, "shots": shots}
 
 
-@app.post("/api/generate")
-def start_generation(req: GenerateRequest) -> dict[str, Any]:
-    """Spawn a generation run as a background task."""
-    from clipforge.niches import resolve_preset
-
-    if not req.brief.strip():
-        raise HTTPException(400, "brief is required")
-    # A niche name (dark_mindset, ...) IS a valid preset — the dashboard's
-    # niche picker sends its name straight through as `preset`, and the
-    # old hardcoded 4-value check rejected every one of them with a 400.
-    preset = req.resolved_preset()
-    try:
-        resolve_preset(preset)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    if not 1 <= req.shots <= 64:
-        raise HTTPException(400, "shots must be 1-64")
-    # Validated against the map generation actually uses, not a copy of
-    # it: the two-value tuple here 400'd every request from the niche
-    # picker the moment a niche declared 3:4, while the dashboard was
-    # sending exactly what the niche asked for.
-    from clipforge.genvideo.providers import _ASPECT_RATIOS
-
-    if req.aspect_ratio not in _ASPECT_RATIOS:
-        raise HTTPException(
-            400, f"aspect_ratio must be one of {', '.join(_ASPECT_RATIOS)}")
-
-    clip_it = req.resolved_clip()
-    args = [
-        "generate", req.brief,
-        "--preset", preset,
-        "--shots", str(req.shots),
-        "--aspect", req.aspect_ratio,
-        "--clip" if clip_it else "--no-clip",
-    ]
-    if req.screenplay:
-        args.append("--screenplay")
-    if (req.hook or "").strip():
-        args += ["--hook", req.hook.strip()]
-    if (req.handle or "").strip():
-        args += ["--handle", req.handle.strip()]
-    task_id = _spawn_task(
-        "generate",
-        f"Generate {req.shots} shot(s) · {preset} · {req.brief[:60]}",
-        args,
-    )
-    return {"task_id": task_id, "status": "started"}
 
 
 class ProcessRequest(BaseModel):
@@ -1192,7 +968,6 @@ class ProcessRequest(BaseModel):
     jumpcut: bool | None = None
     enhance: str | None = None
     niche: str | None = None
-    broll: bool = False
 
 
 _ENHANCE_CHOICES = ("off", "gentle", "strong")
@@ -1219,8 +994,6 @@ def start_process(req: ProcessRequest) -> dict[str, Any]:
         args.extend(["--enhance", req.enhance])
     if req.niche:
         args.extend(["--niche", req.niche])
-    if req.broll:
-        args.append("--broll")
 
     task_id = _spawn_task(
         "process",
@@ -1357,7 +1130,6 @@ class RerunRequest(BaseModel):
     jumpcut: bool | None = None
     enhance: str | None = None
     niche: str | None = None
-    broll: bool = False
 
 
 @app.post("/api/clips/rerun")
@@ -1388,8 +1160,6 @@ def rerun_clip(req: RerunRequest) -> dict[str, Any]:
         args.extend(["--enhance", req.enhance])
     if req.niche:
         args.extend(["--niche", req.niche])
-    if req.broll:
-        args.append("--broll")
 
     flags = " ".join(args[3:]) or "same settings"
     task_id = _spawn_task(
@@ -2048,22 +1818,6 @@ def stop_watch() -> dict[str, Any]:
     return {"status": "no_watch_running"}
 
 
-@app.post("/api/genquota/reset")
-def reset_quota() -> dict[str, Any]:
-    """Reset the generation quota ledger."""
-    ws = _workspace()
-    ledger_path = Path(ws.root) / "genvideo_quota.json"
-    try:
-        if ledger_path.exists():
-            blob = _json.loads(ledger_path.read_text(encoding="utf-8"))
-            for name, st in (blob.get("providers") or {}).items():
-                st["exhausted_until"] = 0.0
-                st["error_streak"] = 0
-            ledger_path.write_text(
-                _json.dumps(blob, indent=2), encoding="utf-8")
-        return {"status": "reset", "note": "all provider quotas cleared"}
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(503, f"quota reset failed: {exc}") from exc
 
 
 @app.get("/api/tasks/{task_id}/logs")

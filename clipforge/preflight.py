@@ -363,7 +363,7 @@ def check_ranking_weights(model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ",
     Size, not presence: the folder exists as soon as one config file has
     been fetched.
     """
-    from clipforge.genvideo.models import hf_cache_dir  # noqa: PLC0415
+    from clipforge.paths import hf_cache_dir  # noqa: PLC0415
 
     folder = hf_cache_dir(model_id)
     # blobs/ ONLY. On Windows the snapshot is a COPY of each blob rather

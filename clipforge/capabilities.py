@@ -70,15 +70,6 @@ def _has_module(name: str) -> bool:
         return False
 
 
-def _local_model_installed() -> bool:
-    try:
-        from clipforge.genvideo.models import REGISTRY, weights_present
-
-        return any(weights_present(m) for m in REGISTRY.values())
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def _translator_blocker_text() -> str:
     """`bta dub`'s own refusal text, or a bare fallback if config is gone."""
     try:
@@ -137,21 +128,6 @@ def probe() -> list[Capability]:
     # generate the footage, the overlay filter composites it. The blocker
     # names whichever is missing — checking only the weights once left an
     # overlay-less build unavailable with an empty blocker, which is the
-    # contract violation this module's docstring forbids.
-    gen = _local_model_installed()
-    overlay = has_filter("overlay")
-    caps.append(Capability(
-        key="broll", label="AI B-roll",
-        available=gen and overlay,
-        blocker="" if (gen and overlay) else
-            ("no local text-to-video weights; run a generation once to "
-             "fetch them, or set [genvideo] local_model_id" if not gen else
-             "this ffmpeg build lacks the overlay filter, so generated "
-             "b-roll cannot be composited onto the clip"),
-        note=("generated locally from the transcript by the same model the "
-              "Generation Studio uses — no stock library, nothing fetched"
-              if gen else ""),
-    ))
 
     # ---- dubbing ---------------------------------------------------
     # Two halves with different requirements, and conflating them is how

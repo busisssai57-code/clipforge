@@ -327,7 +327,7 @@ def configure_process_gpu_lock(path: Path | str | None) -> None:
     enforced only WITHIN a process — by an asyncio semaphore, a thread
     lock, and a single dispatcher worker, none of which a subprocess
     inherits. The dashboard spawns `bta generate` as its own process, so a
-    dashboard render and a `bta swarm serve` render each held "the" permit
+    dashboard render and a CLI render each held "the" permit
     and both loaded a model onto the same card.
     """
     global _PROCESS_LOCK_PATH

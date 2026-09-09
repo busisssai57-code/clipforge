@@ -264,78 +264,6 @@ def _js_str(v: Any) -> str:
     return json.dumps(str(v))
 
 
-def _generation_panel(ws: Workspace) -> str:
-    """Generation Studio section: provider/quota state + pieces on disk.
-
-    Reads the SAME ledger the router writes, so what it shows is what the
-    next run will actually do — not a restatement of config. A provider
-    with no key reads "not configured", never "ready".
-    """
-    import json as _json
-
-    root = Path(ws.root)
-    ledger_path = root / "genvideo_quota.json"
-    providers: list[tuple[str, str, str]] = []
-    try:
-        blob = _json.loads(ledger_path.read_text(encoding="utf-8"))
-        now = time.time()
-        for name, st in sorted((blob.get("providers") or {}).items()):
-            until = float(st.get("exhausted_until", 0.0) or 0.0)
-            calls = int(st.get("calls", 0) or 0)
-            secs = float(st.get("seconds_generated", 0.0) or 0.0)
-            if until > now:
-                mins = (until - now) / 60.0
-                state, cls = f"metered out · {mins:.0f} min left", "soon"
-            else:
-                state, cls = "ready", "live"
-            providers.append(
-                (name, f'<span class="tag {cls}">{state}</span>',
-                 f"{calls} call(s) · {secs:.0f}s generated"))
-    except FileNotFoundError:
-        pass
-    except Exception:  # noqa: BLE001 - reporting never raises
-        providers.append(("ledger", '<span class="tag soon">unreadable</span>',
-                          str(ledger_path)))
-
-    if not providers:
-        providers = [("—", '<span class="tag soon">no runs yet</span>',
-                      "run: bta generate \"your brief\"")]
-
-    rows = "".join(
-        f'<tr><td><b>{_esc(name)}</b></td><td>{tag}</td>'
-        f'<td class="dim">{_esc(detail)}</td></tr>'
-        for name, tag, detail in providers)
-
-    pieces_dir = root / "generated"
-    pieces: list[str] = []
-    if pieces_dir.is_dir():
-        for seq in sorted(pieces_dir.glob("*/sequence.mp4"),
-                          key=lambda p: p.stat().st_mtime, reverse=True)[:6]:
-            shots = len(list(seq.parent.glob("shot_*.mp4")))
-            size = seq.stat().st_size / (1024 * 1024)
-            pieces.append(
-                f'<div class="card"><video controls preload="none" '
-                f'src="{_esc(_rel(seq, root))}"></video>'
-                f'<div class="meta"><b>{_esc(seq.parent.name)}</b>'
-                f'<span class="dim">{shots} shot(s) · {size:.1f} MB</span>'
-                f'</div></div>')
-    pieces_html = ("".join(pieces) if pieces else
-                   '<div class="dim" style="padding:14px">no generated '
-                   'pieces yet</div>')
-
-    return f"""
-<section class="studio">
-  <h2>Generation Studio <span class="dim">text → video</span></h2>
-  <div class="dim" style="margin-bottom:10px">
-    Documentary · storytelling · explainers · motion graphics. Shots are
-    generated individually and cut together, because every current model
-    loses coherence past a few seconds. The premium model runs until its
-    quota is gone, the local open-source model takes over, and it switches
-    back on its own when the window resets.
-  </div>
-  <table class="qa">{rows}</table>
-  <div class="cards" style="margin-top:14px">{pieces_html}</div>
-</section>"""
 
 
 def _rel(path: Path, root: Path) -> str:
@@ -567,7 +495,6 @@ def build_dashboard(ws: Workspace) -> Path:
         f'<div class="ic">{icon}</div><span>{_esc(name)}</span></div>'
         for icon, name, live in _FEATURES)
 
-    studio_html = _generation_panel(ws)
 
     page = f"""<meta charset="utf-8">
 <meta http-equiv="refresh" content="120">
@@ -604,7 +531,6 @@ workspace {_esc(ws.root)}</div>
 
 <div class="launch">{launcher_html}</div>
 
-{studio_html}
 
 {timeline_html}
 

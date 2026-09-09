@@ -2,14 +2,14 @@
 
 Two switches decide whether this machine talks to anyone —
 ``[s3] use_cloud`` (candidate frames and transcript text to Gemini) and
-``[genvideo] use_cloud`` (brief text to Veo). The genvideo one was pinned
+``[s3] use_cloud`` (frames to a hosted ranker). It was pinned
 False-by-default on 2026-07-31 with three enforcement mechanisms. The s3
 one shipped **True** on 2026-08-04 and stayed that way for a day: the
 ranking stage sent frames out of the box, there was no ledger amendment
 permitting it, and nothing in the suite would have noticed.
 
 The operator settled it on 2026-08-05 — keep everything local — so these
-pin it the way the genvideo flag was pinned. A default is not a preference
+pin it the way that flag was pinned. A default is not a preference
 here; it is the difference between a machine that phones home and one that
 does not, on an install nobody has read the config of yet.
 
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from clipforge.config import GenVideoConfig, S3Config, load_config
+from clipforge.config import S3Config, load_config
 
 # Anchored on __file__, matching test_config.py — a cwd-relative
 # Path("config/...") makes these pins depend on where pytest was invoked
@@ -41,8 +41,6 @@ def test_s3_cloud_is_off_in_the_model_default():
         "install whose config nobody has opened")
 
 
-def test_genvideo_cloud_is_off_in_the_model_default():
-    assert GenVideoConfig().use_cloud is False
 
 
 def test_shipped_example_states_the_choice_rather_than_inheriting_it():
@@ -76,7 +74,6 @@ def test_operator_config_is_local_on_both_switches():
         pytest.skip("no live config in this checkout")
     cfg = load_config(LIVE)
     assert cfg.s3.use_cloud is False
-    assert cfg.genvideo.use_cloud is False
 
 
 def test_no_ranker_object_exists_when_cloud_is_off():

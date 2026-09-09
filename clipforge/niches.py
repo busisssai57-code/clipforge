@@ -528,31 +528,6 @@ def get_niche(name: str) -> Niche:
         ) from None
 
 
-def niche_as_preset(niche: Niche):
-    """A niche's generation half, as a ``genvideo.presets.Preset``.
-
-    Generation (the router, the providers) only knows about Preset — it
-    predates niches and has no reason to import this module. Rather than
-    teach it a second vocabulary, adapt a niche INTO the shape it already
-    understands. A niche is a strict superset of what generation needs
-    (it additionally carries the grade and caption style, which apply
-    after generation, not during it).
-    """
-    from clipforge.genvideo.presets import Preset
-
-    return Preset(
-        name=niche.name, summary=niche.summary, style=niche.gen_style,
-        avoid=niche.gen_avoid, shot_seconds=niche.shot_seconds,
-        fps=niche.fps, narrated=True, default_shots=niche.default_shots,
-        # Derived, not hardcoded: a niche whose shots are 1.9s long is a
-        # fast cut by definition, and the constant that used to sit here
-        # described every niche as medium regardless of its own pacing.
-        cut_style=("fast" if niche.shot_seconds <= 2.5
-                   else "slow" if niche.shot_seconds >= 6.0 else "medium"),
-        keywords=niche.keywords,
-        continuity=niche.continuity,
-        loop_strength=niche.loop_strength,
-    )
 
 
 def niche_aspect(name: str) -> str | None:
@@ -579,26 +554,6 @@ def resolve_aspect(explicit: str | None, preset_name: str,
     return explicit or niche_aspect(preset_name) or config_default
 
 
-def resolve_preset(name: str):
-    """A niche or a base creative preset, by one name.
-
-    `bta generate --preset X` and the dashboard's preset field both take
-    one string, and a niche IS a preset for generation purposes — so a
-    niche name must resolve here too, not just in `get_niche`. Checked
-    first: niches are the more specific, more common case now, and if a
-    name ever collided the niche's fuller prompt should win.
-    """
-    from clipforge.genvideo.presets import PRESETS, get_preset
-
-    if name in NICHES:
-        return niche_as_preset(NICHES[name])
-    try:
-        return get_preset(name)
-    except ValueError:
-        available = sorted(set(NICHES) | set(PRESETS))
-        raise ValueError(
-            f"unknown preset or niche {name!r}; available: "
-            f"{', '.join(available)}") from None
 
 
 def niche_s5_params(niche: Niche) -> dict[str, object]:

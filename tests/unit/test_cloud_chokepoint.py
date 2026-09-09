@@ -93,7 +93,7 @@ def test_every_use_cloud_flag_in_the_config_is_registered():
         if (isinstance(anno, type) and issubclass(anno, pydantic.BaseModel)
                 and "use_cloud" in anno.model_fields):
             flagged_sections.append(name)
-    assert flagged_sections, "expected at least the s3 and genvideo flags"
+    assert flagged_sections, "expected at least the s3 flag"
 
     for section in flagged_sections:
         all_off = NS(**{s: NS(use_cloud=False) for s in flagged_sections})
@@ -136,9 +136,8 @@ def test_disabled_feature_never_touches_secrets(monkeypatch):
 
     monkeypatch.setattr(config_mod, "Secrets", _Recorder)
 
-    cfg = NS(s3=NS(use_cloud=False), genvideo=NS(use_cloud=False))
+    cfg = NS(s3=NS(use_cloud=False))
     assert gemini_key(cfg, feature="s3_ranking") is None
-    assert gemini_key(cfg, feature="genvideo") is None
     assert gemini_key(feature="s3_ranking", enabled=False) is None
     assert calls == [], (
         "the disabled path read Secrets; the flag must gate the read, "
@@ -157,17 +156,16 @@ def test_enabled_feature_gets_the_key_through_the_gate(monkeypatch):
 
     monkeypatch.setattr(config_mod, "Secrets", _Recorder)
 
-    cfg = NS(s3=NS(use_cloud=True), genvideo=NS(use_cloud=False))
+    cfg = NS(s3=NS(use_cloud=True))
     assert gemini_key(cfg, feature="s3_ranking") == "k-granted"
     assert calls == ["constructed"]
     # ...and the flag still partitions features sharing the credential:
-    assert gemini_key(cfg, feature="genvideo") is None
 
 
 def test_absent_config_sections_read_as_disabled():
     """A partial cfg can never mean permission."""
     assert cloud_enabled(NS(), "s3_ranking") is False
-    assert cloud_enabled(NS(), "genvideo") is False
+    assert cloud_enabled(NS(), "translation") is False
     assert gemini_key(NS(), feature="translation") is None
 
 

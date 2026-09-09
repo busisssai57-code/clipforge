@@ -95,8 +95,12 @@ _FACE_MIN_RATIO = 0.7
 #: A caption ending on one of these is a fragment: the phrase it opened is
 #: finished on the NEXT card, so the viewer reads half a thought and waits.
 _DANGLING_TAIL = frozenset("""
-to of and or but the a an for with at in on from by as that when if is was
-were are be been so than then into out up over about while which who
+to of and or but the a an for with at in on from by as that when if
+into out up over about while which who whose whom because although
+is was were are be been am has have had will would can could should must
+do does did might may
+all every each both this these those some any another such
+my your his her its our their no
 """.split())
 
 _ASS_OVERRIDE = re.compile(r"\{[^}]*\}")
@@ -115,6 +119,25 @@ def _ass_dialogue_lines(ass_path: Path) -> list[str]:
         if text:
             lines.append(text)
     return lines
+
+
+def _ends_mid_phrase(event: str) -> bool:
+    """Does this caption stop in the middle of a phrase?
+
+    Punctuation decides first. "I'M BIG ON THAT." is a whole sentence that
+    happens to end on a function word, and an earlier version of this check
+    stripped the full stop before testing the word — which rejected every
+    clip in a real run. Only a caption that ends with NO terminal mark and
+    trails off on a function word is the defect: the phrase it opened is
+    finished on the next card.
+    """
+    text = event.rstrip()
+    if not text:
+        return False
+    if text[-1] in ".!?…,;:—–":
+        return False
+    tail = text.split()[-1].strip("\"'’”)]").lower()
+    return tail in _DANGLING_TAIL
 
 
 def _faces_visible(clip_path: Path,
@@ -371,9 +394,7 @@ class S7QualityGate(Stage[QAArtifact]):
 
         if subtitles is not None and Path(subtitles.ass_path).exists():
             events = _ass_dialogue_lines(Path(subtitles.ass_path))
-            dangling = [e for e in events
-                        if e.split()[-1].strip(".,!?;:…").lower()
-                        in _DANGLING_TAIL]
+            dangling = [e for e in events if _ends_mid_phrase(e)]
             check("caption-phrasing", "fail", not dangling,
                   (f"{len(dangling)}/{len(events)} events end mid-phrase, "
                    f"e.g. {dangling[0]!r}") if dangling

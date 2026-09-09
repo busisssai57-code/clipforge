@@ -16,8 +16,8 @@ import subprocess
 
 import pytest
 
-from clipforge.niches import (NICHES, get_niche, niche_as_preset,
-                              niche_s5_params, niche_summary, resolve_preset)
+from clipforge.niches import (NICHES, get_niche, niche_s5_params,
+                              niche_summary)
 
 
 def test_every_niche_is_retrievable_by_name():
@@ -133,44 +133,14 @@ def test_caption_colours_are_ass_bgr_literals():
 # dashboard's Generate button (it sends the niche name) and would have
 # broken the swarm's Generator role identically.
 
-@pytest.mark.parametrize("name", sorted(NICHES))
-def test_every_niche_name_resolves_as_a_preset(name):
-    resolved = resolve_preset(name)
-    assert resolved.name == name
 
 
-def test_the_base_presets_still_resolve():
-    from clipforge.genvideo.presets import PRESETS
-
-    for name in PRESETS:
-        assert resolve_preset(name).name == name
 
 
-def test_an_unknown_name_lists_both_namespaces():
-    with pytest.raises(ValueError) as err:
-        resolve_preset("not_a_thing")
-    msg = str(err.value)
-    assert "dark_mindset" in msg, "niches must be listed as options"
-    assert "documentary" in msg, "base presets must be listed as options"
 
 
-def test_a_niche_preset_carries_the_niches_own_prompt_style():
-    """The point of the adapter: generation must use the niche's SPECIFIC
-    style text, not fall back to a generic preset that happens to share
-    a rough theme."""
-    dark = get_niche("dark_mindset")
-    resolved = resolve_preset("dark_mindset")
-    assert resolved.style == dark.gen_style
-    assert resolved.avoid == dark.gen_avoid
-    assert resolved.shot_seconds == dark.shot_seconds
-    assert resolved.fps == dark.fps
-    assert resolved.default_shots == dark.default_shots
 
 
-def test_niche_as_preset_is_a_real_preset_instance():
-    from clipforge.genvideo.presets import Preset
-
-    assert isinstance(niche_as_preset(get_niche("dark_mindset")), Preset)
 
 
 def test_summary_is_dashboard_shaped():

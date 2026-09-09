@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-from clipforge.screenplay import parse, stickers, to_beats, to_shots
 from clipforge.socialpost import (PostError, PostSpec, Sticker, build_overlay,
                                   find_font, render_card, render_emoji,
                                   spec_from_shots, _EMOJI_FONTS, _TEXT_FONTS)
@@ -26,36 +25,12 @@ needs_emoji_font = pytest.mark.skipif(
 
 # --------------------------------------------------------------- marks ----
 
-def test_a_note_never_reaches_the_picture():
-    """The bug this closes: notes parsed as action put the writer's own
-    aside into the video prompt, where a model renders it as text."""
-    text = ("EXT. SUUQ - MAALIN\n\nGeel dheer oo khudaar eegaya. "
-            "[[check the bead colours]]\n")
-    assert "check the bead" not in to_beats(text, 1)[0]
-    assert "khudaar" in to_beats(text, 1)[0]
 
 
-def test_an_emoji_note_is_a_sticker_and_a_worded_note_is_not():
-    text = (f"EXT. SUUQ - MAALIN\n\nGeel qoslaya. [[{LAUGH}]] "
-            "[[reshoot if the light is flat]]\n")
-    shot = to_shots(parse(text))[0]
-    assert stickers(shot) == [LAUGH]
-    assert len(shot.notes) == 2, "the comment is still recorded, just not stamped"
 
 
-def test_a_note_on_a_character_cue_does_not_swallow_the_speech():
-    """A cue is recognised by being upper-case. `GEEL [[loud]]` is not
-    upper-case once the note is left in, so the line under it would be
-    parsed as action and the character would lose their dialogue."""
-    text = f"EXT. BERRIN - HABEEN\n\nGeel.\n\nGEEL [[{LAUGH}]]\nWaan kuu sheegay!\n"
-    shot = to_shots(parse(text))[0]
-    assert shot.dialogue == [("GEEL", "Waan kuu sheegay!")]
-    assert stickers(shot) == [LAUGH]
 
 
-def test_two_emoji_in_one_note_are_two_stickers():
-    text = f"EXT. BERRIN - DUHUR\n\nGeel fadhiya. [[{SKULL}{CRY}]]\n"
-    assert stickers(to_shots(parse(text))[0]) == [SKULL, CRY]
 
 
 # ---------------------------------------------------------------- spec ----

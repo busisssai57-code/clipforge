@@ -3,7 +3,7 @@ this module may read it.
 
 Spec §2 is a hard contract: *"Cloud: **None.** No hosted inference."*
 Until 2026-08-05 the law was enforced by per-feature leaf checks —
-``[genvideo] use_cloud`` in two places, ``[s3] use_cloud`` in two more, a
+``[s3] use_cloud`` in two places, and a
 fifth re-derivation in the capability probe — and that pattern failed in
 exactly the predictable way: genvideo was pinned off-by-default on
 2026-07-31, and the s3 flag then shipped **True for a day** (2026-08-04)
@@ -61,8 +61,6 @@ _FEATURES: dict[str, Callable[[Any], bool]] = {
     "translation": lambda cfg: bool(
         getattr(getattr(cfg, "s3", None), "use_cloud", False)),
     # Generation sends brief/prompt text to Veo.
-    "genvideo": lambda cfg: bool(
-        getattr(getattr(cfg, "genvideo", None), "use_cloud", False)),
 }
 
 

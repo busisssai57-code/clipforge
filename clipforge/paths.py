@@ -191,3 +191,20 @@ def free_space_bytes(path: Path) -> int:
     import shutil
 
     return shutil.disk_usage(path).free
+
+
+def hf_cache_dir(model_id: str) -> Path:
+    """Where this model's blobs live, without importing torch or touching
+    the network.
+
+    Lived in genvideo/models.py until the generation half was removed, but
+    it was never about generation: preflight asks the same question about
+    S3's vision-language weights, and two copies of this path arithmetic
+    would drift the moment HF changes its layout.
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE  # noqa: PLC0415
+        root = Path(HF_HUB_CACHE)
+    except Exception:  # noqa: BLE001
+        root = Path.home() / ".cache" / "huggingface" / "hub"
+    return root / ("models--" + model_id.replace("/", "--"))

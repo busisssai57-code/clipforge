@@ -468,7 +468,7 @@ def report_audio_spread(paths: "list[Path]") -> "tuple[float, str, str] | None":
     spread, quietest, loudest = found
     if spread < AUDIO_SPREAD_WARN_DB:
         return None
-    log.warning("genvideo.audio_spread", spread_db=round(spread, 1),
+    log.warning("post.audio_spread", spread_db=round(spread, 1),
                 quietest=quietest, loudest=loudest,
                 levels={k: v for k, v in levels.items() if v is not None},
                 note="shots differ enough that the piece will play silent "

@@ -120,8 +120,6 @@ def _patch_probe_world(monkeypatch, *, filters=(), kokoro=False,
     fset = frozenset(filters)
     monkeypatch.setattr(capabilities, "has_filter", lambda n: n in fset)
     monkeypatch.setattr(enhance, "kokoro_available", lambda root=None: kokoro)
-    monkeypatch.setattr(capabilities, "_local_model_installed",
-                        lambda: local_model)
     monkeypatch.setattr(capabilities, "_has_module",
                         lambda n: asr and n in ("whisperx", "faster_whisper"))
     monkeypatch.setattr(
@@ -144,7 +142,7 @@ def _tile(caps: list[Capability], key: str) -> Capability:
 def test_probe_reports_every_advertised_tile_exactly_once(monkeypatch):
     _patch_probe_world(monkeypatch)
     keys = [c.key for c in capabilities.probe()]
-    assert keys == ["voiceover", "upscale", "broll", "dubbing",
+    assert keys == ["voiceover", "upscale", "dubbing",
                     "publish", "speech"]
 
 
@@ -180,13 +178,6 @@ def test_fully_equipped_world_reports_every_tile_live(monkeypatch):
         assert cap.available, f"{cap.key} dead in a fully equipped world"
 
 
-def test_broll_weights_without_overlay_names_the_filter(monkeypatch):
-    """Weights present, overlay filter absent: unavailable, and the
-    blocker must name the overlay filter rather than stay empty."""
-    _patch_probe_world(monkeypatch, local_model=True, filters=())
-    tile = _tile(capabilities.probe(), "broll")
-    assert not tile.available
-    assert tile.blocker and "overlay" in tile.blocker
 
 
 def test_speech_names_whichever_filter_is_missing(monkeypatch):

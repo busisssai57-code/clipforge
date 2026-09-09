@@ -250,36 +250,10 @@ def test_deleting_is_a_move_to_trash_not_an_unlink(ws):
 
 # --------------------------------------------------- generated delete
 
-def test_a_generated_piece_moves_to_trash(ws):
-    piece = ws.root / "generated" / "my-piece"
-    piece.mkdir(parents=True)
-    (piece / "sequence.mp4").write_bytes(b"v")
-    (piece / "shot_000.mp4").write_bytes(b"v")
-    web.delete_generated(web.GeneratedDeleteRequest(slug="my-piece"))
-    assert not piece.exists()
-    moved = ws.root / "trash" / "generated" / "my-piece"
-    assert (moved / "sequence.mp4").exists()
-    assert (moved / "shot_000.mp4").exists()
 
 
-@pytest.mark.parametrize("slug", ["..", "../..", "..\\..", "a/../..",
-                                  "", "."])
-def test_generated_delete_cannot_escape(ws, slug):
-    (ws.root / "generated").mkdir(parents=True, exist_ok=True)
-    victim = ws.root / "clips"
-    with pytest.raises(HTTPException):
-        web.delete_generated(web.GeneratedDeleteRequest(slug=slug))
-    assert victim.exists()
 
 
-def test_deleting_the_same_slug_twice_does_not_clobber_the_first(ws):
-    for _ in range(2):
-        piece = ws.root / "generated" / "dup"
-        piece.mkdir(parents=True)
-        (piece / "sequence.mp4").write_bytes(b"v")
-        web.delete_generated(web.GeneratedDeleteRequest(slug="dup"))
-    trash = ws.root / "trash" / "generated"
-    assert {p.name for p in trash.iterdir()} == {"dup", "dup (1)"}
 
 
 # ---------------------------------------------------------------- live

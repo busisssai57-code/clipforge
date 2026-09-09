@@ -241,107 +241,6 @@ class PostingConfig(_StrictModel):
 
 
 
-class GenVideoConfig(_StrictModel):
-    """Text-to-video generation with metered-cloud → local failover.
-
-    ``use_cloud`` is the switch that decides whether this machine talks to
-    anyone. It is False by default and must be set deliberately: every
-    other stage in this pipeline runs locally, and enabling the cloud
-    provider means prompts (and any brief text) are sent to Google. With
-    it off, the cloud provider is never even constructed, so no prompt can
-    leave by accident.
-    """
-
-    enabled: bool = False
-    #: OFF BY DEFAULT — see the class docstring. Turning this on sends
-    #: prompts to a third party.
-    use_cloud: bool = False
-    cloud_model: str = Field(
-        "veo-3.1-generate-preview",
-        description="Veo model id; overridable so an API revision needs no "
-                    "code change")
-    #: Local open-source fallback. Any diffusers text-to-video pipeline.
-    #: The FALLBACK id, used only when the registry cannot select a model
-    #: (nothing downloaded, or the requested size is outside every
-    #: envelope). LTX-Video 0.9 was retired 2026-08-13 in favour of
-    #: LTX-2.5; this points at the one local model that is both present
-    #: and measured, so the fallback branch cannot name a model that is
-    #: not there.
-    local_model_id: str = Field(
-        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-        description="diffusers pipeline id used when the registry cannot "
-                    "select a model")
-    local_steps: int = Field(30, ge=1, le=200)
-    #: Classifier-free guidance strength for the local model. LTX-Video
-    #: needs 3.0; higher than ~4.0 over-saturates into brown fills, lower
-    #: under-conditions and the model ignores the prompt. Measured, not
-    #: guessed — the first version shipped without this and every frame was
-    #: a flat brown rectangle.
-    local_guidance_scale: float = Field(3.0, ge=1.0, le=10.0)
-    #: Seed for the local pipeline's latent generator. It ran with no seed
-    #: at all until 2026-08-05, drawing from torch's global RNG — two swarm
-    #: runs of the identical brief produced shot_00 at 2,684,792 and
-    #: 2,625,493 bytes, while comments in providers.py claimed measurements
-    #: "on identical prompts and seeds" the code could not perform.
-    #: With the seed, §3.2 was MEASURED to hold on the reference machine:
-    #: two full runs of the same prompt produced byte-identical MP4s
-    #: (2026-08-05, sha256-verified end to end incl. encode). Same-machine
-    #: evidence — see the FIX 5 comment in genvideo/providers.py for the
-    #: exact conditions and the cross-machine caveat.
-    local_seed: int = Field(1234, ge=0)
-
-    # ---- Wan2GP-style controls (2026-08-05) --------------------------
-    # Wan2GP ("Wan for the GPU Poor") is the reference for running these
-    # models on one consumer card. Its ideas that fit this pipeline's laws
-    # are adopted here; the ones that do not are named in providers.py.
-
-    #: Chain shots: each shot starts from the LAST FRAME of the previous
-    #: one, via the pipeline's image-to-video path. This is the single
-    #: biggest quality change available — `generate`'s own docstring says
-    #: models lose coherence past a few seconds "so length comes from
-    #: CUTTING", and continuity makes those cuts land inside one continuous
-    #: scene instead of between unrelated ones. Off by default because it
-    #: requires an i2v-capable pipeline and changes every existing cache
-    #: key; a pipeline that cannot take an image says so and is skipped.
-    continuity: bool = False
-    #: LoRA weights applied to the local pipeline, as paths or HF ids.
-    #: Wan2GP's main customisation surface. Empty means none are loaded.
-    loras: list[str] = Field(default_factory=list)
-    #: Scale applied to every LoRA in `loras`.
-    lora_scale: float = Field(1.0, ge=0.0, le=2.0)
-    #: Skip redundant transformer steps when the residual barely changes
-    #: (TeaCache). 0.0 disables. Deterministic: the decision is a fixed
-    #: threshold on measured values, with no sampling, so §3.2 still holds
-    #: for a given threshold — but CHANGING it changes output, which is
-    #: why it is part of the params digest like every other knob.
-    step_cache_threshold: float = Field(0.0, ge=0.0, le=1.0)
-    #: Quantize the TRANSFORMER's weights. Wan2GP's reason for existing;
-    #: here it is what decides whether a large model runs at all.
-    #:
-    #: This was accepted, stored and never applied until 2026-08-13 — the
-    #: provider held it on `self.quantize` and no code read it back. It is
-    #: load-bearing now: a 22B transformer is ~38 GB at bf16 and does not
-    #: fit 24 GB, while "nf4" brings it to roughly 11 GB.
-    #:
-    #: On Ampere (RTX 3090, sm_86) there are no native FP4/FP8 tensor
-    #: cores, so this is a STORAGE format dequantized per layer — it buys
-    #: VRAM, not speed. Needs bitsandbytes; without it the provider logs
-    #: that it is running unquantized rather than pretending.
-    quantize: Literal["none", "int8", "nf4"] = "none"
-    #: Your own handle, stamped bottom-centre by the post layer on niches
-    #: that use it. Empty by default and deliberately not pre-filled:
-    #: copying a format is fair, shipping someone else's mark on your
-    #: video is not.
-    handle: str = ""
-
-    #: Default creative mode.
-    preset: Literal["documentary", "storytelling", "explainer",
-                    "motion_graphics"] = "documentary"
-    shots: int = Field(6, ge=1, le=64,
-                       description="Shots per piece; models lose coherence "
-                                   "past a few seconds, so length comes from "
-                                   "CUTTING shots, not one long generation")
-    aspect_ratio: Literal["9:16", "16:9", "3:4", "4:5", "1:1"] = "9:16"
 
 
 class OrchestrationConfig(_StrictModel):
@@ -375,7 +274,6 @@ class AppConfig(_StrictModel):
     s6: S6Config = S6Config()
     editor: EditorConfig = EditorConfig()
     pacing: PacingConfig = PacingConfig()
-    genvideo: GenVideoConfig = GenVideoConfig()
     posting: PostingConfig = PostingConfig()
     orchestration: OrchestrationConfig = OrchestrationConfig()
 

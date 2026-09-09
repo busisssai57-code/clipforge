@@ -49,14 +49,6 @@ def test_three_shots_with_one_unmeasurable_still_compare_the_rest():
     assert round(got[0], 1) == 60.0
 
 
-def test_generate_reports_it():
-    """Wiring. The measurement is worthless if nothing calls it."""
-    import inspect
-
-    from clipforge import cli
-
-    src = inspect.getsource(cli)
-    assert "report_audio_spread(list(result.paths))" in src
 
 
 # ------------------------------------- dropping the model's scratch audio
@@ -107,12 +99,3 @@ def test_a_niche_that_wants_its_audio_keeps_it():
     assert chosen_niche_keeps_audio("no_such_niche") is True
 
 
-def test_the_spread_is_only_reported_when_the_audio_survives():
-    """Warning about a 58 dB spread on a track just discarded is noise
-    about noise, and leaves an operator unsure which line to believe."""
-    import inspect
-
-    from clipforge import cli
-
-    src = inspect.getsource(cli)
-    assert "report_audio_spread(list(result.paths)) if keeps_audio else None" in src

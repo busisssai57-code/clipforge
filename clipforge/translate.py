@@ -19,7 +19,7 @@ time, and translation is not worth a GPU permit: it would have to contend
 with the VL and ASR stages for the one `GPULock`, and a 600M seq2seq on
 CPU costs seconds. Running it on CPU keeps it entirely outside the VRAM
 Law rather than making it a new participant — the same reasoning that put
-the genvideo seed generator on CPU.
+a seeded generator on CPU.
 
 **Determinism (§3.2).** Greedy decoding, `do_sample=False`, `num_beams=1`,
 fixed max length. No sampling means no seed to get wrong, which is the

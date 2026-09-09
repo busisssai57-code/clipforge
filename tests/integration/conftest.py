@@ -34,7 +34,12 @@ def _cuda_available() -> bool:
 #: still says PASSED. Pinning the count makes the shrinkage visible.
 # 2026-08-18: 5 -> 8 with the real-weights NF4 checks. The count only
 # has teeth if it tracks what actually exists.
-EXPECTED_GPU_TESTS = 8
+# 2026-09-09: 8 -> 5. The generation half was removed from the product, and
+# the three NF4 real-weights checks went with it — they quantized a
+# text-to-video transformer that is no longer here. Lowering this is only
+# legitimate because the COVERED SURFACE shrank; if the count ever drops
+# while the surface stands, that is the shrinkage this guard exists to catch.
+EXPECTED_GPU_TESTS = 5
 
 
 def pytest_collection_modifyitems(config: pytest.Config,

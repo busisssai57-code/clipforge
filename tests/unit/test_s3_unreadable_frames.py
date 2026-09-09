@@ -328,7 +328,7 @@ def test_a_half_fetched_model_does_not_read_as_present(tmp_path, monkeypatch):
 
     cache = tmp_path / "models--Qwen--Qwen2.5-VL-7B-Instruct-AWQ"
     (cache / "blobs").mkdir(parents=True)
-    monkeypatch.setattr("clipforge.genvideo.models.hf_cache_dir",
+    monkeypatch.setattr("clipforge.paths.hf_cache_dir",
                         lambda _model_id: cache)
 
     # nothing but configs

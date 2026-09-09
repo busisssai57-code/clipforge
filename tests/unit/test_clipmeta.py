@@ -106,7 +106,6 @@ def test_artifact_stem_plain_clip_is_its_own_stem():
 
 
 @pytest.mark.parametrize("filename,variant,kind", [
-    ("abc.broll.mp4", "broll", "render"),
     ("abc.draft.mp4", "draft", "render"),
     ("abc.upscaled.mp4", "upscaled", "render"),
     ("abc.es.mp4", "es", "dub"),
@@ -133,7 +132,7 @@ def test_chained_sidecars_resolve_to_the_original_key(ws):
     assert clipmeta.artifact_stem("abc123.upscaled.vo.mp4") == "abc123"
     assert clipmeta.artifact_stem("abc123.vo.upscaled.mp4") == "abc123"
     assert clipmeta.artifact_stem("abc123.upscaled.es.mp4") == "abc123"
-    assert clipmeta.artifact_stem("abc123.broll.upscaled.vo.mp4") == "abc123"
+    assert clipmeta.artifact_stem("abc123.draft.upscaled.vo.mp4") == "abc123"
     # the outermost operation is still what names the variant
     assert clipmeta.variant_of("abc123.upscaled.vo.mp4") == "vo"
     # and a plain clip is untouched by the loop

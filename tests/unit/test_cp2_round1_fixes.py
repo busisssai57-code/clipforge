@@ -489,7 +489,10 @@ def test_the_gpu_test_count_is_pinned():
     # 5 -> 8 on 2026-08-18 (real-weights NF4 checks). Equality, not >=:
     # the ratchet only works if RAISING it is also a deliberate edit, made
     # in the same change that adds the tests it claims to count.
-    assert integration_conftest.EXPECTED_GPU_TESTS == 8, (
+    # 8 -> 5 on 2026-09-09: the generation half left the product and its
+    # three NF4 real-weights checks left with it. Lowering is legitimate
+    # only when the covered surface shrank in the same change.
+    assert integration_conftest.EXPECTED_GPU_TESTS == 5, (
         "the expected real-engine test count changed; lowering it hides "
         "deleted GPU coverage behind an unchanged headline number")
 
