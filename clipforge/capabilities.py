@@ -124,10 +124,34 @@ def probe() -> list[Capability]:
     ))
 
     # ---- b-roll ----------------------------------------------------
-    # Two requirements, either of which can be the absent one: the weights
-    # generate the footage, the overlay filter composites it. The blocker
-    # names whichever is missing — checking only the weights once left an
-    # overlay-less build unavailable with an empty blocker, which is the
+    # bta-site still ships broll.html and studio.html, both carrying
+    # data-cap="broll", and dashboard_live.html still lists the tile. The
+    # capability answer is the only thing that can contradict them, so
+    # deleting the tile did not retire the feature - it left the claim
+    # standing with nothing to argue against it.
+    #
+    # The gallery no longer recognises b-roll variants either: ".broll" came
+    # out of clipmeta._SIDECAR_SUFFIXES when the generator went.
+    caps.append(Capability(
+        key="broll", label="AI B-roll",
+        available=False,
+        blocker="b-roll was removed with the generation half; nothing here renders an insert",
+        note="The site still describes the local workflow. It is gone, not pending.",
+        by_policy=True,
+    ))
+
+    # ---- split screen ----------------------------------------------
+    # Tracking geometry exists, but nothing composites two speakers. xstack
+    # being present in the ffmpeg build is not proof the product can make a
+    # split-screen clip - deriving LIVE from an installed filter is the exact
+    # mistake this module was written to stop.
+    caps.append(Capability(
+        key="splitscreen", label="Split screen",
+        available=False,
+        blocker="the split-screen render path was removed; no CLI or API composites two panes",
+        note="Tracked speaker geometry survives, but nothing renders it.",
+        by_policy=True,
+    ))
 
     # ---- dubbing ---------------------------------------------------
     # Two halves with different requirements, and conflating them is how

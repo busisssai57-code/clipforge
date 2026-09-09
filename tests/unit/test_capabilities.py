@@ -142,8 +142,8 @@ def _tile(caps: list[Capability], key: str) -> Capability:
 def test_probe_reports_every_advertised_tile_exactly_once(monkeypatch):
     _patch_probe_world(monkeypatch)
     keys = [c.key for c in capabilities.probe()]
-    assert keys == ["voiceover", "upscale", "dubbing",
-                    "publish", "speech"]
+    assert keys == ["voiceover", "upscale", "broll", "splitscreen",
+                    "dubbing", "publish", "speech"]
 
 
 def test_unavailable_tiles_name_their_fix(monkeypatch):
@@ -166,16 +166,40 @@ def test_available_tiles_carry_no_blocker(monkeypatch):
             assert cap.blocker == "", f"{cap.key} available yet blocked"
 
 
-def test_fully_equipped_world_reports_every_tile_live(monkeypatch):
-    """With everything installed, no tile may be hardcoded dead."""
+def test_fully_equipped_world_reports_every_implemented_tile_live(monkeypatch):
+    """Installed dependencies light up every implemented feature.
+
+    A capability explicitly marked ``by_policy`` is a truthful roadmap tile,
+    not a missing dependency that a fully equipped machine should disguise as
+    available.
+    """
     _patch_probe_world(
         monkeypatch, filters=("flite", "libplacebo", "cas", "overlay",
                               "afftdn", "speechnorm", "xstack"),
         kokoro=True, local_model=True,
         cloud_enabled=lambda cfg, feat: True, has_key=True,
         voices={"en": "af_heart"})
-    for cap in capabilities.probe():
-        assert cap.available, f"{cap.key} dead in a fully equipped world"
+    caps = capabilities.probe()
+    for cap in caps:
+        if not cap.by_policy:
+            assert cap.available, f"{cap.key} dead in a fully equipped world"
+
+    # The exemption above is a hole: any broken tile can now hide behind
+    # by_policy=True and this guard will wave it through. Pin the exempt set
+    # so widening it costs a deliberate edit here, in the same change - the
+    # ratchet EXPECTED_GPU_TESTS uses for the same reason.
+    exempt = {c.key for c in caps if c.by_policy}
+    assert exempt == {"broll", "splitscreen"}, (
+        f"a tile exempted itself from the equipped-world guard: {exempt}")
+
+
+def test_roadmap_tiles_are_explicitly_blocked(monkeypatch):
+    _patch_probe_world(monkeypatch)
+    for key in ("broll", "splitscreen"):
+        tile = _tile(capabilities.probe(), key)
+        assert not tile.available
+        assert tile.by_policy
+        assert "removed" in tile.blocker
 
 
 
