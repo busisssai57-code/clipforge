@@ -542,16 +542,6 @@ def niche_aspect(name: str) -> str | None:
     return n.aspect if n else None
 
 
-def resolve_aspect(explicit: str | None, preset_name: str,
-                   config_default: str) -> str:
-    """The frame this run renders in: flag, then niche, then config.
-
-    A function rather than an inline `or` chain because the ORDER is the
-    decision. The operator saying --aspect wins over everything; a niche
-    that declares its own frame beats the global default, which is what
-    makes 3:4 a property of the format instead of a thing to remember.
-    """
-    return explicit or niche_aspect(preset_name) or config_default
 
 
 

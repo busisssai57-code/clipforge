@@ -933,10 +933,6 @@ def _write_manifest(dest: Path | None, *, kind: str, outputs: list[str],
         console.print(f"[yellow]could not write manifest {dest}: {exc}[/]")
 
 
-def _slug(text: str, limit: int = 48) -> str:
-    import re
-    out = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return (out[:limit] or "piece").rstrip("-")
 
 
 def chosen_niche_keeps_audio(niche_name: str) -> bool:
@@ -983,79 +979,6 @@ def _drop_scratch_audio(stitched: Path) -> Path:
     return stitched
 
 
-def _apply_post_layer(stitched: Path, *, result, niche_name: str,
-                      hook: str | None, handle: str | None) -> Path:
-    """Stamp hook card, punchline stickers and handle — or don't.
-
-    Returns the path to hand on: the stamped file when there was anything
-    to stamp, and the untouched sequence otherwise. Never raises. This is
-    the last step of a run that may already have spent GPU-hours, and a
-    missing emoji font must not turn a finished piece into a failed
-    command.
-    """
-    from clipforge.niches import NICHES
-
-    niche = NICHES.get(niche_name)
-    if niche is None or not niche.post_layer:
-        return stitched
-    ok = [s for s in result.shots if s.ok]
-    # A niche that does not want emoji gets none. The marks still travel
-    # with their beats -- the screenplay parsed them and something else
-    # may yet want them -- they are simply not stamped.
-    marks = ([list(s.marks) for s in ok] if niche.stickers
-             else [[] for _ in ok])
-    if not (hook or handle or any(marks)):
-        return stitched
-
-    from clipforge.socialpost import PostError, apply_post, spec_from_shots
-
-    try:
-        # REAL durations, probed, not the preset's nominal shot length. A
-        # provider that returns 1.87s for a 1.9s request drifts by half a
-        # shot over thirty cuts, and the sticker would land on the wrong
-        # face.
-        from clipforge.ffmpeg import probe
-
-        seconds = []
-        for shot in ok:
-            try:
-                seconds.append(float(probe(shot.path).duration_s))
-            except Exception:  # noqa: BLE001 - fall back to the request
-                seconds.append(float(shot.seconds))
-        spec = spec_from_shots(
-            seconds, marks, hook=hook or "", watermark=handle or "",
-            hook_seconds=niche.hook_seconds,
-            # The script's dialogue, burned in. It already reaches
-            # `sequence.srt`, and a sidecar is not a subtitle anyone
-            # watching a TikTok sees -- nothing in that player will load
-            # it. For a sketch whose punchline is a line, this is the
-            # difference between telling the joke and shipping a silent
-            # clip of a baby.
-            # getattr, not attribute access: this is handed shot-shaped
-            # objects from more than one place, and a post layer must not
-            # refuse to stamp a hook because a caller's shot predates the
-            # dialogue field.
-            spoken=[getattr(s, "spoken", "") for s in ok])
-        # `sequence.mp4` is the FINISHED piece, always. The dashboard
-        # lists `*/sequence.mp4`, so writing the stamped version beside
-        # it under another name would have shown the operator the cut
-        # without its hook or stickers and called that the output. The
-        # un-stamped concat is kept so a different hook can be burned
-        # without regenerating a single shot.
-        dest = stitched.with_name("post.mp4")
-        apply_post(stitched, dest, spec)
-        raw = stitched.with_name("sequence.raw.mp4")
-        raw.unlink(missing_ok=True)
-        stitched.rename(raw)
-        dest.rename(stitched)
-        dest = stitched
-    except (PostError, ClipForgeError) as exc:
-        console.print(f"[yellow]post layer skipped: {exc}[/]")
-        return stitched
-    console.print(f"  [bold]post layer:[/] hook={'yes' if hook else 'no'} "
-                  f"stickers={sum(len(m) for m in marks)} "
-                  f"handle={handle or 'none'}")
-    return dest
 
 
 def _has_audio(path: Path) -> bool:

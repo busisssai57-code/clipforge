@@ -83,13 +83,8 @@ _policy: remote.AccessPolicy = remote.AccessPolicy.from_env()
 _pairing = remote.PairingCodes()
 
 
-def current_policy() -> remote.AccessPolicy:
-    return _policy
 
 
-def set_policy(policy: remote.AccessPolicy) -> None:
-    global _policy
-    _policy = policy
 
 
 def _presented(request: Request) -> remote.Presented:

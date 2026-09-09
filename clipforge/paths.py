@@ -183,14 +183,6 @@ def discard_partials(root: Path) -> list[Path]:
     return removed
 
 
-def free_space_bytes(path: Path) -> int:
-    """Free bytes on the volume containing ``path`` (disk-guard input)."""
-    usage = os.statvfs(path) if hasattr(os, "statvfs") else None  # POSIX only
-    if usage is not None:  # pragma: no cover - non-Windows
-        return usage.f_bavail * usage.f_frsize
-    import shutil
-
-    return shutil.disk_usage(path).free
 
 
 def hf_cache_dir(model_id: str) -> Path:

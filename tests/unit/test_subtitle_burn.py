@@ -72,15 +72,3 @@ def test_a_spec_with_no_subtitles_draws_none():
     assert "0.845" not in graph
 
 
-def test_generate_hands_the_lines_to_the_post_layer():
-    """Wiring. The burn is worthless if the lines never arrive.
-
-    Read with getattr: the post layer is handed shot-shaped objects from
-    more than one place, and it must not refuse to stamp a hook because a
-    caller's shot predates the dialogue field.
-    """
-    import inspect
-
-    from clipforge import cli
-
-    assert 'spoken=[getattr(s, "spoken", "") for s in ok]' in inspect.getsource(cli)

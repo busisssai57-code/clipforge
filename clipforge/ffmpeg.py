@@ -251,14 +251,6 @@ def parse_loudnorm_json(stderr: str) -> LoudnormMeasurement:
                       stderr_tail=stderr[-_STDERR_TAIL_CHARS:])
 
 
-def measure_loudness(path: Path, *, i: float = -14.0, tp: float = -1.5,
-                     lra: float = 11.0) -> LoudnormMeasurement:
-    """Pass 1: loudnorm in analysis mode (print_format=json, output discarded)."""
-    ffmpeg = require_binary("ffmpeg")
-    proc = run([str(ffmpeg), "-hide_banner", "-nostats", "-i", str(path),
-                "-af", f"loudnorm=I={i}:TP={tp}:LRA={lra}:print_format=json",
-                "-f", "null", os.devnull], check=True)
-    return parse_loudnorm_json(proc.stderr)
 
 
 def loudnorm_filter(measured: LoudnormMeasurement, *, i: float = -14.0,

@@ -311,8 +311,3 @@ def humanize(seconds: float | None) -> str:
     return f"{minutes/60:.1f} h"
 
 
-def feed_lines(progress: RunProgress, lines: Iterable[str]) -> RunProgress:
-    """Convenience for tests and replay."""
-    for line in lines:
-        progress.feed(line)
-    return progress
