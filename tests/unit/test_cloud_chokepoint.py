@@ -47,20 +47,39 @@ def _package_sources():
 
 # ------------------------------------------------------------------ sweeps
 
+#: EVERY hosted credential, not just the first one. The VL judge added
+#: Anthropic and OpenAI keys, and a sweep that still named only Gemini
+#: would have left the two new ones with no chokepoint at all — which is
+#: the same shape as the failure this whole module was written about.
+_CREDENTIALS = ("gemini_api_key", "anthropic_api_key", "openai_api_key")
+
+
 def test_the_credential_is_read_only_at_the_chokepoint():
-    """No module outside the chokepoint may touch ``gemini_api_key``.
+    """No module outside the chokepoint may touch a hosted credential.
 
     The lowercase attribute name is the tell for CODE (``Secrets()
     .gemini_api_key``, ``cfg.secrets.gemini_api_key``); operator-facing
     messages say CLIPFORGE_GEMINI_API_KEY (uppercase) and stay legal.
     """
-    offenders = [rel for rel, text in _package_sources()
-                 if rel not in _CREDENTIAL_READERS
-                 and "gemini_api_key" in text]
+    offenders = sorted({
+        f"{rel}:{cred}" for rel, text in _package_sources()
+        if rel not in _CREDENTIAL_READERS
+        for cred in _CREDENTIALS if cred in text})
     assert offenders == [], (
-        f"{offenders} read the hosted-inference credential directly; "
-        "route through clipforge.cloud.gemini_key (the §2 chokepoint) — "
+        f"{offenders} read a hosted-inference credential directly; "
+        "route through clipforge.cloud.provider_key (the §2 chokepoint) — "
         "an inline read is how a feature ships cloud-on unaudited")
+
+
+def test_every_registered_provider_has_a_credential_in_the_sweep():
+    """A provider added to the registry without being added to _CREDENTIALS
+    would be swept by nothing. Pin the two lists to each other."""
+    from clipforge.cloud import _PROVIDER_SECRET
+
+    assert set(_PROVIDER_SECRET.values()) == set(_CREDENTIALS), (
+        "clipforge.cloud._PROVIDER_SECRET and this module's _CREDENTIALS "
+        "have drifted; a provider whose secret is not swept has no "
+        "chokepoint")
 
 
 def test_the_env_var_is_never_read_directly_anywhere():
@@ -68,7 +87,8 @@ def test_the_env_var_is_never_read_directly_anywhere():
     Secrets (pydantic-settings) is the one env/.env reader, and the
     chokepoint is its one caller for this credential."""
     pattern = re.compile(
-        r"environ(\.get)?\s*[\(\[]\s*['\"]CLIPFORGE_GEMINI_API_KEY")
+        r"environ(\.get)?\s*[\(\[]\s*['\"]CLIPFORGE_"
+        r"(GEMINI|ANTHROPIC|OPENAI)_API_KEY")
     offenders = [rel for rel, text in _package_sources()
                  if pattern.search(text)]
     assert offenders == [], (

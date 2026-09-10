@@ -175,6 +175,35 @@ class S6Config(_StrictModel):
     enhance_speech: Literal["off", "gentle", "strong"] = "off"
 
 
+class S7Config(_StrictModel):
+    """Quality control.
+
+    The deterministic checks always run and never leave the machine. The VL
+    judge is a second opinion on the things a container check cannot see -
+    whether a face is framed, whether the captions collide with burned-in
+    text, whether the opening frame earns a scroll-stop.
+
+    ``use_cloud`` is the only switch here that can send anything anywhere,
+    and it is registered as the ``vl_qa`` feature in clipforge.cloud. It
+    ships FALSE: the standing decision of 2026-08-05 is that hosted
+    inference is off, and with no Anthropic or OpenAI key on this machine
+    turning it on would not reach the primary judge at all - it would fall
+    through to Gemini and send clip frames to Google, which is a different
+    thing from what "Claude first" asks for. One flag flips it the moment a
+    key exists.
+    """
+
+    #: The local judge runs regardless; this is hosted inference only.
+    use_cloud: bool = Field(False, description=(
+        "Authorize the vl_qa feature to use a hosted VL judge (see "
+        "clipforge.cloud). False = the local Qwen VL judge only."))
+    vl_qa: bool = Field(True, description=(
+        "Run the VL judge at all. False = deterministic checks only."))
+    vl_frames: int = Field(6, ge=1, le=16, description=(
+        "How many frames the judge sees. Sampled at fixed fractions, so a "
+        "verdict can be replayed against a past run."))
+
+
 class EditorConfig(_StrictModel):
     style_profile: str = Field("viral_fast", description="Editor agent profile: viral_fast, educational, conversational")
     min_hook_score: float = Field(0.5, ge=0.0, le=1.0, description="Minimum hook confidence threshold")
@@ -272,6 +301,7 @@ class AppConfig(_StrictModel):
     s4: S4Config = S4Config()
     s5: S5Config = S5Config()
     s6: S6Config = S6Config()
+    s7: S7Config = S7Config()
     editor: EditorConfig = EditorConfig()
     pacing: PacingConfig = PacingConfig()
     posting: PostingConfig = PostingConfig()
@@ -297,7 +327,15 @@ class Secrets(BaseSettings):
     #: itself unconfigured and generation runs entirely on the local model.
     #: Set as CLIPFORGE_GEMINI_API_KEY in .env. Never logged.
     gemini_api_key: str | None = Field(
-        None, description="Google AI Studio key for Veo text-to-video")
+        None, description="Google AI Studio key")
+    #: VL quality control runs a chain: Anthropic first, OpenAI second,
+    #: Gemini third, and the local Qwen ranker last. Each is optional and an
+    #: absent key means that link reports itself unconfigured and the chain
+    #: moves on - it never silently downgrades without saying which ran.
+    anthropic_api_key: str | None = Field(
+        None, description="Anthropic key for the primary VL judge")
+    openai_api_key: str | None = Field(
+        None, description="OpenAI key for the second VL judge")
 
 
 # --------------------------------------------------------------------------

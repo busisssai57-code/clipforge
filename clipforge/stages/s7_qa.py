@@ -440,6 +440,41 @@ class S7QualityGate(Stage[QAArtifact]):
                       "a face in the opening frame, which is the one "
                       "carrying the hook and the thumbnail")
 
+        # ---- 9. The VL judge: a second opinion, in words ------------------
+        #
+        # Everything above measures the container. A holdout run scored
+        # eleven clips at a mean of 70.5 with a 100% pass rate and the
+        # operator deleted every one, so "passed" and "good" are plainly not
+        # the same measurement. This link looks at the picture.
+        #
+        # warn, never fail: it is a judgement, it can be wrong, and a model
+        # having an opinion must not be able to quarantine a clip on its
+        # own. The provider that actually ran is recorded either way - a
+        # chain that degrades silently is how an expired key goes unnoticed.
+        # kwargs, not params: params are hashed into the cache key, and a
+        # config object does not belong in a digest. The judge's verdict is
+        # advisory and deliberately outside the key.
+        cfg = inputs.get("cfg")
+        if cfg is not None and dur > 0 and getattr(
+                getattr(cfg, "s7", None), "vl_qa", False):
+            from clipforge import vlqa  # noqa: PLC0415
+
+            v = vlqa.judge(clip_path, cfg=cfg, duration_s=dur)
+            if v.ran:
+                check("vl-judge", "warn", v.ok,
+                      (f"{v.provider}: {v.worst}" if v.findings
+                       else f"{v.provider}: no defect reported"),
+                      "a vision-language judge finds nothing a viewer would "
+                      "scroll past")
+                check("vl-opening-frame", "warn", v.opening_frame_ok,
+                      f"{v.provider}: opening frame "
+                      + ("reads" if v.opening_frame_ok else "does not read"),
+                      "the first frame carries the hook and the thumbnail")
+            else:
+                check("vl-judge", "warn", False,
+                      v.note or "; ".join(v.skipped)[:200],
+                      "a judge that could run — every link declined")
+
         return self._finish(cache_key, clip, checks)
 
     def _finish(self, cache_key: str, clip: Any,

@@ -767,7 +767,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                 qa = s7.run(input_digest=clip.cache_key, job_id=job_id,
                             params=s6_params,
                             clip_artifact=clip, subtitle_artifact=subs,
-                            campath_artifact=campath)
+                            campath_artifact=campath, cfg=cfg)
                 # editor_art rides back out: the export pack needs the
                 # title and hook, and they are written in here.
                 return clip, qa, editor_art

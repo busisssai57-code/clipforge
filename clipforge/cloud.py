@@ -49,6 +49,15 @@ class UnknownCloudFeature(KeyError):
     """
 
 
+class UnknownCloudProvider(KeyError):
+    """A provider not in _PROVIDER_SECRET asked for a credential.
+
+    Same reasoning as UnknownCloudFeature: the list lives in the module
+    whose docstring is the law, so adding a provider is an edit here rather
+    than a key read somewhere else.
+    """
+
+
 #: feature -> the config flag that authorizes it. getattr-chained so a
 #: partial cfg (tests, reconstructed shims) reads as DISABLED rather than
 #: crashing — absence of a section can never mean permission.
@@ -60,8 +69,28 @@ _FEATURES: dict[str, Callable[[Any], bool]] = {
     # same payload class (transcript text), same decision.
     "translation": lambda cfg: bool(
         getattr(getattr(cfg, "s3", None), "use_cloud", False)),
-    # Generation sends brief/prompt text to Veo.
+    # VL quality control sends sampled FRAMES of a finished clip to a
+    # hosted judge. Its own flag, because it is a different payload class
+    # from ranking (a rendered clip, not a candidate window) and a different
+    # decision: the operator may well want a hosted judge while ranking
+    # stays local, or the reverse.
+    "vl_qa": lambda cfg: bool(
+        getattr(getattr(cfg, "s7", None), "use_cloud", False)),
 }
+
+#: Which credential each hosted provider needs, in the order the VL chain
+#: tries them. Registered here for the same reason features are: the module
+#: that owns the law owns the list, and a provider that is not in it cannot
+#: be handed a key.
+_PROVIDER_SECRET: dict[str, str] = {
+    "anthropic": "anthropic_api_key",
+    "openai": "openai_api_key",
+    "gemini": "gemini_api_key",
+}
+
+
+def registered_providers() -> tuple[str, ...]:
+    return tuple(_PROVIDER_SECRET)
 
 
 def registered_features() -> tuple[str, ...]:
@@ -126,6 +155,59 @@ def gemini_key(cfg: Any = None, *, feature: str,
                     note="hosted-inference credential handed out "
                          "(flag-authorized); content may leave this machine")
     return key
+
+
+def provider_key(cfg: Any = None, *, feature: str, provider: str,
+                 enabled: bool | None = None) -> str | None:
+    """The credential read for any hosted provider.
+
+    gemini_key() is this function pinned to one provider, and stays as the
+    name the older callers use. The law does not change: a feature must be
+    registered, its flag must authorise, and this module is still the only
+    place a credential is read.
+    """
+    if provider not in _PROVIDER_SECRET:
+        raise UnknownCloudProvider(
+            f"cloud provider {provider!r} is not registered; add it to "
+            f"clipforge.cloud._PROVIDER_SECRET "
+            f"(known: {registered_providers()})")
+    if feature not in _FEATURES:
+        raise UnknownCloudFeature(
+            f"cloud feature {feature!r} is not registered; add it to "
+            f"clipforge.cloud._FEATURES (known: {registered_features()})")
+    if enabled is None:
+        if cfg is None:
+            raise TypeError("provider_key needs cfg or an explicit enabled=")
+        enabled = cloud_enabled(cfg, feature)
+    if not enabled:
+        return None
+    try:
+        from clipforge.config import Secrets  # noqa: PLC0415 - call-time
+        key = getattr(Secrets(), _PROVIDER_SECRET[provider], None)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cloud.secrets_unreadable", feature=feature,
+                    provider=provider, error=str(exc)[:200])
+        return None
+    if not key:
+        return None
+    tag = f"{feature}:{provider}"
+    if tag not in _granted:
+        _granted.add(tag)
+        log.warning("cloud.key_granted", feature=feature, provider=provider,
+                    note="hosted-inference credential handed out "
+                         "(flag-authorized); content may leave this machine")
+    return key
+
+
+def configured_providers() -> tuple[str, ...]:
+    """Probe-only: which providers have a key at all. Opens no gate."""
+    try:
+        from clipforge.config import Secrets  # noqa: PLC0415
+        sec = Secrets()
+    except Exception:  # noqa: BLE001
+        return ()
+    return tuple(n for n, attr in _PROVIDER_SECRET.items()
+                 if getattr(sec, attr, None))
 
 
 def has_gemini_key() -> bool:

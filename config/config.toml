@@ -94,6 +94,17 @@ loudness_i = -14.0            # integrated loudness target (LUFS)
 loudness_tp = -2.0            # single-pass loudnorm lands ~0.4-0.7 dB ABOVE target
 loudness_lra = 11.0
 
+[s7]                          # quality control
+# The deterministic checks always run and never leave this machine.
+# use_cloud authorizes the vl_qa feature in clipforge/cloud.py to send
+# sampled FRAMES of a finished clip to a hosted judge. It is false because
+# the 2026-08-05 decision stands, and because with no Anthropic or OpenAI
+# key present, true would not reach the primary judge - it would fall
+# through to Gemini and send frames to Google.
+use_cloud = false
+vl_qa = true                  # the LOCAL Qwen VL judge; no network
+vl_frames = 6
+
 [orchestration]
 ingest_concurrency = 4
 gpu_concurrency = 1           # LAW â€” exactly one GPU stage at a time
