@@ -995,14 +995,14 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
   <div class="navsec">Create</div>
   <div class="nav">
     <button class="on" data-v="home"><svg width="17" height="17"><use href="#i-home"/></svg>Home</button>
-    <button data-v="generate"><svg width="17" height="17"><use href="#i-spark"/></svg>Story video</button>
+    <button data-v="generate"><svg width="17" height="17"><use href="#i-spark"/></svg>Look</button>
     <button data-v="clips"><svg width="17" height="17"><use href="#i-grid"/></svg>Clips</button>
     <button data-v="assets"><svg width="17" height="17"><use href="#i-folder"/></svg>Asset library</button>
   </div>
 
   <div class="navsec">Machine</div>
   <div class="nav">
-    <button data-v="studio"><svg width="17" height="17"><use href="#i-cpu"/></svg>Studio</button>
+    <button data-v="studio"><svg width="17" height="17"><use href="#i-cpu"/></svg>Capabilities</button>
     <button data-v="activity"><svg width="17" height="17"><use href="#i-chart"/></svg>Activity
       <span class="pill new hide" id="navRunning">0</span></button>
     <button data-v="publish"><svg width="17" height="17"><use href="#i-cal"/></svg>Publishing</button>
@@ -1010,7 +1010,6 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
 
   <div class="railfoot">
     <div class="nav">
-      <button data-v="studio"><svg width="17" height="17"><use href="#i-db"/></svg>Models</button>
       <button data-v="help"><svg width="17" height="17"><use href="#i-book"/></svg>Learning center</button>
       <button data-v="help"><svg width="17" height="17"><use href="#i-help"/></svg>Help center</button>
     </div>
@@ -1065,7 +1064,6 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
         <div class="tabs">
           <button class="on" data-pt="all">All projects <span id="cntAll">(0)</span></button>
           <button data-pt="clips">Clips <span id="cntClips">(0)</span></button>
-          <button data-pt="gen">Generated <span id="cntGen">(0)</span></button>
         </div>
         <div class="projmeta">
           <span class="chipmini" id="diskChip">— on disk</span>
@@ -1077,55 +1075,13 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
   </section>
 
   <!-- ======================================================== GENERATE -->
+  <!-- The generation composer lived here. What survives is the niche
+       picker: a niche still sets caption style, pacing and grade for the
+       CLIPPER, and btnClip1 passes SEL straight to /api/process. -->
   <section class="pane hide" id="v-generate">
     <div class="pad">
-      <div class="hero">
-        <h1>Create your <em>story video</em> today</h1>
-        <div class="lede">Every frame renders on <b>this machine</b>. No credits,
-          no watermark, nothing uploaded.</div>
-
-        <div class="composer">
-          <div class="cchips">
-            <button class="cchip" id="chStyle"><svg width="15" height="15"><use href="#i-spark"/></svg>
-              <u>Style</u><s id="chStyleV">Auto</s></button>
-            <button class="cchip" id="chAssets"><svg width="15" height="15"><use href="#i-img"/></svg>
-              <u>Assets</u><s>Optional</s></button>
-            <button class="cchip" id="chAudio"><svg width="15" height="15"><use href="#i-mic"/></svg>
-              <u>Audio</u><s id="chAudioV">Local</s></button>
-          </div>
-          <div class="cbody">
-            <textarea id="brief" rows="2" placeholder="Describe your video idea. Each sentence becomes a shot — write them as beats, not a paragraph."></textarea>
-            <!-- Screen Script. Same field, read as a screenplay: the
-                 writer decides where a shot begins instead of a full
-                 stop deciding for them. -->
-            <div class="spwrap hide" id="spWrap">
-              <div class="spmirror" id="spMirror"></div>
-              <textarea id="spText" spellcheck="false" placeholder="INT. TEA SHOP - NIGHT&#10;&#10;Smoke hangs under a dead fluorescent tube.&#10;&#10;WAXAR&#10;You never pay.&#10;&#10;EXT. STREET - CONTINUOUS&#10;&#10;He storms out into the rain."></textarea>
-            </div>
-            <div class="spbar hide" id="spBar"></div>
-            <div class="crow">
-              <button class="minichip" id="chScript"><svg width="13" height="13"><use href="#i-text"/></svg>Screen Script</button>
-              <button class="minichip" id="chBoard"><svg width="13" height="13"><use href="#i-layout"/></svg>Storyboard</button>
-              <button class="minichip" id="chAspect"><svg width="13" height="13"><use href="#i-phone"/></svg><span id="chAspectV">9:16</span></button>
-              <button class="minichip" id="chModel"><svg width="13" height="13"><use href="#i-spark"/></svg><span id="chModelV">AI model</span></button>
-              <button class="minichip" id="chShots"><svg width="13" height="13"><use href="#i-film"/></svg><span id="chShotsV">2 shots</span></button>
-              <button class="gobtn" id="btnGo" title="Generate"><svg width="15" height="15"><use href="#i-arrup"/></svg></button>
-            </div>
-          </div>
-        </div>
-
-        <div class="modes" id="modeRow">
-          <button class="mode on" data-m="script"><svg width="14" height="14"><use href="#i-text"/></svg>Script to Video</button>
-          <button class="mode" data-m="long"><svg width="14" height="14"><use href="#i-scissor"/></svg>Long to Shorts</button>
-          <button class="mode" data-m="board"><svg width="14" height="14"><use href="#i-layout"/></svg>Storyboard</button>
-          <button class="mode" data-m="motion"><svg width="14" height="14"><use href="#i-trans"/></svg>Motion Graphics</button>
-        </div>
-        <div class="estline" id="estLine"></div>
-        <div id="sbOut" style="text-align:left;max-width:640px;margin:20px auto 0"></div>
-      </div>
-
       <div class="inspire">
-        <h3>Pick a look. Then make it yours.</h3>
+        <h3>Pick a look. Every clip this machine cuts will use it.</h3>
         <div class="wall" id="nicheWall"></div>
       </div>
     </div>
@@ -1167,30 +1123,23 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
         view of <code id="wsPath">workspace/</code>, not a second copy.</div>
       <div class="stats grid g2" id="assetStats" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))"></div>
       <h2>Generated pieces</h2>
-      <div class="grid g3" id="genGrid"></div>
     </div>
   </section>
 
   <!-- ========================================================== STUDIO -->
   <section class="pane hide" id="v-studio">
     <div class="pad">
-      <h1>Studio</h1>
+      <h1>Capabilities</h1>
       <div class="sub">Capabilities and models, probed live. A tile here is never
         a promise — it reports what is actually installed on this machine, which
         is why a control it gates can be greyed out rather than failing later.</div>
       <h2>Capabilities</h2>
       <div class="grid g3" id="capGrid"></div>
-      <h2>Generation models</h2>
-      <div class="grid g2" id="modelGrid"></div>
-      <h2>Cloud provider quota</h2>
       <div class="card">
-        <table><thead><tr><th>Provider</th><th>Status</th><th>Used</th></tr></thead>
-          <tbody id="quotaBody"></tbody></table>
-        <div class="row" style="margin-top:12px">
+        <div class="row" style="margin-top:4px">
           <button class="wbtn" id="btnDoctor">Check prerequisites</button>
-          <button class="wbtn" id="btnResetQuota">Reset quota state</button>
-          <span class="faint">Use after enabling billing or swapping keys — not
-            every 429 reopens on its own.</span>
+          <span class="faint">Probes ffmpeg, the encoder and the model weights
+            this machine actually has, and writes the result to Activity.</span>
         </div>
       </div>
     </div>
@@ -1281,10 +1230,10 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
        build to keep in sync. -->
   <nav class="tabbar" id="tabBar" aria-label="Primary">
     <button data-v="home"><svg width="19" height="19"><use href="#i-home"/></svg><span class="lab">Home</span></button>
-    <button data-v="generate"><svg width="19" height="19"><use href="#i-spark"/></svg><span class="lab">Create</span></button>
+    <button data-v="generate"><svg width="19" height="19"><use href="#i-spark"/></svg><span class="lab">Look</span></button>
     <button data-v="clips"><svg width="19" height="19"><use href="#i-grid"/></svg><span class="lab">Clips</span></button>
     <button data-v="activity"><svg width="19" height="19"><use href="#i-chart"/></svg><span class="lab">Activity</span></button>
-    <button data-v="studio"><svg width="19" height="19"><use href="#i-cpu"/></svg><span class="lab">Studio</span></button>
+    <button data-v="studio"><svg width="19" height="19"><use href="#i-cpu"/></svg><span class="lab">Capabilities</span></button>
   </nav>
 </div><!-- /main -->
 </div><!-- /app -->
@@ -1486,7 +1435,7 @@ const ic=(n,sz)=>`<svg width="${sz||16}" height="${sz||16}"><use href="#i-${n}"/
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
 /* ---------------------------------------------------------------- state */
-let NICHES=[],MODELS=[],CAPS=[],CLIPS=[],REJECTED=[],PIECES=[],TASKS=[];
+let NICHES=[],CAPS=[],CLIPS=[],REJECTED=[],TASKS=[];
 let SEL=null, VIEW='home', PROJTAB='all', busy=false, GRIDLIST=false;
 let SORT='new', FILTER='all', EST_AT=0;
 let DLG=null, DLGLIST=[];
@@ -1633,8 +1582,8 @@ function go(v){
   $('#tbFilter').classList.toggle('hide',!isClips);
   $('#tbSort').classList.toggle('hide',!isClips);
   $('#tbGrid').classList.toggle('hide',!isClips);
-  $('#crumb').textContent={home:'Home',generate:'Story video',clips:'Clips',
-    assets:'Asset library',studio:'Studio',activity:'Activity',
+  $('#crumb').textContent={home:'Home',generate:'Look',clips:'Clips',
+    assets:'Asset library',studio:'Capabilities',activity:'Activity',
     publish:'Publishing',help:'Learning center'}[v]||v;
   $('#view').scrollTop=0;
   setDrawer(false);
@@ -1908,82 +1857,9 @@ addEventListener('resize',()=>{ if(DC.on) dcDraw() });
    In script mode the blocks the writer typed are the beats. Parsing runs
    on the SERVER — a second parser here would be a second answer to "where
    does this shot begin", and the one on screen would be the wrong one. */
-let SP={on:false,summary:null,timer:null};
-
-function spLineClass(blocks,i){
-  const b=blocks.find(x=>x.line_no===i);
-  if(!b) return 'a';
-  return {heading:'h',character:'c',dialogue:'d',parenthetical:'p',
-          transition:'t',action:'a'}[b.type]||'a';
-}
-function spPaint(){
-  const text=$('#spText').value;
-  const blocks=(SP.summary&&SP.summary.blocks)||[];
-  const lines=text.split('\n');
-  $('#spMirror').innerHTML=lines.map((ln,i)=>
-    `<div class="${spLineClass(blocks,i)}">${esc(ln)||'&nbsp;'}</div>`).join('');
-  $('#spMirror').scrollTop=$('#spText').scrollTop;
-}
-async function spParse(){
-  const text=$('#spText').value;
-  if(!text.trim()){ SP.summary=null; spPaint(); $('#spBar').innerHTML=''; return }
-  try{ SP.summary=await post('/api/screenplay',{text}) }
-  catch(e){ return }
-  spPaint();
-  const s=SP.summary, c=s.counts||{};
-  // The shot count is the number that matters: it is what the generator
-  // bills for, and in script mode it comes from the writing, not a picker.
-  $('#spBar').innerHTML=
-    `<span class="spchip"><b>${s.shot_count}</b> shot${s.shot_count===1?'':'s'}</span>`
-    +`<span class="spchip"><b>${c.heading||0}</b> scenes</span>`
-    +`<span class="spchip"><b>${c.dialogue||0}</b> dialogue</span>`
-    +(s.speakers&&s.speakers.length
-        ? `<span class="spchip">${s.speakers.map(esc).join(' · ')}</span>` : '')
-    +`<span class="spchip"><b>${s.word_count}</b> words</span>`
-    +`<span>Dialogue is spoken, not drawn — it never enters the picture prompt.</span>`;
-}
-function spSchedule(){ clearTimeout(SP.timer); SP.timer=setTimeout(spParse,220) }
-
-function toggleScript(){
-  SP.on=!SP.on;
-  $('#chScript').classList.toggle('on',SP.on);
-  $('#spWrap').classList.toggle('hide',!SP.on);
-  $('#spBar').classList.toggle('hide',!SP.on);
-  $('#brief').classList.toggle('hide',SP.on);
-  if(SP.on){
-    // Carry the prose across so switching modes never loses what was typed.
-    if(!$('#spText').value.trim()&&$('#brief').value.trim())
-      $('#spText').value=$('#brief').value;
-    $('#spText').focus(); spParse();
-  }else{
-    if($('#spText').value.trim()) $('#brief').value=$('#spText').value;
-  }
-}
-/* The one piece of real screenplay behaviour worth automating: TAB after
-   a blank line starts a character cue, which is the keystroke a writer
-   actually repeats a hundred times. Everything else is left alone —
-   auto-formatting that fights the typist is worse than none. */
-$('#spText').addEventListener('keydown',e=>{
-  if(e.key!=='Tab') return;
-  e.preventDefault();
-  const ta=e.target, at=ta.selectionStart;
-  const before=ta.value.slice(0,at), line=before.split('\n').pop();
-  const ins=line.trim()?'':'\n';
-  ta.setRangeText(ins,at,ta.selectionEnd,'end');
-  spSchedule();
-});
-$('#spText').addEventListener('input',()=>{spPaint();spSchedule()});
-$('#spText').addEventListener('scroll',()=>{
-  $('#spMirror').scrollTop=$('#spText').scrollTop;
-});
-$('#chScript').onclick=toggleScript;
-/* The brief the rest of the composer reads. In script mode it is the
-   screenplay text, and `screenplay:true` tells the server to parse it
-   rather than cutting it on full stops. */
-function composerBrief(){
-  return SP.on ? $('#spText').value : $('#brief').value;
-}
-function composerIsScript(){ return !!SP.on }
+/* The screenplay composer was removed with the generation half: it
+   parsed Fountain for the video generator, /api/screenplay is gone,
+   and so is the parser module behind it. */
 
 /* ================================================================= HOME */
 /* The tool row gates on real capabilities: a tile that this machine cannot
@@ -1992,15 +1868,13 @@ const TOOLS=[
   {k:'long',   n:'Long to shorts', i:'scissor', cap:null,        go:()=>go('home')},
   {k:'cc',     n:'AI captions',    i:'cc',      cap:null,        go:()=>{go('clips')}},
   {k:'edit',   n:'Video editor',   i:'film',    cap:null,        go:()=>openNewest()},
-  {k:'script', n:'Script to video',i:'text',    cap:'genvideo',  go:()=>go('generate')},
   {k:'reframe',n:'AI reframe',     i:'crop',    cap:'tracking',  go:()=>openNewest()},
   {k:'speech', n:'Enhance speech', i:'wave',    cap:'speech',    go:()=>openNewest('enhance')},
-  {k:'broll',  n:'AI B-roll',      i:'img',     cap:'broll',     go:()=>openNewest('broll')},
   {k:'vo',     n:'Voiceover hook', i:'mic',     cap:'voiceover', go:()=>openNewest('vo')},
   {k:'up',     n:'Upscale',        i:'zoomin',  cap:'upscale',   go:()=>openNewest('up')},
   {k:'pack',   n:'Export pack',    i:'save',    cap:'publish',   go:()=>go('publish')},
   {k:'watch',  n:'Watch channels', i:'target',  cap:null,        go:()=>startWatch()},
-  {k:'studio', n:'Studio',         i:'cpu',     cap:null,        go:()=>go('studio')},
+  {k:'caps',   n:'Capabilities',   i:'cpu',     cap:null,        go:()=>go('studio')},
 ];
 const capOf=k=>k?CAPS.find(c=>c.key===k):null;
 const capOk=k=>{if(!k)return true;const c=capOf(k);return !!(c&&c.available)};
@@ -2036,7 +1910,6 @@ function renderTools(){
 function projectCards(){
   let items=[];
   if(PROJTAB!=='gen') items=items.concat(CLIPS.map(c=>({kind:'clip',c})));
-  if(PROJTAB!=='clips') items=items.concat(PIECES.map(p=>({kind:'gen',p})));
   items.sort((a,b)=>((b.c||b.p).created_at||0)-((a.c||a.p).created_at||0));
   if(!items.length) return '<div class="empty">Nothing produced yet. Drop a link above.</div>';
   return items.slice(0,24).map(it=>{
@@ -2066,10 +1939,9 @@ function projectCards(){
   }).join('');
 }
 function renderHome(){
-  $('#cntAll').textContent=`(${CLIPS.length+PIECES.length})`;
+  $('#cntAll').textContent=`(${CLIPS.length})`;
   $('#cntClips').textContent=`(${CLIPS.length})`;
-  $('#cntGen').textContent=`(${PIECES.length})`;
-  const bytes=[...CLIPS,...REJECTED,...PIECES].reduce((a,x)=>a+(x.size_mb||0),0);
+  const bytes=[...CLIPS,...REJECTED].reduce((a,x)=>a+(x.size_mb||0),0);
   $('#diskChip').textContent=gb(bytes)+' on disk';
   $('#projGrid').innerHTML=projectCards();
   bindOpeners($('#projGrid'));
@@ -2083,19 +1955,6 @@ function bindOpeners(root){
   root.querySelectorAll('[data-open]').forEach(el=>el.onclick=e=>{
     e.stopPropagation();openDetail(el.dataset.open)});
   root.querySelectorAll('[data-gen]').forEach(el=>el.onclick=()=>go('assets'));
-  // Generated pieces had no delete path anywhere in the UI, so a
-  // forty-shot experiment could only be removed in Explorer.
-  root.querySelectorAll('[data-gendel]').forEach(el=>el.onclick=async e=>{
-    e.stopPropagation();
-    const slug=el.dataset.gendel;
-    if(!confirm(`Move the generated piece "${slug}" to workspace/trash?\n\n`
-      +`Its sequence and every shot go with it. This is a move, not a `
-      +`delete.`)) return;
-    el.disabled=true;
-    try{ await post('/api/generated/delete',{slug});
-      toast(`Moved "${slug}" to workspace/trash/generated.`); refresh() }
-    catch(err){ el.disabled=false; toast(err.message,1) }
-  });
 }
 function openNewest(tab){
   const c=CLIPS[0];
@@ -2376,7 +2235,7 @@ function renderNiches(){
   $$('[data-use]').forEach(b=>b.onclick=e=>{e.stopPropagation();
     // A new style brings its own shots/aspect, so a leftover override from
     // the previous one would silently follow you across looks.
-    SEL=b.dataset.use;GENOVR.shots=null;GENOVR.aspect=null;
+    SEL=b.dataset.use;GENOVR.aspect=null;
     renderNiches();syncComposer();toast('Style: '+SEL)});
   $$('[data-peek]').forEach(b=>b.onclick=e=>{e.stopPropagation();
     const n=NICHES.find(x=>x.name===b.dataset.peek);
@@ -2388,107 +2247,23 @@ function renderNiches(){
    pacing really are tuned together — but "tuned together" was being used
    to justify a chip that only explained itself. An override is allowed,
    shown as such, and cleared when you pick a different style. */
-const GENOVR={shots:null,aspect:null};
-const genShots=()=>{const n=NICHES.find(x=>x.name===SEL);
-  return GENOVR.shots||(n?n.shots:2)||2};
+const GENOVR={aspect:null};
 const genAspect=()=>{const n=NICHES.find(x=>x.name===SEL);
   return GENOVR.aspect||(n?n.aspect:'9:16')||'9:16'};
 
 function syncComposer(){
   const n=NICHES.find(x=>x.name===SEL);
-  $('#chStyleV').textContent=n?n.label:'Auto';
-  $('#chAspectV').textContent=genAspect()+(GENOVR.aspect?' ·':'');
-  $('#chShotsV').textContent=genShots()+' shots'+(GENOVR.shots?' ·':'');
-  const usable=MODELS.filter(m=>m.usable);
-  $('#chModelV').textContent=usable.length?usable[0].label:'No model';
-  if(n){
-    const secs=Math.round(n.shots*(n.shot_seconds||5));
-    $('#estLine').textContent=`≈ ${secs}s of video · ${usable.length
-      ? 'model auto-selected by VRAM and shot size' : 'no usable model installed'}`;
-  }else $('#estLine').textContent='';
+  const sv=$('#chStyleV'); if(sv) sv.textContent=n?n.label:'Auto';
+  const av=$('#chAspectV'); if(av) av.textContent=genAspect();
+  const el=$('#estLine'); if(el) el.textContent='';
 }
-$('#chStyle').onclick=()=>{go('generate');
-  document.querySelector('.inspire').scrollIntoView({behavior:'smooth'})};
-$('#chShots').onclick=()=>{
-  const n=NICHES.find(x=>x.name===SEL);
-  const cur=genShots();
-  const raw=prompt(`How many shots?\n\n${n?n.label+' suggests '+n.shots:'No style selected'}`
-    +`\nLength comes from cutting, so more shots = a longer piece.\n`
-    +`1-64, or blank to go back to the style's own count.`,String(cur));
-  if(raw===null) return;
-  if(!raw.trim()){ GENOVR.shots=null; syncComposer();
-    return toast('Shot count back to the style default.') }
-  const v=Math.floor(Number(raw));
-  if(!Number.isFinite(v)||v<1||v>64)
-    return toast('Shots must be a whole number from 1 to 64.',1);
-  GENOVR.shots=v; syncComposer();
-  toast(`${v} shot(s) — overriding the style until you pick another.`);
-};
-$('#chAspect').onclick=()=>{
-  // Two real targets, so a toggle beats a prompt. `·` on the chip marks it
-  // as an override rather than the style's own value.
-  GENOVR.aspect = genAspect()==='9:16' ? '16:9' : '9:16';
-  const n=NICHES.find(x=>x.name===SEL);
-  if(n && GENOVR.aspect===n.aspect) GENOVR.aspect=null;  // back to default
-  syncComposer();
-  toast(`Aspect ${genAspect()}${GENOVR.aspect?' (overriding the style)':''}.`);
-};
-$('#chModel').onclick=()=>{go('studio');
-  toast('Models are selected automatically by VRAM headroom and shot size — '
-       +'here is what is installed.')};
-$('#chAssets').onclick=()=>toast('Bring your own footage by running the clipper '
-  +'on it instead: paste the path on Home.');
-$('#chAudio').onclick=()=>{
-  const c=capOf('voiceover');
-  toast(c&&c.available?'Voiceover runs locally — open a clip and use the '
-    +'Voiceover hook panel.':'No local voice model installed. See Studio.')};
-
-$('#btnGo').onclick=async()=>{
-  const brief=composerBrief().trim();
-  if(!brief) return toast('Write a brief first.',1);
-  if(!SEL) return toast('Pick a style first.',1);
-  const n=NICHES.find(x=>x.name===SEL)||{};
-  $('#btnGo').disabled=true;
-  try{
-    await api('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({brief,niche:SEL,preset:SEL,shots:genShots(),
-        aspect_ratio:genAspect(),clip:false,
-        screenplay:composerIsScript()})});
-    toast('Generation started — follow it under Activity.');go('activity');
-  }catch(e){toast(e.message,1)}
-  finally{$('#btnGo').disabled=false;refresh()}
-};
-async function storyboard(){
-  const brief=composerBrief().trim();
-  if(!brief) return toast('Write a brief first.',1);
-  if(!SEL) return toast('Pick a style first.',1);
-  const n=NICHES.find(x=>x.name===SEL)||{};
-  try{
-    const sb=await api('/api/storyboard',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({brief,preset:SEL,shots:genShots(),
-        screenplay:composerIsScript()})});
-    const rows=sb.shots||[];
-    $('#sbOut').innerHTML='<h2 style="margin:4px 0 10px">Storyboard</h2>'+
-      rows.map((s,i)=>`<div class="card" style="margin-bottom:8px">
-        <div class="row" style="justify-content:space-between">
-          <b style="font-size:13px">Shot ${i+1}</b>
-          <span class="faint">${esc(s.seconds||s.duration||'')}s</span></div>
-        <p class="dim" style="margin:7px 0 0;font-size:12.5px;line-height:1.6">
-          ${esc(s.beat||s.prompt||'')}</p></div>`).join('');
-  }catch(e){toast(e.message,1)}
-}
-$('#chBoard').onclick=storyboard;
+/* The composer chips and the mode router went with the generation pane.
+   Only one mode survived - Long to Shorts - so a router that switched
+   between four is a router with nothing to route. Aspect is fixed at 9:16
+   by [s6] and the clipper reads the niche straight off SEL. */
 $$('#modeRow .mode').forEach(b=>b.onclick=()=>{
   $$('#modeRow .mode').forEach(x=>x.classList.toggle('on',x===b));
-  const m=b.dataset.m;
-  if(m==='long') go('home');
-  else if(m==='board') storyboard();
-  else if(m==='motion'){
-    const mg=NICHES.find(n=>/motion/i.test(n.name+n.label));
-    if(mg){SEL=mg.name;renderNiches();syncComposer();toast('Style: '+mg.label)}
-    else toast('No motion-graphics style is defined.',1);
-  }
+  go('home');
 });
 
 /* ================================================================ CLIPS */
@@ -3907,34 +3682,12 @@ function renderCaps(){
         ${esc(c.available?c.note:(c.blocker||c.note))}</p></div>`;
   }).join('')||'<div class="empty">No capabilities reported.</div>';
 }
-function renderModels(){
-  $('#modelGrid').innerHTML=MODELS.map(m=>`
-    <div class="card">
-      <div class="row" style="justify-content:space-between">
-        <b style="font-size:14.5px">${esc(m.label)}</b>
-        <span class="tag ${m.usable?'ok':(m.installed?'warn':'mut')}">
-          ${m.usable?'ready':(m.installed?'will not fit':'not downloaded')}</span></div>
-      <div class="faint" style="margin:7px 0 12px">${esc(m.model_id)}</div>
-      <div class="grid" style="grid-template-columns:1fr 1fr;gap:7px;font-size:12.5px">
-        <div><span class="dim">Max frame</span><br>${Math.round(m.max_pixels/1000)}k px</div>
-        <div><span class="dim">Peak VRAM</span><br>${m.vram_gb} GB</div>
-        <div><span class="dim">Steps</span><br>${m.steps}</div>
-        <div><span class="dim">Relative time</span><br>${m.relative_cost}×</div></div>
-      <div class="row" style="margin-top:11px;gap:5px">
-        ${(m.strengths||[]).map(s=>`<span class="tag mut">${esc(s)}</span>`).join('')}</div>
-      ${m.notes?`<p class="faint" style="margin-top:11px;line-height:1.55">${esc(m.notes)}</p>`:''}
-    </div>`).join('')||'<div class="empty">No models registered.</div>';
-}
 
 $('#btnDoctor').onclick=async()=>{
   try{ await post('/api/doctor');
     toast('Prerequisite check running — output appears under Activity.');
     go('activity'); refresh();
   }catch(e){ toast(e.message,1) }
-};
-$('#btnResetQuota').onclick=async()=>{
-  try{ await post('/api/genquota/reset'); toast('Quota state cleared.'); refresh() }
-  catch(e){ toast(e.message,1) }
 };
 
 /* ============================================================= PUBLISH */
@@ -4057,43 +3810,36 @@ function renderHelp(){
 
 /* =============================================================== ASSETS */
 function renderAssets(){
-  const rows=[['Clips',CLIPS.length],['Quarantined',REJECTED.length],
-    ['Generated',PIECES.length],['Ready models',MODELS.filter(m=>m.usable).length]];
+  const rows=[['Clips',CLIPS.length],['Quarantined',REJECTED.length]];
   $('#assetStats').innerHTML=rows.map(([k,v])=>
     `<div class="card"><b style="font-size:23px;display:block;letter-spacing:-.5px">${v}</b>
      <i style="font-style:normal;font-size:10px;color:var(--faint);
         text-transform:uppercase;letter-spacing:.1em">${k}</i></div>`).join('');
-  $('#genGrid').innerHTML=PIECES.length?PIECES.map(p=>`
-    <div class="card" style="padding:0;overflow:hidden">
-      <video controls playsinline preload="none" style="width:100%;display:block;background:#000;
-        aspect-ratio:9/16;object-fit:cover" src="${esc(p.url||p.sequence_url||'')}"></video>
-      <div style="padding:10px 12px"><b style="font-size:12.5px">${esc(p.slug)}</b>
-        <div class="faint">${p.shots||1} shot(s) · ${mb(p.size_mb)}</div></div>
-    </div>`).join('') : '<div class="empty">Nothing generated yet.</div>';
 }
 
 /* ================================================================ POLL */
 async function refresh(){
   if(busy) return; busy=true;
   try{
-    const [clips,pieces,quota,tasks,stages,auth]=await Promise.all([
-      api('/api/clips'),api('/api/generated'),api('/api/generated/status'),
-      api('/api/tasks'),api('/api/stages?limit=14'),
+    // Each leg catches its own failure. /api/generated and
+    // /api/generated/status went with the generation half and this
+    // Promise.all had no guard, so the whole poll rejected every four
+    // seconds: clips, tasks and stages stopped updating and the connection
+    // dot never turned green.
+    const [clips,tasks,stages,auth]=await Promise.all([
+      api('/api/clips').catch(()=>[]),
+      api('/api/tasks').catch(()=>[]),
+      api('/api/stages?limit=14').catch(()=>[]),
       api('/api/auth/status').catch(()=>[])]);
     $('#conn').innerHTML='<span class="dot"></span>connected';
     CLIPS=clips.filter(c=>!c.rejected);
     REJECTED=clips.filter(c=>c.rejected);
-    PIECES=pieces; TASKS=tasks; AUTH=auth;
+    TASKS=tasks; AUTH=auth;
 
     renderHome(); renderClips(); renderAssets(); renderPacks(); renderPublish();
     // The medians move only when a stage finishes, so this does not belong
     // on the one-second poll — and it is only visible on Activity anyway.
     if(VIEW==='activity'&&Date.now()-EST_AT>20000){EST_AT=Date.now();renderEstimates()}
-    $('#quotaBody').innerHTML=quota.map(q=>`<tr><td><b>${esc(q.name)}</b></td>
-      <td><span class="tag ${q.available?'ok':'warn'}">${q.available?'ready'
-        :'metered out · '+Math.round(q.available_in_s/60)+' min'}</span></td>
-      <td class="dim">${q.calls} call(s) · ${Math.round(q.seconds_generated)}s</td></tr>`)
-      .join('')||'<tr><td colspan="3" class="dim">no runs yet</td></tr>';
 
     const running=tasks.filter(t=>t.status==='running');
     const badge=$('#navRunning');
@@ -4132,11 +3878,18 @@ async function refresh(){
 /* ================================================================ init */
 (async function init(){
   try{
-    const [n,m,c,h,d,r]=await Promise.all([api('/api/niches'),api('/api/models'),
-      api('/api/capabilities'),api('/api/health'),
+    // Every leg carries its own catch. /api/models was removed with the
+    // generation half and this Promise.all had no guard on it, so one 404
+    // rejected the whole await: NICHES, CAPS and DUBLANGS were never
+    // assigned, every capability tile read unavailable, and the composer
+    // had no niches. One dead endpoint must not blank the dashboard.
+    const [n,c,h,d,r]=await Promise.all([
+      api('/api/niches').catch(()=>[]),
+      api('/api/capabilities').catch(()=>[]),
+      api('/api/health').catch(()=>({})),
       api('/api/dub/languages').catch(()=>[]),
       api('/api/ratings').catch(()=>({liked:[],hidden:[]}))]);
-    NICHES=n;MODELS=m;CAPS=c;DUBLANGS=d;
+    NICHES=n;CAPS=c;DUBLANGS=d;
     (r.liked||[]).forEach(f=>LIKED.add(f));
     (r.hidden||[]).forEach(f=>HIDDEN.add(f));
     SEL=(NICHES[0]||{}).name||null;
@@ -4145,10 +3898,10 @@ async function refresh(){
     $('#whoSub').innerHTML='<span class="dot"></span>'+
       ((h.workspace||'').split(/[\\/]/).slice(-2)[0]||'local');
   }catch(e){
-    toast('Could not load niches, models or capabilities: '+e.message,1);
+    toast('Could not load niches or capabilities: '+e.message,1);
   }
   renderTools(); renderNiches(); syncComposer(); renderCaps();
-  renderModels(); renderHelp();
+  renderHelp();
   $('#tbFilter').classList.add('hide');
   $('#tbSort').classList.add('hide');
   $('#tbGrid').classList.add('hide');
