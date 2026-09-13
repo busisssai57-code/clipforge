@@ -174,7 +174,11 @@ def test_the_inline_script_is_balanced(dash):
 def test_every_capability_key_the_tools_gate_on_is_real(dash):
     """A tile gating on a key the probe never emits is permanently dark."""
     from clipforge import capabilities
-    known = {c.key for c in capabilities.probe()} | {"tracking"}
+    # No allowlist. This once read `| {"tracking"}`, which made the check pass
+    # while the Reframe tile gated on a key the probe never emitted - capOk()
+    # is false for an unknown key, so AI reframe was dimmed and unclickable
+    # on every machine. An exemption here is the bug, not the fix.
+    known = {c.key for c in capabilities.probe()}
     used = set(re.findall(r"cap:'([a-z_]+)'", dash))
     unknown = sorted(used - known)
     assert not unknown, f"tool tiles gate on unknown capability keys: {unknown}"

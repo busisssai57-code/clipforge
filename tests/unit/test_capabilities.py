@@ -95,7 +95,9 @@ def _patch_probe_world(monkeypatch, *, filters=(), kokoro=False,
                        local_model=False, asr=True,
                        load_config=None, cloud_enabled=None,
                        has_key=False, voices=None,
-                       local_translator=True):
+                       local_translator=True,
+                       pose=False, face=False, gpu="", weights=False,
+                       nvenc=False, hf_token=False, tools=(), judges=()):
     """Pin every external the probe consults to an explicit value.
 
     ``local_translator`` defaults True because that is the real state of
@@ -132,6 +134,24 @@ def _patch_probe_world(monkeypatch, *, filters=(), kokoro=False,
     monkeypatch.setattr(dubbing, "installed_voice_languages",
                         lambda root=None: dict(voices or {}))
 
+    # The pipeline tiles. Each probe is a module-level helper precisely so
+    # it can be pinned here: two of them encode a frame or import torch for
+    # real, and a unit test must not do either.
+    monkeypatch.setattr(capabilities, "_pose_ready", lambda: (pose, face))
+    monkeypatch.setattr(capabilities, "_cuda_device", lambda: gpu)
+    monkeypatch.setattr(
+        capabilities, "_ranking_weights",
+        lambda: (weights, "Qwen2.5-VL-7B-Instruct-AWQ: 6.9 GB cached"
+                 if weights else "Qwen2.5-VL-7B-Instruct-AWQ: 0.0 GB cached "
+                 "(weights missing)"))
+    monkeypatch.setattr(
+        capabilities, "_nvenc",
+        lambda: (True, "NVENC encodes", "") if nvenc else
+        (False, "NVENC unusable: driver too old", "Update the NVIDIA driver."))
+    monkeypatch.setattr(capabilities, "_hf_token_present", lambda: hf_token)
+    monkeypatch.setattr(capabilities, "_tool", lambda name: name in tools)
+    monkeypatch.setattr(capabilities, "_hosted_judges", lambda: tuple(judges))
+
 
 def _tile(caps: list[Capability], key: str) -> Capability:
     match = [c for c in caps if c.key == key]
@@ -143,7 +163,9 @@ def test_probe_reports_every_advertised_tile_exactly_once(monkeypatch):
     _patch_probe_world(monkeypatch)
     keys = [c.key for c in capabilities.probe()]
     assert keys == ["voiceover", "upscale", "broll", "splitscreen",
-                    "dubbing", "publish", "speech"]
+                    "dubbing", "publish", "speech",
+                    "tracking", "ranking", "diarization", "gpu_encode",
+                    "vl_judge", "grab", "live"]
 
 
 def test_unavailable_tiles_name_their_fix(monkeypatch):
@@ -160,7 +182,10 @@ def test_available_tiles_carry_no_blocker(monkeypatch):
                               "afftdn", "speechnorm", "xstack"),
         kokoro=True, local_model=True,
         cloud_enabled=lambda cfg, feat: True, has_key=True,
-        voices={"en": "af_heart"})
+        voices={"en": "af_heart"},
+        pose=True, face=True, gpu="RTX 3090 (24 GB)", weights=True,
+        nvenc=True, hf_token=True, tools=("yt-dlp", "streamlink"),
+        judges=("anthropic",))
     for cap in capabilities.probe():
         if cap.available:
             assert cap.blocker == "", f"{cap.key} available yet blocked"
@@ -178,7 +203,10 @@ def test_fully_equipped_world_reports_every_implemented_tile_live(monkeypatch):
                               "afftdn", "speechnorm", "xstack"),
         kokoro=True, local_model=True,
         cloud_enabled=lambda cfg, feat: True, has_key=True,
-        voices={"en": "af_heart"})
+        voices={"en": "af_heart"},
+        pose=True, face=True, gpu="RTX 3090 (24 GB)", weights=True,
+        nvenc=True, hf_token=True, tools=("yt-dlp", "streamlink"),
+        judges=("anthropic",))
     caps = capabilities.probe()
     for cap in caps:
         if not cap.by_policy:
@@ -338,3 +366,82 @@ def test_summary_is_the_dashboard_shape(monkeypatch):
     import json
 
     json.dumps(rows)
+
+
+# --- the pipeline tiles ----------------------------------------------------
+
+def test_reframe_is_live_whenever_the_pose_weights_are_present(monkeypatch):
+    """The regression: the dashboard's Reframe tool gated on cap:'tracking'
+    and this probe never emitted the key, so capOk() dimmed it everywhere."""
+    _patch_probe_world(monkeypatch, pose=True)
+    tile = _tile(capabilities.probe(), "tracking")
+    assert tile.available and tile.blocker == ""
+
+
+def test_reframe_without_the_face_model_says_how_it_chooses(monkeypatch):
+    _patch_probe_world(monkeypatch, pose=True, face=False)
+    note = _tile(capabilities.probe(), "tracking").note
+    assert "screen presence" in note and "face_landmarker" in note
+
+
+def test_ranking_needs_the_weights_and_a_gpu_and_names_which_is_missing(monkeypatch):
+    _patch_probe_world(monkeypatch, weights=False, gpu="RTX")
+    assert "weights missing" in _tile(capabilities.probe(), "ranking").blocker
+    _patch_probe_world(monkeypatch, weights=True, gpu="")
+    assert "CUDA" in _tile(capabilities.probe(), "ranking").blocker
+
+
+def test_a_dead_nvenc_is_reported_with_the_software_fallback(monkeypatch):
+    """Not a dead end: renders still work, and the tile must say so."""
+    _patch_probe_world(monkeypatch, nvenc=False)
+    tile = _tile(capabilities.probe(), "gpu_encode")
+    assert not tile.available
+    assert "driver" in tile.blocker
+    assert "libx264" in tile.note
+
+
+def test_speaker_labels_explain_that_clips_still_render_without_a_token(monkeypatch):
+    _patch_probe_world(monkeypatch, hf_token=False)
+    blocker = _tile(capabilities.probe(), "diarization").blocker
+    assert "CLIPFORGE_HF_TOKEN" in blocker and "still render" in blocker
+
+
+def test_the_judge_names_the_local_link_when_the_cloud_is_off(monkeypatch):
+    _patch_probe_world(monkeypatch, weights=True, gpu="RTX",
+                       judges=("gemini",),
+                       cloud_enabled=lambda cfg, feat: False)
+    tile = _tile(capabilities.probe(), "vl_judge")
+    assert tile.available
+    assert "local Qwen" in tile.note
+    assert "Gemini has a key but [s7] use_cloud is off" in tile.note
+
+
+def test_the_judge_names_the_first_hosted_link_when_authorised(monkeypatch):
+    _patch_probe_world(monkeypatch, weights=True, gpu="RTX",
+                       judges=("gemini", "anthropic"),
+                       cloud_enabled=lambda cfg, feat: True)
+    assert _tile(capabilities.probe(), "vl_judge").note == "Claude answers first"
+
+
+def test_a_hosted_key_without_authorisation_does_not_light_the_judge(monkeypatch):
+    """A key is possibility, not permission."""
+    _patch_probe_world(monkeypatch, weights=False, gpu="",
+                       judges=("anthropic",),
+                       cloud_enabled=lambda cfg, feat: False)
+    assert not _tile(capabilities.probe(), "vl_judge").available
+
+
+def test_sources_report_their_own_tool(monkeypatch):
+    _patch_probe_world(monkeypatch, tools=("yt-dlp",))
+    caps = capabilities.probe()
+    assert _tile(caps, "grab").available
+    assert not _tile(caps, "live").available
+    assert "streamlink" in _tile(caps, "live").blocker
+
+
+def test_the_expensive_probes_are_cached_for_the_life_of_the_process():
+    """NVENC encodes a frame and CUDA imports torch; a page load must not
+    pay for either twice."""
+    assert hasattr(capabilities._nvenc, "cache_info")
+    assert hasattr(capabilities._cuda_device, "cache_info")
+

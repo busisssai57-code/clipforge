@@ -37,6 +37,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -56,10 +57,35 @@ from clipforge.state import StateDB
 
 log = get_logger(__name__)
 
+@asynccontextmanager
+async def _lifespan(_app):
+    """Warm the capability probe before the first page asks for it.
+
+    /api/capabilities runs the probe on every dashboard load. Its two
+    expensive checks - an NVENC test encode and the torch import behind the
+    CUDA check - are cached per process, but the FIRST load still paid for
+    both: 2.4 s cold against 0.13 s warm, measured. A daemon thread moves that
+    cost to server start without delaying it, and a probe failure here is
+    logged and ignored because the endpoint will simply pay it on demand.
+    """
+    def _warm() -> None:
+        try:
+            from clipforge.capabilities import summary  # noqa: PLC0415
+
+            summary()
+            log.info("web.capabilities_warmed")
+        except Exception as exc:  # noqa: BLE001 - warming is an optimisation
+            log.warning("web.capabilities_warm_failed", error=str(exc)[:200])
+
+    threading.Thread(target=_warm, name="capabilities-warm", daemon=True).start()
+    yield
+
+
 app = FastAPI(title="BTA Control API",
               description="Control surface for this machine. It serves and "
                           "acts on files that are already here; reaching it "
-                          "from another device needs the access token.")
+                          "from another device needs the access token.",
+              lifespan=_lifespan)
 
 
 # ============================================================ access control
@@ -1270,7 +1296,7 @@ def edit_clip_text(req: ClipTextRequest) -> dict[str, Any]:
     Per-platform captions are re-trimmed to each platform's real limit so
     the pack cannot drift into claiming an over-length caption is ready.
     """
-    from clipforge.export_pack import fit_caption
+    from clipforge.export_pack import PLATFORM_TAGS, fit_caption
 
     ws = _workspace()
     root = ((Path(ws.clips) / "rejected") if req.rejected
@@ -1291,25 +1317,41 @@ def edit_clip_text(req: ClipTextRequest) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(422, f"export pack is not valid JSON: {exc}") from exc
 
+    if not isinstance(pack, dict):
+        raise HTTPException(422, "export pack must be a JSON object")
+    platforms = pack.get("platforms") or {}
+    if not isinstance(platforms, dict):
+        raise HTTPException(422, "export pack platforms must be a JSON object")
+    tags = pack.get("hashtags") or []
+    if req.hashtags is None and (
+            not isinstance(tags, list) or
+            any(not isinstance(tag, str) for tag in tags)):
+        raise HTTPException(422, "export pack hashtags must be a list of strings")
+    for plat in platforms.values():
+        if not isinstance(plat, dict):
+            raise HTTPException(422, "each export platform must be a JSON object")
+        limit = plat.get("limit", 2200)
+        if type(limit) is not int or limit < 1:
+            raise HTTPException(422, "export caption limits must be positive integers")
+
     if req.title is not None:
         pack["title"] = req.title.strip()
     if req.caption is not None:
         pack["caption"] = req.caption.strip()
     if req.hashtags is not None:
-        pack["hashtags"] = [h if h.startswith("#") else f"#{h}"
+        pack["hashtags"] = [h.strip() if h.strip().startswith("#") else f"#{h.strip()}"
                             for h in req.hashtags if h.strip()]
 
     body = str(pack.get("caption") or "")
     tags = list(pack.get("hashtags") or [])
-    for name, plat in (pack.get("platforms") or {}).items():
-        if not isinstance(plat, dict):
-            continue
-        limit = int(plat.get("limit") or 2200)
-        joined = (body + ("\n\n" + " ".join(tags) if tags else "")).strip()
+    for name, plat in platforms.items():
+        limit = plat.get("limit", 2200)
+        chosen = tags[:PLATFORM_TAGS.get(name, 5)]
+        joined = (body + ("\n\n" + " ".join(chosen) if chosen else "")).strip()
         fitted, trimmed = fit_caption(joined, limit)
         plat["caption"] = fitted
         plat["trimmed"] = bool(trimmed)
-        plat["hashtags"] = tags
+        plat["hashtags"] = chosen
 
     from clipforge.paths import atomic_write_json
     try:

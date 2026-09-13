@@ -120,7 +120,9 @@ def check_ffmpeg_capabilities() -> list[CheckResult]:
         "" if works else
         ("Renders fall back to libx264, which works and is slower. "
          + ("Update the NVIDIA driver: ffmpeg 8.x needs a newer one than "
-            "this machine has." if listed else
+            "this machine has." if listed and "driver" in why.lower() else
+            "The reason above is not the driver version; it names the "
+            "parameter the encoder rejected." if listed else
             "Install an ffmpeg build with --enable-nvenc."))))
     has_ass = " ass " in filters or "\nass" in filters or " ass\n" in filters
     results.append(CheckResult(
@@ -129,6 +131,23 @@ def check_ffmpeg_capabilities() -> list[CheckResult]:
         "" if has_ass else "Install a full ffmpeg build with libass "
                            "(Gyan.FFmpeg full)."))
     return results
+
+
+#: The frame the NVENC probe encodes. NOT 128x128: that is below the
+#: encoder's minimum frame dimension, so the probe failed with "Frame
+#: Dimension less than the minimum supported value" on a machine where every
+#: real 1080x1920 render used h264_nvenc - and then told the operator to
+#: update a driver (616.56) that was already current. The driver WAS the
+#: cause once, at 596.49 in August; the too-small frame kept the verdict
+#: alive after the driver was fixed. 320x240 clears every NVENC minimum and
+#: still encodes in well under a second.
+NVENC_PROBE_SIZE = "320x240"
+
+#: Lines ffmpeg prints on EVERY run. "Stream #0:0 -> #0:0 (... h264_nvenc)"
+#: contains "nvenc", so a substring search quoted the stream mapping as the
+#: reason the encoder failed.
+_FFMPEG_BOILERPLATE = ("Stream #", "Stream mapping", "Input #", "Duration:",
+                       "Output #", "frame=")
 
 
 def _nvenc_encodes_a_frame() -> tuple[bool, str]:
@@ -146,19 +165,22 @@ def _nvenc_encodes_a_frame() -> tuple[bool, str]:
     try:
         proc = subprocess.run(
             [str(require_binary("ffmpeg")), "-nostdin", "-hide_banner", "-y",
-             "-f", "lavfi", "-i", "testsrc=size=128x128:rate=1:d=1",
+             "-f", "lavfi", "-i",
+             f"testsrc=size={NVENC_PROBE_SIZE}:rate=1:d=1",
              "-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-"],
             capture_output=True, text=True, timeout=60)
     except Exception as exc:  # noqa: BLE001 - a check must not raise
         return False, f"{type(exc).__name__}: {exc}"[:120]
     if proc.returncode == 0:
         return True, ""
-    lines = [ln.strip() for ln in (proc.stderr or "").splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in (proc.stderr or "").splitlines()
+             if ln.strip() and not ln.strip().startswith(_FFMPEG_BOILERPLATE)]
     # ffmpeg's LAST line is "Conversion failed!", which names nothing. The
-    # line that explains it is higher up and mentions the encoder, the
-    # driver or the argument it rejected.
-    for marker in ("driver", "nvenc", "InitializeEncoder", "Invalid argument",
-                   "Cannot load", "No capable devices"):
+    # line that explains it is higher up. Most specific marker first: the
+    # generic "nvenc" used to win over "InitializeEncoder", so the tile quoted
+    # a stream-mapping line instead of the actual rejection.
+    for marker in ("driver", "InitializeEncoder", "Cannot load",
+                   "No capable devices", "Invalid argument", "nvenc"):
         for ln in lines:
             if marker.lower() in ln.lower():
                 return False, ln[:150]

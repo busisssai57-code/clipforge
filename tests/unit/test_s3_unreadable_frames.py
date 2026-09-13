@@ -313,6 +313,68 @@ def test_nvenc_is_reported_on_whether_it_encodes_not_on_being_listed(
     assert "Conversion failed" not in why
 
 
+def test_the_nvenc_probe_frame_is_large_enough_for_nvenc():
+    """A 128x128 probe frame is below NVENC's minimum frame dimension.
+
+    It failed with "Frame Dimension less than the minimum supported value"
+    on a machine where every real 1080x1920 render used h264_nvenc, and the
+    doctor blamed a driver that had already been updated. Measured on
+    2026-09-13: 128x128 fails, 256x256 / 640x360 / 1080x1920 all encode.
+    """
+    from clipforge import preflight
+
+    w, h = (int(x) for x in preflight.NVENC_PROBE_SIZE.split("x"))
+    assert w >= 256 and h >= 200, preflight.NVENC_PROBE_SIZE
+
+
+def test_the_nvenc_reason_is_the_rejection_not_the_stream_mapping(monkeypatch):
+    """ffmpeg prints "Stream #0:0 -> #0:0 (... h264_nvenc)" on every run.
+
+    It contains "nvenc", and "nvenc" was checked before "InitializeEncoder",
+    so the doctor and the GPU-encoding tile both quoted the stream mapping as
+    the reason. This is the real stderr from the failing probe.
+    """
+    from clipforge import preflight
+
+    class _Failed:
+        returncode = 1
+        stderr = (
+            "Input #0, lavfi, from 'testsrc=size=128x128:rate=1:d=1':\n"
+            "  Stream #0:0: Video: wrapped_avframe, rgb24, 128x128\n"
+            "Stream mapping:\n"
+            "  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> h264 (h264_nvenc))\n"
+            "[h264_nvenc @ 0000] InitializeEncoder failed: invalid param (8): "
+            "Frame Dimension less than the minimum supported value.\n"
+            "[vf#0:0 @ 0000] Task finished with error code: -22 (Invalid argument)\n"
+            "Conversion failed!\n")
+
+    monkeypatch.setattr(__import__("subprocess"), "run", lambda *a, **k: _Failed())
+    ok, why = preflight._nvenc_encodes_a_frame()
+    assert ok is False
+    assert "InitializeEncoder" in why, why
+    assert "Stream #" not in why, why
+
+
+def test_driver_advice_is_only_given_when_the_driver_is_the_reason(monkeypatch):
+    """Telling the operator to update a current driver sends them the wrong way."""
+    from clipforge import preflight
+
+    monkeypatch.setattr(preflight.ff, "list_encoders", lambda: "h264_nvenc")
+    monkeypatch.setattr(preflight.ff, "list_filters", lambda: " ass ")
+    monkeypatch.setattr(preflight, "_nvenc_encodes_a_frame",
+                        lambda: (False, "InitializeEncoder failed: invalid param"))
+    nv = next(r for r in preflight.check_ffmpeg_capabilities()
+              if r.name == "h264_nvenc")
+    assert "Update the NVIDIA driver" not in nv.fix, nv.fix
+
+    monkeypatch.setattr(preflight, "_nvenc_encodes_a_frame",
+                        lambda: (False, "Driver does not support the required "
+                                        "nvenc API version"))
+    nv = next(r for r in preflight.check_ffmpeg_capabilities()
+              if r.name == "h264_nvenc")
+    assert "Update the NVIDIA driver" in nv.fix, nv.fix
+
+
 # ------------------------------------------------------------- the weights
 
 def test_a_half_fetched_model_does_not_read_as_present(tmp_path, monkeypatch):

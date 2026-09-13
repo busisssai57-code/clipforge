@@ -82,6 +82,83 @@ def _translator_blocker_text() -> str:
         return "no translator is available on this machine"
 
 
+# ---- probes shared with `bta doctor` ------------------------------------
+# /api/capabilities calls probe() on every dashboard load, uncached. Doctor's
+# checks are written for a one-shot CLI and two of them are not cheap: the
+# NVENC check ENCODES a frame, and the CUDA check imports torch. Both are
+# cached for the life of the process - a driver does not change under a
+# running server - and the HF check is reduced to token PRESENCE here,
+# because doctor's version probes the network and a page load must not.
+
+_REPO = Path(__file__).resolve().parents[1]
+
+
+def _pose_ready() -> tuple[bool, bool]:
+    """(pose tracking can run, the lip-reading face model is present).
+
+    Mirrors the CLI's resolution: workspace/models first, then the repo
+    root, which is where the pose weights actually live on this machine.
+    """
+    pose = any(f.is_file() for f in (
+        _REPO / "workspace" / "models" / "yolo11m-pose.pt",
+        _REPO / "yolo11m-pose.pt"))
+    face = (_REPO / "workspace" / "models" / "face_landmarker.task").is_file()
+    return (pose and _has_module("ultralytics"), face)
+
+
+@functools.lru_cache(maxsize=1)
+def _cuda_device() -> str:
+    """GPU name and memory, or "" when there is no usable CUDA device."""
+    from clipforge.preflight import check_cuda  # noqa: PLC0415
+
+    r = check_cuda()
+    return r.message if r.ok else ""
+
+
+@functools.lru_cache(maxsize=1)
+def _nvenc() -> tuple[bool, str, str]:
+    """(encodes, what happened, what would fix it). One real frame, once."""
+    from clipforge.preflight import check_ffmpeg_capabilities  # noqa: PLC0415
+
+    for r in check_ffmpeg_capabilities():
+        if r.name == "h264_nvenc":
+            return r.ok, r.message, r.fix
+    return False, "could not probe the encoder", "run `bta doctor`"
+
+
+def _hf_token_present() -> bool:
+    """Presence only. `bta doctor` is what verifies gated repo access."""
+    import os  # noqa: PLC0415
+
+    try:
+        from clipforge.config import Secrets  # noqa: PLC0415
+
+        token = Secrets().hf_token
+    except Exception:  # noqa: BLE001
+        token = None
+    return bool(token or os.environ.get("HF_TOKEN"))
+
+
+def _ranking_weights() -> tuple[bool, str]:
+    from clipforge.preflight import check_ranking_weights  # noqa: PLC0415
+
+    r = check_ranking_weights()
+    return r.ok, r.message
+
+
+def _tool(name: str) -> bool:
+    import shutil  # noqa: PLC0415
+
+    return bool(shutil.which(name)) or _has_module(name.replace("-", "_"))
+
+
+def _hosted_judges() -> tuple[str, ...]:
+    """Providers holding a key. Opens no gate and never returns one."""
+    from clipforge.cloud import configured_providers  # noqa: PLC0415
+
+    return configured_providers()
+
+
 def probe() -> list[Capability]:
     """Every advertised feature, with its real state on this machine."""
     caps: list[Capability] = []
@@ -267,6 +344,111 @@ def probe() -> list[Capability]:
         available=not no_speech,
         blocker="" if not no_speech else f"{' and '.join(no_speech)} missing",
         note="highpass, denoise, de-ess and level — applied before loudness",
+    ))
+    # ==== the pipeline itself ============================================
+    # Everything above is a finishing tool. These are the stages a clip is
+    # made by, and until 2026-09-13 none of them had a tile - so the
+    # dashboard's Reframe tool gated on cap:"tracking", a key this probe had
+    # never emitted, and capOk() reads an unknown key as unavailable. AI
+    # reframe was dimmed and unclickable on every machine, including this
+    # one, which has the weights.
+
+    # ---- tracking / reframe ------------------------------------------
+    pose_ok, face_ok = _pose_ready()
+    caps.append(Capability(
+        key="tracking", label="AI reframe",
+        available=pose_ok,
+        blocker="" if pose_ok else
+            "pose tracking cannot run: install ultralytics and place "
+            "yolo11m-pose.pt in workspace/models",
+        note=(("follows the active speaker by lip movement, not just by "
+               "who fills the frame") if face_ok else
+              ("follows people, but face_landmarker.task is missing, so the "
+               "speaker is chosen by screen presence rather than lips - add "
+               "it to workspace/models")) if pose_ok else "",
+    ))
+
+    # ---- moment ranking ----------------------------------------------
+    weights_ok, weights_msg = _ranking_weights()
+    gpu = _cuda_device()
+    rank_ok = weights_ok and bool(gpu)
+    caps.append(Capability(
+        key="ranking", label="AI moment ranking",
+        available=rank_ok,
+        blocker="" if rank_ok else
+            (weights_msg if not weights_ok else "no usable CUDA GPU"),
+        note=(f"Qwen2.5-VL reads frames and transcript on {gpu}"
+              if rank_ok else ""),
+    ))
+
+    # ---- speaker labels ----------------------------------------------
+    hf = _hf_token_present()
+    caps.append(Capability(
+        key="diarization", label="Speaker labels",
+        available=hf,
+        blocker="" if hf else
+            "no Hugging Face token: set CLIPFORGE_HF_TOKEN, then accept the "
+            "pyannote terms. Clips still render, without per-speaker turns",
+        note=("token present; `bta doctor` verifies the gated repos, which "
+              "this tile does not probe on every page load" if hf else ""),
+    ))
+
+    # ---- encoding ----------------------------------------------------
+    nv_ok, nv_msg, nv_fix = _nvenc()
+    caps.append(Capability(
+        key="gpu_encode", label="GPU encoding",
+        available=nv_ok,
+        blocker="" if nv_ok else f"{nv_msg}. {nv_fix}".strip(),
+        note=("renders encode on the GPU" if nv_ok else
+              "renders fall back to libx264: same output, slower"),
+    ))
+
+    # ---- the VL judge ------------------------------------------------
+    # Names the link that would actually answer, because the chain's whole
+    # contract is that a verdict says which judge gave it.
+    try:
+        from clipforge.cloud import cloud_enabled as _ce  # noqa: PLC0415
+        from clipforge.config import load_config as _lc  # noqa: PLC0415
+
+        judge_cloud = bool(_ce(_lc(Path("config/config.toml")), "vl_qa"))
+    except Exception:  # noqa: BLE001
+        judge_cloud = False
+    keyed = _hosted_judges()
+    hosted = [n for n in ("anthropic", "openai", "gemini") if n in keyed]
+    names = {"anthropic": "Claude", "openai": "GPT", "gemini": "Gemini"}
+    if judge_cloud and hosted:
+        judge, judge_note = True, f"{names[hosted[0]]} answers first"
+    elif rank_ok:
+        judge = True
+        judge_note = ("the local Qwen judge answers, no network"
+                      + (f" - {', '.join(names[h] for h in hosted)} has a key "
+                         "but [s7] use_cloud is off" if hosted else ""))
+    else:
+        judge, judge_note = False, ""
+    caps.append(Capability(
+        key="vl_judge", label="VL quality judge",
+        available=judge,
+        blocker="" if judge else
+            "no local VL weights or GPU, and no hosted judge authorised by "
+            "[s7] use_cloud",
+        note=judge_note,
+    ))
+
+    # ---- sources -----------------------------------------------------
+    ytdlp = _tool("yt-dlp")
+    caps.append(Capability(
+        key="grab", label="Link download",
+        available=ytdlp,
+        blocker="" if ytdlp else "yt-dlp not found: pip install yt-dlp",
+        note="paste a video link; it downloads, then clips" if ytdlp else "",
+    ))
+    streamlink = _tool("streamlink")
+    caps.append(Capability(
+        key="live", label="Live capture",
+        available=streamlink,
+        blocker="" if streamlink else "streamlink not found: pip install streamlink",
+        note=("records a stream in segments and clips each one as it lands"
+              if streamlink else ""),
     ))
     return caps
 

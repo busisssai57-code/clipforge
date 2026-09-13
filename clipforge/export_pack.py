@@ -18,7 +18,6 @@ from a frame that carries no picture.
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -26,6 +25,7 @@ from pathlib import Path
 
 from clipforge.errors import ClipForgeError
 from clipforge.log import get_logger
+from clipforge.paths import atomic_write_json
 
 log = get_logger(__name__)
 
@@ -123,10 +123,13 @@ def fit_caption(text: str, limit: int) -> tuple[str, bool]:
     viewer, and silently over-length text is rejected by the platform
     after the operator has already pasted it.
     """
+    if limit < 1:
+        raise ValueError("caption limit must be positive")
     text = (text or "").strip()
     if len(text) <= limit:
         return text, False
-    cut = text[:limit]
+    # Reserve space for the ellipsis; it is part of the platform payload.
+    cut = text[:limit - 1]
     space = cut.rfind(" ")
     if space > limit * 0.6:
         cut = cut[:space]
@@ -229,8 +232,7 @@ def build_pack(clip: Path, *, title: str = "", transcript_text: str = "",
 
     if write:
         dest = clip.with_suffix(".export.json")
-        dest.write_text(json.dumps(pack.as_dict(), indent=2, sort_keys=True),
-                        encoding="utf-8")
+        atomic_write_json(dest, pack.as_dict())
         log.info("export.pack_written", path=str(dest),
                  platforms=len(pack.platforms))
     return pack

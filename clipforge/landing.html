@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BTA — 1 long video, 10 viral clips</title>
+<title>BTA — Turn long videos into shorts</title>
 <!-- Landing page: the front door before the dashboard. Same premise as
      dashboard_live.html — no external requests of any kind. Every visual
      below is CSS, inline SVG, or (when the pipeline has real clips on
@@ -191,43 +191,7 @@ h1{font-size:clamp(34px,5.2vw,58px);font-weight:800;letter-spacing:-2px;line-hei
 .dots i{width:6px;height:6px;border-radius:50%;background:#ffffff55}
 .dots i.on{background:#fff}
 
-/* ---------- slide 4 · AI B-roll ---------- */
-.s-broll{background:radial-gradient(110% 110% at 80% 0%,#171a26 0%,#0d0e14 60%)}
-.s-broll .inner{position:absolute;inset:0;display:flex;flex-direction:column;
-  align-items:center;justify-content:flex-end;padding:26px}
-.brpanel{position:absolute;top:22px;right:22px;width:230px;background:#101014dd;
-  border:1px solid var(--line2);border-radius:14px;padding:12px;backdrop-filter:blur(8px)}
-.brpanel .t{font-size:13px;font-weight:700;margin-bottom:10px}
-.brpanel .gen{width:100%;background:#e8e8ec;color:#0a0a0b;font-weight:700;
-  font-size:13px;border-radius:9px;padding:9px 0;text-align:center}
-.portal{width:min(40%,250px);aspect-ratio:9/14;margin-bottom:18px;
-  background:
-   radial-gradient(42% 30% at 50% 38%,#59e3ff40 0%,transparent 70%),
-   radial-gradient(30% 22% at 50% 38%,#9a6bff66 0%,transparent 70%),
-   linear-gradient(180deg,#1b2137 0%,#232746 46%,#38265a 78%,#1c1430 100%)}
-.portal::before{content:"";position:absolute;left:50%;top:38%;width:56%;aspect-ratio:1;
-  transform:translate(-50%,-50%);border-radius:50%;
-  border:2px solid #6fd9ff88;box-shadow:0 0 40px #6fd9ff55,inset 0 0 30px #9a6bff55;
-  background:conic-gradient(from 0deg,#6fd9ff22,#9a6bff33,#6fd9ff22)}
-.portal .capline{font-size:15px}
-.portal .capline i{font-style:normal;color:var(--score)}
-.timeline{width:min(88%,660px);background:#0b0b0eae;border:1px solid var(--line2);
-  border-radius:12px;padding:8px;position:relative}
-.tl-thumbs{position:absolute;top:-58px;display:flex;gap:8px;left:8px;right:8px;
-  justify-content:space-between;pointer-events:none}
-.tl-thumb{width:84px;height:48px;border-radius:8px;border:1px solid #ffffff33;
-  background:linear-gradient(140deg,#243,#1b2137 60%,#38265a);position:relative;overflow:hidden}
-.tl-thumb span{position:absolute;left:5px;top:4px;font-size:9px;font-weight:700;color:#e8e8ec}
-.tl-row{display:flex;height:52px;border-radius:8px;overflow:hidden}
-.seg{position:relative;flex:1;background:
-  repeating-linear-gradient(90deg,#b83a6e 0 26px,#7e4fd1 26px 52px,#3a6eb8 52px 78px)}
-.seg+.seg{border-left:2px solid #000}
-.seg em{position:absolute;left:6px;top:4px;font-size:9.5px;font-style:normal;
-  font-weight:700;color:#fff;text-shadow:0 1px 3px #000}
-.playhead{position:absolute;top:-64px;bottom:6px;width:2px;background:#fff;
-  left:72%;border-radius:2px;box-shadow:0 0 8px #fff8}
-
-/* ---------- slide 5 · AI audio enhance ---------- */
+/* ---------- slide 4 · AI audio enhance ---------- */
 .s-audio{background:radial-gradient(110% 110% at 20% 0%,#1a1418 0%,#101013 60%)}
 .s-audio .inner{position:absolute;inset:0;display:flex;flex-direction:column;
   justify-content:center;gap:22px;padding:38px 44px}
@@ -247,7 +211,7 @@ h1{font-size:clamp(34px,5.2vw,58px);font-weight:800;letter-spacing:-2px;line-hei
 .wave i{flex:1;background:#d9d9de;border-radius:2px;min-width:2px}
 .wave .ph{position:absolute;top:-4px;bottom:-4px;width:2px;background:#fff;left:34%}
 
-/* ---------- slide 6 · AI voice-over ---------- */
+/* ---------- slide 5 · AI voice-over ---------- */
 .s-voice{background:
   radial-gradient(100% 100% at 15% 15%,#3d2f55 0%,transparent 60%),
   radial-gradient(110% 110% at 90% 85%,#1c3d4f 0%,transparent 60%),#141420}
@@ -314,15 +278,15 @@ footer b{color:var(--dim)}
     <button onclick="goSlide(2,true)">Solutions <svg class="chev" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 3.5l3 3 3-3"/></svg></button>
     <button onclick="goSlide(3,true)">Resources <svg class="chev" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 3.5l3 3 3-3"/></svg></button>
     <button onclick="toast('BTA runs on your own GPU — there is no pricing page.')">Pricing</button>
-    <button onclick="goSlide(5,true)">For business <svg class="chev" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 3.5l3 3 3-3"/></svg></button>
+    <button onclick="goSlide(4,true)">For business <svg class="chev" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 3.5l3 3 3-3"/></svg></button>
   </div>
   <button class="dashlink" onclick="location.href='/dashboard'">My dashboard</button>
 </nav>
 
 <header class="hero" id="drop">
-  <div class="eyebrow">#1 LOCAL AI VIDEO CLIPPING TOOL</div>
-  <h1>1 long video, 10 viral clips.<br>Create 10x faster.</h1>
-  <p class="sub">BTA turns long videos into shorts and posts them to every platform —
+  <div class="eyebrow">LOCAL AI VIDEO CLIPPING</div>
+  <h1>Your long video.<br>Your next short.</h1>
+  <p class="sub">Find moments worth sharing. Review shorts and export publishing drafts —
     ranked, captioned, reframed and rendered entirely on this machine.</p>
   <div class="cta">
     <form class="linkbar" id="linkbar" onsubmit="return grab(event)">
@@ -362,11 +326,11 @@ footer b{color:var(--dim)}
           <span class="so" style="background:#000;border:1px solid #333"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fff"><path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3l-4.9-6.4L6.4 22H3.3l7.3-8.3L1.6 2H8l4.4 5.9zm-1.1 18.2h1.7L7.1 3.7H5.2z"/></svg></span>
         </div>
         <div class="fan" id="fan">
-          <div class="card" style="background-image:linear-gradient(160deg,#2f6d4f,#173629)"><span class="score"><b>97</b><span>SCORE</span></span></div>
-          <div class="card" style="background-image:linear-gradient(160deg,#6d3f8f,#2a1839)"><span class="score"><b>99</b><span>SCORE</span></span></div>
-          <div class="card" style="background-image:linear-gradient(160deg,#3f6d8f,#182a39)"><span class="score"><b>95</b><span>SCORE</span></span></div>
-          <div class="card" style="background-image:linear-gradient(160deg,#8f6d3f,#393018)"><span class="score"><b>98</b><span>SCORE</span></span></div>
-          <div class="card" style="background-image:linear-gradient(160deg,#8f3f5b,#391822)"><span class="score"><b>93</b><span>SCORE</span></span></div>
+          <div class="card" style="background-image:linear-gradient(160deg,#2f6d4f,#173629)"><span class="score"><b>—</b><span>PREVIEW</span></span></div>
+          <div class="card" style="background-image:linear-gradient(160deg,#6d3f8f,#2a1839)"><span class="score"><b>—</b><span>PREVIEW</span></span></div>
+          <div class="card" style="background-image:linear-gradient(160deg,#3f6d8f,#182a39)"><span class="score"><b>—</b><span>PREVIEW</span></span></div>
+          <div class="card" style="background-image:linear-gradient(160deg,#8f6d3f,#393018)"><span class="score"><b>—</b><span>PREVIEW</span></span></div>
+          <div class="card" style="background-image:linear-gradient(160deg,#8f3f5b,#391822)"><span class="score"><b>—</b><span>PREVIEW</span></span></div>
         </div>
       </div>
     </div>
@@ -404,29 +368,6 @@ footer b{color:var(--dim)}
             <span class="player" style="left:52%;top:52%;background:#2244aa;width:16%"></span>
           </div>
           <span class="chip belowchip">Fill layout</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 4 · AI B-roll -->
-    <div class="slide s-broll">
-      <div class="brpanel"><div class="t">B-Roll</div><div class="gen">Generate AI B-Roll</div></div>
-      <div class="inner">
-        <div class="vframe portal">
-          <div class="capline">SO IF I <i>START</i></div>
-        </div>
-        <div class="timeline">
-          <div class="tl-thumbs">
-            <span class="tl-thumb"><span>✦ AI B-roll</span></span>
-            <span class="tl-thumb"><span>✦ AI B-roll</span></span>
-          </div>
-          <div class="tl-row">
-            <span class="seg"><em>Fill</em></span>
-            <span class="seg"><em>Fit</em></span>
-            <span class="seg" style="flex:.5"><em>Fill</em></span>
-            <span class="seg" style="flex:.6"><em>Fill</em></span>
-          </div>
-          <span class="playhead"></span>
         </div>
       </div>
     </div>
@@ -476,12 +417,11 @@ footer b{color:var(--dim)}
   <button class="pill on" onclick="goSlide(0,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.5 15.5M8.5 8.5L20 20"/></svg>AI clipping</button>
   <button class="pill" onclick="goSlide(1,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M6 15h6M15 15h3"/></svg>AI captioning</button>
   <button class="pill" onclick="goSlide(2,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 3v18M17 3v18M3 7h18M3 17h18"/></svg>AI reframe</button>
-  <button class="pill" onclick="goSlide(3,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M3 9h18M9 21V9"/></svg>AI B-Roll</button>
-  <button class="pill" onclick="goSlide(4,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 5L6 9H2v6h4l5 4zM15.5 8.5a5 5 0 010 7M19 5a9 9 0 010 14"/></svg>AI audio enhance</button>
-  <button class="pill" onclick="goSlide(5,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0M12 17v4"/></svg>AI voice-over</button>
+  <button class="pill" onclick="goSlide(3,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 5L6 9H2v6h4l5 4zM15.5 8.5a5 5 0 010 7M19 5a9 9 0 010 14"/></svg>AI audio enhance</button>
+  <button class="pill" onclick="goSlide(4,true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0M12 17v4"/></svg>AI voice-over</button>
 </div>
 
-<footer><b>BTA</b> · everything above runs on this machine — nothing is uploaded anywhere.</footer>
+<footer><b>BTA</b> · Illustrative previews. Processing runs locally; publishing is your choice.</footer>
 
 <script>
 'use strict';
@@ -494,7 +434,7 @@ function toast(m,bad){
 }
 const post=(u,b)=>fetch(u,{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})})
-  .then(async r=>{if(!r.ok){let d;try{d=(await r.json()).error}catch(e){d=r.statusText}
+  .then(async r=>{if(!r.ok){let d;try{const body=await r.json();d=body.detail||body.error}catch(e){d=r.statusText}
     throw new Error(d||('HTTP '+r.status))}return r.json()});
 
 /* ------------------------------------------------------------ carousel */
@@ -554,7 +494,7 @@ async function uploadFile(f){
   try{
     const up=await fetch('/api/upload?name='+encodeURIComponent(f.name),
       {method:'POST',body:f});
-    if(!up.ok){let d;try{d=(await up.json()).error}catch(e){d=up.statusText}
+    if(!up.ok){let d;try{const body=await up.json();d=body.detail||body.error}catch(e){d=up.statusText}
       throw new Error(d||('HTTP '+up.status))}
     const saved=await up.json();
     btn.textContent='Clipping…';
@@ -648,3 +588,4 @@ drawWave($('#wave2'),34,100);
 
 layout();
 </script>
+
