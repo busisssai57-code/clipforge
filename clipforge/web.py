@@ -444,6 +444,37 @@ def _bta_cmd() -> list[str]:
     return [sys.executable, "-m", "clipforge.cli"]
 
 
+def _cli_value(value: str, field: str) -> str:
+    """Pass ``value`` to the CLI as data, or refuse it.
+
+    Nothing here is shell-quoted — commands are spawned as an argv list,
+    never through a shell — so this is not about shell metacharacters. It
+    is about the OTHER parser: Typer reads argv, and an argument that
+    begins with ``-`` is an OPTION, not the filename or brief the caller
+    meant. A request naming its source ``--help`` or ``--niche`` does not
+    inject a shell command, but it does steer the CLI somewhere the
+    endpoint never intended, which is the same class of bug one layer in.
+
+    A ``--`` separator cannot fix this: Click ends option parsing for the
+    whole remaining argv, so it would swallow the flags the endpoint
+    itself appends. Refusing the leading dash is the honest fix, and it
+    costs nothing real — no clip, brief, URL or language legitimately
+    starts with one.
+
+    NUL is refused for the same reason every layer below refuses it: it
+    truncates the string in the C API and what the CLI then sees is not
+    what was validated.
+    """
+    text = (value or "").strip()
+    if text.startswith("-"):
+        raise HTTPException(
+            400, f"{field} cannot start with '-' — that would read as a "
+                 f"command-line option rather than a value")
+    if "\x00" in text:
+        raise HTTPException(400, f"{field} contains a null byte")
+    return text
+
+
 def _spawn_task(kind: str, description: str, args: list[str]) -> str:
     """Spawn a CLI command as a background subprocess and track it."""
     task_id = f"task-{uuid.uuid4().hex[:8]}"
@@ -1207,7 +1238,7 @@ def start_generation(req: GenerateRequest) -> dict[str, Any]:
 
     clip_it = req.resolved_clip()
     args = [
-        "generate", req.brief,
+        "generate", _cli_value(req.brief, "brief"),
         "--preset", preset,
         "--shots", str(req.shots),
         "--aspect", req.aspect_ratio,
@@ -1216,9 +1247,9 @@ def start_generation(req: GenerateRequest) -> dict[str, Any]:
     if req.screenplay:
         args.append("--screenplay")
     if (req.hook or "").strip():
-        args += ["--hook", req.hook.strip()]
+        args += ["--hook", _cli_value(req.hook, "hook")]
     if (req.handle or "").strip():
-        args += ["--handle", req.handle.strip()]
+        args += ["--handle", _cli_value(req.handle, "handle")]
     task_id = _spawn_task(
         "generate",
         f"Generate {req.shots} shot(s) · {preset} · {req.brief[:60]}",
@@ -1257,7 +1288,8 @@ def start_process(req: ProcessRequest) -> dict[str, Any]:
         raise HTTPException(
             400, f"enhance must be one of {', '.join(_ENHANCE_CHOICES)}")
 
-    args = ["process", req.source, "--clips", str(req.clips)]
+    args = ["process", _cli_value(req.source, "source"),
+            "--clips", str(req.clips)]
     # Only pass the flag when the operator actually chose one; otherwise
     # the CLI applies the configured default, which is the point of the
     # "Niche default" option in the dashboard.
@@ -1266,7 +1298,7 @@ def start_process(req: ProcessRequest) -> dict[str, Any]:
     if req.enhance is not None:
         args.extend(["--enhance", req.enhance])
     if req.niche:
-        args.extend(["--niche", req.niche])
+        args.extend(["--niche", _cli_value(req.niche, "niche")])
     if req.broll:
         args.append("--broll")
 
@@ -1299,7 +1331,8 @@ def start_grab(req: GrabRequest) -> dict[str, Any]:
     if not 1 <= req.clips <= 20:
         raise HTTPException(400, "clips must be 1-20")
     task_id = _spawn_task("grab", f"Download and clip {url[:60]}",
-                          ["grab", url, "--clips", str(req.clips)])
+                          ["grab", _cli_value(url, "url"),
+                           "--clips", str(req.clips)])
     return {"task_id": task_id, "status": "started"}
 
 
@@ -1377,12 +1410,12 @@ def start_live(req: LiveRequest) -> dict[str, Any]:
     if not 30.0 <= req.segment_s <= 3600.0:
         raise HTTPException(400, "segment_s must be between 30 and 3600")
 
-    args = ["live", target, "--platform", req.platform,
+    args = ["live", _cli_value(target, "target"), "--platform", req.platform,
             "--segment", str(req.segment_s)]
     if req.clips:
         args.extend(["--clips", str(req.clips)])
     if req.quality.strip():
-        args.extend(["--quality", req.quality.strip()])
+        args.extend(["--quality", _cli_value(req.quality, "quality")])
 
     task_id = _spawn_task("live", f"Capture live · {target[:70]}", args)
     return {"task_id": task_id, "status": "started",
@@ -1429,7 +1462,8 @@ def rerun_clip(req: RerunRequest) -> dict[str, Any]:
     if not 1 <= req.clips <= 20:
         raise HTTPException(400, "clips must be 1-20")
 
-    args = ["process", meta.source_path, "--clips", str(req.clips)]
+    args = ["process", _cli_value(meta.source_path, "source"),
+            "--clips", str(req.clips)]
     if req.jumpcut is not None:
         args.append("--jumpcut" if req.jumpcut else "--no-jumpcut")
     if req.enhance is not None:
@@ -1526,7 +1560,7 @@ def start_recam(req: CamPathRequest) -> dict[str, Any]:
         _json.dumps({"keyframes": [k.as_dict() for k in keys]}, indent=1),
         encoding="utf-8")
 
-    args = ["process", meta.source_path, "--clips", "1",
+    args = ["process", _cli_value(meta.source_path, "source"), "--clips", "1",
             "--campath-file", str(path_file)]
     task_id = _spawn_task(
         "recam", f"Re-frame {req.filename[:32]} ({len(keys)} keyframe(s))",
@@ -1706,9 +1740,9 @@ def prepare_draft(req: PostRequest) -> dict[str, Any]:
     args = ["post", "--clip", str(clip_path), "--platform", req.platform,
             "--yes"]
     if meta.title:
-        args.extend(["--title", meta.title])
+        args.extend(["--title", _cli_value(meta.title, "title")])
     if meta.caption:
-        args.extend(["--caption", meta.caption])
+        args.extend(["--caption", _cli_value(meta.caption, "caption")])
 
     label = meta.title or req.filename[:40]
     task_id = _spawn_task("post", f"Draft {req.platform} post · {label}", args)
@@ -1815,7 +1849,8 @@ def start_dub(req: DubRequest) -> dict[str, Any]:
     ws = _workspace()
     _confined_clip(ws, req.filename, rejected=req.rejected)
 
-    args = ["dub", "--clip", req.filename, "--lang", req.lang]
+    args = ["dub", "--clip", _cli_value(req.filename, "filename"),
+            "--lang", req.lang]
     if req.subtitles_only:
         args.append("--subtitles-only")
     if req.keep_original > 0:
@@ -1981,7 +2016,7 @@ def _spawn_recut(ws: Workspace, meta: Any, req: RecutRequest,
     cut_file.write_text(_json.dumps([[a, b] for a, b in spans]),
                         encoding="utf-8")
 
-    args = ["process", meta.source_path, "--clips", "1",
+    args = ["process", _cli_value(meta.source_path, "source"), "--clips", "1",
             "--cut-file", str(cut_file)]
     task_id = _spawn_task(
         "recut", f"Re-cut {req.filename[:32]} ({len(spans)} cut(s))", args)
@@ -2028,11 +2063,11 @@ def start_voiceover(req: VoiceoverRequest) -> dict[str, Any]:
     script_file = tmp / f"vo_{uuid.uuid4().hex[:12]}.txt"
     script_file.write_text(script, encoding="utf-8")
 
-    args = ["voiceover", "--clip", req.filename,
+    args = ["voiceover", "--clip", _cli_value(req.filename, "filename"),
             "--script-file", str(script_file),
             "--duck-db", str(req.duck_db), "--gain-db", str(req.gain_db)]
     if req.voice:
-        args.extend(["--voice", req.voice])
+        args.extend(["--voice", _cli_value(req.voice, "voice")])
 
     task_id = _spawn_task("voiceover",
                           f"Voiceover on {req.filename[:36]}", args)
@@ -2060,7 +2095,8 @@ def start_upscale(req: UpscaleRequest) -> dict[str, Any]:
 
     task_id = _spawn_task(
         "upscale", f"Upscale {req.filename[:36]} to {req.height}p",
-        ["upscale", "--clip", req.filename, "--height", str(req.height)])
+        ["upscale", "--clip", _cli_value(req.filename, "filename"),
+         "--height", str(req.height)])
     return {"task_id": task_id, "status": "started"}
 
 
