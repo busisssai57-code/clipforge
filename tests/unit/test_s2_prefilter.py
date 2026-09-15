@@ -132,6 +132,58 @@ def test_score_window_is_weight_linear():
     assert only_qa["total"] == pytest.approx(2.0 * only_qa["qa"])
 
 
+
+# ------------------------------------------------------------- chat signal
+#
+# Live chat is an OPTIONAL scoring component: the audience vote re-ranks
+# windows when a chat log was supplied, and contributes exactly nothing
+# when one was not. Both halves are pinned, because "adds a signal without
+# changing existing behaviour" is the promise that is easy to break.
+
+def _chat_window():
+    return [sent(100, 130, "Here comes the play of the game.", turn_start=True),
+            sent(130, 145, "That was completely unbelievable honestly.",
+                 speaker="S1", turn_start=True)]
+
+
+def test_chat_absent_leaves_the_score_unchanged():
+    """No curve -> the chat component is 0 and the total is exactly what it
+    was before the signal existed."""
+    from clipforge.stages.s2_prefilter import weighted_total
+    w = _chat_window()
+    scores = score_window(w, 45.0, DEFAULT_WEIGHTS, chat_curve=None)
+    assert scores["chat"] == 0.0
+    # total must equal the weighted sum of the NON-chat components.
+    expected = weighted_total({k: v for k, v in scores.items()
+                               if k not in ("chat", "total")}, DEFAULT_WEIGHTS)
+    assert scores["total"] == pytest.approx(expected)
+
+
+def test_chat_reaction_in_the_window_lifts_its_total():
+    """A window the room reacted to outscores the identical window with a
+    quiet chat, all else equal."""
+    from clipforge.ingest.chat import ChatEvent, build_curve
+    w = _chat_window()  # spans 100..145 s
+    hot = build_curve([ChatEvent(t_s=132.0, user=f"u{i}") for i in range(12)])
+    quiet = build_curve([ChatEvent(t_s=132.0, user="lonely")])
+    s_hot = score_window(w, 45.0, DEFAULT_WEIGHTS, chat_curve=hot)
+    s_quiet = score_window(w, 45.0, DEFAULT_WEIGHTS, chat_curve=quiet)
+    assert s_hot["chat"] > s_quiet["chat"] >= 0.0
+    assert s_hot["total"] > s_quiet["total"]
+
+
+def test_chat_curve_survives_the_params_round_trip():
+    """The curve reaches S2 through the cache-keyed params dict, so its
+    serialized form must reconstruct the same scores."""
+    from clipforge.ingest.chat import ChatCurve, ChatEvent, build_curve
+    w = _chat_window()
+    curve = build_curve([ChatEvent(t_s=132.0, user=f"u{i}") for i in range(12)])
+    direct = score_window(w, 45.0, DEFAULT_WEIGHTS, chat_curve=curve)
+    viaparams = score_window(w, 45.0, DEFAULT_WEIGHTS,
+                             chat_curve=ChatCurve.from_params(curve.to_params()))
+    assert direct["chat"] == viaparams["chat"]
+
+
 # ---------------------------------------------------------- windows, iou, nms
 
 
@@ -234,3 +286,24 @@ def test_undiarized_transcript_still_yields_candidates(db, tmp_path):
     art = S2Prefilter(db, tmp_path).run(input_digest=digest_bytes(b"t"),
                                         params={}, transcript=t)
     assert art.candidates, "undiarized content produced zero candidates"
+
+
+def test_stage_threads_chat_curve_from_params(db, tmp_path):
+    """The audience signal reaches the stage through the cache-keyed params
+    dict: a chat reaction lands as a non-zero chat score on the candidate
+    covering it, and the chat content changes the cache key (so a different
+    chat re-computes, a moved file would not)."""
+    from clipforge.ingest.chat import ChatEvent, build_curve
+
+    t = _transcript()  # 0..90 s
+    curve = build_curve([ChatEvent(t_s=32.0, user=f"u{i}") for i in range(15)])
+    s2 = S2Prefilter(db, tmp_path)
+
+    plain = s2.run(input_digest=digest_bytes(b"t"), params={}, transcript=t)
+    withchat = s2.run(input_digest=digest_bytes(b"t"),
+                      params={"chat_curve": curve.to_params()}, transcript=t)
+
+    assert withchat.cache_key != plain.cache_key, "chat did not enter the key"
+    assert all(c.scores.get("chat", 0.0) == 0.0 for c in plain.candidates)
+    assert any(c.scores.get("chat", 0.0) > 0.0 for c in withchat.candidates), \
+        "no candidate picked up the chat reaction at 32s"

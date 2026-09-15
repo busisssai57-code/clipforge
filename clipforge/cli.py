@@ -314,7 +314,14 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             manifest: Path = typer.Option(
                 None, "--manifest",
                 help="Write a machine-readable JSON result here. Automation "
-                     "should read this instead of parsing console output")) -> None:
+                     "should read this instead of parsing console output"),
+            chat: Path = typer.Option(
+                None, "--chat",
+                help="A live-chat log for this source (YouTube live_chat.json, "
+                     "a Twitch VOD chat export, an IRC-style log, or "
+                     "offset_seconds,user CSV). Its per-second engagement "
+                     "becomes an S2 ranking signal — the audience vote. "
+                     "Auto-discovered beside the source if not given")) -> None:
     """Run the clip DAG on one local file (no ingestion)."""
     import os
 
@@ -332,6 +339,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
     enhance = _cli_value(enhance, None)
     niche_name = _cli_value(niche, None)
     manifest = _cli_value(manifest, None)
+    chat = _cli_value(chat, None)
     broll = bool(_cli_value(broll, False))
     campath_file = _cli_value(campath_file, None)
     authored_keys = None
@@ -424,6 +432,18 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             "window_max_s": cfg.s2.window_max_s,
             "top_k": cfg.s2.top_k, "nms_iou": cfg.s2.nms_iou,
         }
+        # Live chat, if a log was given or sits beside the source: its
+        # per-second engagement becomes an S2 signal. The CURVE (content,
+        # not the file path) rides in params so it folds into the S2 cache
+        # key correctly — same chat scores the same clip, a moved file does
+        # not bust the cache, a different chat does. Absent → nothing added,
+        # and S2 scores exactly as before.
+        from clipforge.ingest import chat as _chat
+        _curve = _chat.curve_for(input_path, chat)
+        if _curve:
+            s2_params["chat_curve"] = _curve.to_params()
+            console.print(f"  chat signal: {len(_curve.bins)} active second(s), "
+                          f"busiest {_curve.peak:.0f} msg/s")
         cands = s2.run(input_digest=transcript.cache_key, job_id=job_id,
                        params=s2_params,
                        transcript=transcript)

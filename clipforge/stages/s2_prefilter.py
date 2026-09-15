@@ -225,6 +225,12 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "boundary": 2.0,
     "qa": 1.5,
     "turns": 1.5,
+    # The audience vote (live chat), when a chat log was supplied. Weighted
+    # level with the structural turn signal: strong enough to lift a window
+    # the room reacted to above one it sat quiet through, not so strong it
+    # overrides sentence structure by itself. Contributes exactly 0 when no
+    # chat log is present, so a run without one scores as it always has.
+    "chat": 1.5,
     "energy": 0.75,
     "laughter": 0.75,
     "selfcont": 0.5,
@@ -288,13 +294,25 @@ def weighted_total(scores: dict[str, float],
 
 
 def score_window(window: Sequence[Sentence], duration_s: float,
-                 weights: dict[str, float]) -> dict[str, float]:
+                 weights: dict[str, float],
+                 chat_curve: Any = None) -> dict[str, float]:
     """All component scores plus the weighted total, keys SORTED on output
-    (``total`` last) so serialization is byte-stable."""
+    (``total`` last) so serialization is byte-stable.
+
+    ``chat_curve`` is an optional :class:`clipforge.ingest.chat.ChatCurve`.
+    When absent (the default) the ``chat`` component is 0.0 and, at any
+    weight, contributes nothing — so a run with no chat log produces the
+    identical scores it did before this signal existed.
+    """
+    chat = 0.0
+    if chat_curve is not None and window:
+        from clipforge.ingest.chat import score_window as _chat_score  # noqa: PLC0415
+        chat = _chat_score(window[0].start, window[-1].end, chat_curve)
     scores = {
         "boundary": score_boundary(window),
         "qa": score_qa(window),
         "turns": score_turns(window, duration_s),
+        "chat": chat,
         "energy": score_energy(window, duration_s),
         "laughter": score_laughter(window),
         "selfcont": score_selfcontained(window),
@@ -435,13 +453,18 @@ class S2Prefilter(Stage[CandidatesArtifact]):
             weights.update({k: _finite_weight(k, v) for k, v in
                             dict(params.get("weights", {})).items()})
 
+            from clipforge.ingest.chat import ChatCurve  # noqa: PLC0415
+            chat_curve = ChatCurve.from_params(params.get("chat_curve"))
+            chat_curve = chat_curve if chat_curve else None
+
             sentences = split_sentences(transcript.segments)
             candidates: list[CandidateWindow] = []
             for i, j in generate_windows(sentences, min_s=min_s, max_s=max_s):
                 window = sentences[i:j + 1]
                 start = window[0].start
                 end = window[-1].end
-                scores = score_window(window, end - start, weights)
+                scores = score_window(window, end - start, weights,
+                                      chat_curve=chat_curve)
                 candidates.append(CandidateWindow(
                     start=start, end=end, total_score=scores["total"],
                     scores=scores,
