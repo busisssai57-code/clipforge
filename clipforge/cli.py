@@ -2067,6 +2067,14 @@ def web(host: str = typer.Option("127.0.0.1", "--host",
     os.environ[remote.ENV_TOKEN] = access_token or ""
     os.environ[remote.ENV_REQUIRE_AUTH] = "0" if access_token is None else "1"
     os.environ["BTA_WEB_PORT"] = str(port)
+    # A tunnel connects to us FROM 127.0.0.1, so every public request
+    # arrives wearing a loopback address. Leaving loopback trusted while
+    # one is up hands the whole internet an API that spawns subprocesses
+    # on this machine — the token is set, and nothing ever checks it.
+    # Loopback trust is therefore off for the life of the tunnel; the
+    # banner prints a local link with the token already in it so the
+    # operator's own browser is one click, exactly as before.
+    os.environ[remote.ENV_TRUST_LOOPBACK] = "0" if want_tunnel != "off" else "1"
 
     live_tunnel = None
     if want_tunnel != "off":
@@ -2106,7 +2114,13 @@ def _print_access_banner(host: str, port: int, token: str | None, *,
 
     console.print()
     console.print("[bold green]BTA Studio[/bold green]")
-    console.print(f"  [bold]On this machine[/]  http://127.0.0.1:{port}/")
+    # With a tunnel up, loopback is no longer trusted (a tunnelled request
+    # wears a loopback address), so the local link has to carry the token
+    # or the operator's own browser lands on the pairing page.
+    local_suffix = (f"/?{remote.TOKEN_QUERY}={token}"
+                    if (tunnel_url and token) else "/")
+    console.print(
+        f"  [bold]On this machine[/]  http://127.0.0.1:{port}{local_suffix}")
 
     if host in ("127.0.0.1", "localhost", "::1") and not tunnel_url:
         console.print("  [dim]Loopback only. Add --lan to reach it from your "

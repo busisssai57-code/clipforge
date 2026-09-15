@@ -153,6 +153,89 @@ def is_loopback(host: str | None) -> bool:
     return addr.is_loopback
 
 
+#: Extra Host values the operator vouches for, comma separated. Needed
+#: when the dashboard is reached by a name this module cannot derive —
+#: an mDNS alias, a hosts-file entry, a reverse proxy's own vhost.
+ENV_ALLOWED_HOSTS = "BTA_WEB_ALLOWED_HOSTS"
+
+#: Host suffixes that belong to the two remote transports this tool
+#: offers. Both are per-machine names nobody else can point at us.
+_HOST_SUFFIXES = (".ts.net", ".trycloudflare.com")
+
+
+def normalise_host(value: str | None) -> str:
+    """The bare hostname from a Host header: no port, no brackets, lower."""
+    raw = (value or "").strip().lower()
+    if not raw:
+        return ""
+    if raw.startswith("[") and "]" in raw:           # [::1]:8011
+        return raw[1:raw.index("]")]
+    if raw.count(":") == 1:                          # host:8011
+        return raw.split(":", 1)[0]
+    return raw                                       # bare IPv6 or name
+
+
+def allowed_hosts(extra: str | None = None) -> set[str]:
+    """Every Host value this server legitimately answers to.
+
+    Names, not addresses, are the rebinding vector: an attacker page on
+    ``evil.com`` can make its own DNS answer 127.0.0.1 and then reach a
+    loopback server from the victim's browser as same-origin — CORS never
+    enters into it, because the browser believes it IS the origin. What
+    the attacker cannot forge is the Host header, so pinning the names we
+    answer to is the fix.
+
+    IP literals are handled separately by :func:`host_is_allowed` (any
+    literal is fine: reaching us by address means no DNS was involved).
+    """
+    names = {"localhost", "localhost.localdomain"}
+    try:
+        own = socket.gethostname().strip().lower()
+    except OSError:
+        own = ""
+    if own:
+        names.add(own)
+        names.add(f"{own}.local")
+        names.add(own.split(".", 1)[0])
+    for source in (extra, os.environ.get(ENV_ALLOWED_HOSTS)):
+        for item in (source or "").replace(";", ",").split(","):
+            name = normalise_host(item)
+            if name:
+                names.add(name)
+    public = normalise_host(os.environ.get(ENV_PUBLIC_URL, "").split("//")[-1])
+    if public:
+        names.add(public)
+    return names
+
+
+def host_is_allowed(value: str | None, *, extra: str | None = None) -> bool:
+    """Is this Host header one this server should answer to?
+
+    Permissive in the two ways that cost nothing and strict in the one
+    that matters:
+
+    * any IP literal passes — a browser that got here by address did no
+      DNS lookup, so there was nothing to rebind;
+    * the tailnet and quick-tunnel suffixes pass, because those names are
+      issued to this machine and cannot be aimed elsewhere;
+    * an absent Host passes, because a non-browser client (curl -H, a
+      script, an HTTP/1.0 probe) is not the thing being defended against
+      and already needs the token;
+    * every other DNS name must be one we derived or the operator listed.
+    """
+    host = normalise_host(value)
+    if not host:
+        return True
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    if any(host.endswith(suffix) for suffix in _HOST_SUFFIXES):
+        return True
+    return host in allowed_hosts(extra)
+
+
 def is_private(host: str | None) -> bool:
     """True for RFC1918 / link-local / CGNAT (Tailscale) addresses."""
     if not host:
@@ -404,6 +487,14 @@ class Decision:
     cookie_value: str | None = None
 
 
+#: Request headers that mean "something forwarded this to me". Any one of
+#: them present proves the peer address is a proxy's, not the real
+#: client's — see :attr:`Presented.forwarded` for why that voids loopback
+#: trust.
+FORWARD_HEADERS = ("x-forwarded-for", "x-real-ip", "forwarded",
+                   "cf-connecting-ip", "x-forwarded-host")
+
+
 @dataclass(frozen=True)
 class Presented:
     """Whatever credential material arrived with a request."""
@@ -413,6 +504,19 @@ class Presented:
     cookie_token: str | None = None
     query_token: str | None = None
     pairing_code: str | None = None
+    #: True when the request carried proxy-forwarding headers. A request
+    #: that reached us through a proxy has the PROXY's address as its
+    #: peer, so 127.0.0.1 no longer means "this machine" — it means "the
+    #: proxy runs here". `cloudflared tunnel --url http://127.0.0.1:PORT`
+    #: is exactly that shape, which is how a public URL was inheriting
+    #: loopback trust and reaching a subprocess-spawning API with no
+    #: token at all. Fails closed: a direct local client never sends
+    #: these, so refusing them costs nothing and closes the hole even
+    #: where the operator put their own reverse proxy in front.
+    forwarded: bool = False
+    #: The Host header, minus any port. Checked against the names this
+    #: server answers to so a DNS-rebinding page cannot drive it.
+    host_header: str | None = None
 
 
 def _matches(candidate: str | None, token: str) -> bool:
@@ -428,9 +532,12 @@ def decide(presented: Presented, policy: AccessPolicy, *,
     Order matters and is deliberate:
 
     1. Auth off → allow, and say so, so the caller can surface it.
-    2. Loopback → allow when trusted. This keeps `bta web` on a laptop
-       exactly as it was, which is why the token can be mandatory
-       everywhere else without anyone wanting it turned off.
+    2. Loopback → allow when trusted AND nothing forwarded the request.
+       This keeps `bta web` on a laptop exactly as it was, which is why
+       the token can be mandatory everywhere else without anyone wanting
+       it turned off. The forwarding check is what keeps a tunnel or a
+       reverse proxy — both of which connect FROM 127.0.0.1 — from
+       inheriting that trust on behalf of the whole internet.
     3. A real token in any of its three carriers → allow.
     4. A live pairing code → allow ONCE and hand back the token to store.
     5. Everything else → refuse, with the reason the operator needs.
@@ -440,7 +547,8 @@ def decide(presented: Presented, policy: AccessPolicy, *,
 
     token = policy.token or ""
 
-    if policy.trust_loopback and is_loopback(presented.client_host):
+    if (policy.trust_loopback and is_loopback(presented.client_host)
+            and not presented.forwarded):
         return Decision(True, "loopback")
 
     if _matches(presented.cookie_token, token):

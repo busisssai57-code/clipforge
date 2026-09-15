@@ -227,3 +227,61 @@ def test_a_quick_tunnel_url_is_recognised():
 
 def test_ordinary_output_yields_no_url():
     assert remote.parse_tunnel_url("INF Requesting new quick tunnel...") is None
+
+
+# ------------------------------------------------- forwarded requests
+#
+# `cloudflared tunnel --url http://127.0.0.1:PORT` connects to the server
+# FROM loopback, so every request off the public internet arrived wearing
+# a loopback address and was waved through by rule 2 — with a token set
+# and never once consulted. That made the public URL an unauthenticated
+# remote shell, since this API spawns CLI subprocesses on the host.
+
+def test_a_tunnelled_request_does_not_inherit_loopback_trust():
+    """The whole internet arriving as 127.0.0.1 is not this machine."""
+    d = _decide(client_host="127.0.0.1", forwarded=True)
+    assert d.allowed is False
+
+
+def test_a_tunnelled_request_with_the_token_is_still_allowed():
+    """Closing the hole must not close the door: the token still works."""
+    d = _decide(client_host="127.0.0.1", forwarded=True, header_token=TOKEN)
+    assert d.allowed is True
+
+
+def test_a_direct_local_request_is_unaffected():
+    """No forwarding headers, no change — `bta web` on a laptop is as it was."""
+    assert _decide(client_host="127.0.0.1", forwarded=False).allowed is True
+
+
+def test_the_tunnel_policy_also_drops_loopback_trust_outright():
+    """Belt and braces: the CLI sets trust_loopback=0 for a tunnel run, so
+    the hole is closed even if a proxy sends no forwarding headers."""
+    strict = remote.AccessPolicy(token=TOKEN, trust_loopback=False)
+    assert _decide(client_host="127.0.0.1", policy=strict).allowed is False
+    assert _decide(client_host="127.0.0.1", policy=strict,
+                   header_token=TOKEN).allowed is True
+
+
+# ------------------------------------------------------- host binding
+
+@pytest.mark.parametrize("host", ["127.0.0.1:8011", "localhost", "[::1]:8011",
+                                  "192.168.1.9:8011", "10.0.0.4",
+                                  "laptop.ts.net", "x-y.trycloudflare.com",
+                                  None, ""])
+def test_hosts_this_server_answers_to(host):
+    assert remote.host_is_allowed(host) is True
+
+
+@pytest.mark.parametrize("host", ["evil.com", "attacker.example:8011",
+                                  "rebind.badsite.net"])
+def test_a_rebinding_name_is_refused(host):
+    """DNS rebinding points an attacker-owned NAME at 127.0.0.1, so the
+    victim's browser treats the local server as same-origin and CORS never
+    runs. The Host header is the one part of that request the attacker
+    cannot choose."""
+    assert remote.host_is_allowed(host) is False
+
+
+def test_the_operator_can_vouch_for_a_name():
+    assert remote.host_is_allowed("studio.lan", extra="studio.lan") is True

@@ -100,11 +100,14 @@ def _presented(request: Request) -> remote.Presented:
         if auth.lower().startswith("bearer "):
             header = auth[7:]
     client = request.client.host if request.client else None
+    forwarded = any(h in request.headers for h in remote.FORWARD_HEADERS)
     return remote.Presented(
         client_host=client,
         header_token=header,
         cookie_token=request.cookies.get(remote.COOKIE_NAME),
         query_token=request.query_params.get(remote.TOKEN_QUERY),
+        forwarded=forwarded,
+        host_header=request.headers.get("host"),
     )
 
 
@@ -125,6 +128,23 @@ def _wants_html(request: Request) -> bool:
 
 async def _access_middleware(request: Request, call_next):
     path = request.url.path
+
+    # Host first, and before the OPTIONS/open-path shortcut: a rebinding
+    # page reaches a loopback server as same-origin, so CORS never runs
+    # and the token is never asked for. The Host header is the one part
+    # of that request the attacker's page cannot choose, which makes it
+    # the only place the check can live. Applied to every path, because
+    # /login is reachable without a credential by design.
+    if not remote.host_is_allowed(request.headers.get("host")):
+        log.warning("web.host_rejected",
+                    host=(request.headers.get("host") or "")[:120],
+                    path=path[:120])
+        return JSONResponse(
+            status_code=421,
+            content={"error": "this server does not answer to that host "
+                              "name — reach it by address, or add the name "
+                              f"to {remote.ENV_ALLOWED_HOSTS}"})
+
     # Preflight carries no credentials by design and reveals nothing; it
     # must pass or every cross-origin call fails as a CORS error rather
     # than the 401 it actually is.
@@ -168,6 +188,34 @@ def _set_access_cookie(response: Response, value: str) -> None:
 def _quote(value: str) -> str:
     from urllib.parse import quote
     return quote(value, safe="")
+
+
+def _safe_next(value: str | None) -> str:
+    """Confine a post-login destination to a path on this server.
+
+    ``next`` is attacker-choosable — it rides in the URL of a link anyone
+    can send. Two things it must not be allowed to become:
+
+    * an absolute URL, which turns /login into an open redirect that
+      lends this server's name to a phishing page;
+    * a ``javascript:`` URI, which the login page's own
+      ``location.replace(next)`` would execute as script in this origin.
+
+    So: one leading slash, never two (``//evil.com`` is protocol-relative
+    and absolute), no scheme, no backslashes (browsers normalise those to
+    forward slashes, so ``/\evil.com`` is another spelling of the same
+    trick). Anything else becomes ``/``.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return "/"
+    if not raw.startswith("/"):
+        return "/"
+    if raw.startswith("//") or raw.startswith("/\\"):
+        return "/"
+    if "\\" in raw or "\n" in raw or "\r" in raw:
+        return "/"
+    return raw
 
 
 # Registration order decides nesting: Starlette wraps the LAST-added
@@ -2248,7 +2296,18 @@ code{background:#1c1c1f;padding:1px 5px;border-radius:4px;font-size:11.5px}
      <code>bta web --lan</code> again to print one.</div>
 </div>
 <script>
-const q=new URLSearchParams(location.search), next=q.get('next')||'/';
+const q=new URLSearchParams(location.search);
+// Same rule the server applies to ?next=: one leading slash and no
+// scheme. Without it, location.replace() below happily runs a
+// `javascript:` URI as script in this origin, and an absolute URL turns
+// the pairing page into an open redirect.
+const rawNext=q.get('next')||'/';
+// fromCharCode(92) rather than a literal backslash: this page is a
+// non-raw Python string, so every backslash here is read twice and
+// an escape written the obvious way arrives in the browser broken.
+const BS=String.fromCharCode(92);
+const next=(rawNext.charAt(0)==='/' && rawNext.charAt(1)!=='/'
+            && rawNext.indexOf(BS)<0) ? rawNext : '/';
 const inp=document.getElementById('c'), btn=document.getElementById('go'),
       err=document.getElementById('err');
 inp.addEventListener('input',()=>{
@@ -2278,11 +2337,11 @@ async function submit(){
 def login_page(request: Request, next: str = "/") -> Response:
     """The pairing page, or a straight-through if the URL carries a token."""
     if not _policy.enforced:
-        return RedirectResponse(next or "/", status_code=303)
+        return RedirectResponse(_safe_next(next), status_code=303)
     supplied = request.query_params.get(remote.TOKEN_QUERY)
     if supplied and _policy.token and secrets.compare_digest(
             supplied.strip(), _policy.token):
-        resp = RedirectResponse(next or "/", status_code=303)
+        resp = RedirectResponse(_safe_next(next), status_code=303)
         _set_access_cookie(resp, _policy.token)
         return resp
     return HTMLResponse(_LOGIN_PAGE)
