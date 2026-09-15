@@ -19,8 +19,10 @@ from a frame that carries no picture.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -155,6 +157,32 @@ def chapters_from_segments(segments, *, max_chapters: int = 6,
     return out
 
 
+def _atomic_replace(tmp: Path, dest: Path) -> None:
+    """Move a fully-written temp file onto ``dest`` in one step.
+
+    The same discipline S6 uses for the render itself (``.partial`` then
+    replace) and for the same reason, one layer out: these sidecars are
+    read by the dashboard on every four-second poll, so a write
+    interrupted by a cancel or a crash must never be visible half-done.
+    ``os.replace`` is atomic within a directory, which is why the temp is
+    a sibling of the destination rather than in the system tmp.
+    """
+    os.replace(tmp, dest)
+
+
+def _tmp_beside(dest: Path) -> Path:
+    """A unique temp sibling of ``dest`` — same dir, so the replace is atomic.
+
+    The destination's real suffix is preserved (``.partial`` sits in the
+    middle, not at the end) because ffmpeg infers its output muxer from
+    the extension: a ``.jpg.partial`` name makes it refuse to write, the
+    same trap S6 documents for ``.mp4.partial``. ``os.replace`` ignores
+    the extension, so this costs the JSON write nothing.
+    """
+    stem = dest.name[: -len(dest.suffix)] if dest.suffix else dest.name
+    return dest.with_name(f".{stem}.{uuid.uuid4().hex[:8]}.partial{dest.suffix}")
+
+
 def grab_thumbnail(clip: Path, dest: Path, *, at_s: float = 1.0) -> Path:
     """One frame, refusing to write a blank one.
 
@@ -166,28 +194,38 @@ def grab_thumbnail(clip: Path, dest: Path, *, at_s: float = 1.0) -> Path:
 
     clip, dest = Path(clip), Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(
-        [str(require_binary("ffmpeg")), "-nostdin", "-hide_banner", "-y",
-         "-ss", f"{max(0.0, at_s):.2f}", "-i", str(clip),
-         "-frames:v", "1", "-q:v", "2", str(dest)],
-        capture_output=True, text=True, errors="replace", timeout=120)
-    if proc.returncode != 0 or not dest.is_file():
-        raise ClipForgeError(
-            f"thumbnail grab failed: {(proc.stderr or '')[-300:]}")
-
+    # Grab into a temp sibling and swap only once the frame is proven real.
+    # Two things this buys, both correctness: a cancel mid-grab can no
+    # longer leave a half-written .thumb.jpg for the gallery to render
+    # broken, and a blank frame no longer DESTROYS a previously-good
+    # thumbnail on its way to raising (the old code unlinked ``dest``).
+    tmp = _tmp_beside(dest)
     try:
-        import numpy as np
-        from PIL import Image
-
-        arr = np.asarray(Image.open(dest).convert("L"), dtype=np.float32)
-        if float(arr.std()) < 8.0:
-            dest.unlink(missing_ok=True)
+        proc = subprocess.run(
+            [str(require_binary("ffmpeg")), "-nostdin", "-hide_banner", "-y",
+             "-ss", f"{max(0.0, at_s):.2f}", "-i", str(clip),
+             "-frames:v", "1", "-q:v", "2", str(tmp)],
+            capture_output=True, text=True, errors="replace", timeout=120)
+        if proc.returncode != 0 or not tmp.is_file():
             raise ClipForgeError(
-                f"thumbnail at {at_s:.1f}s has no picture (spread "
-                f"{float(arr.std()):.1f}); try a different timestamp")
-    except ImportError:
-        log.warning("export.thumbnail_unchecked",
-                    note="numpy/Pillow missing; blank frame not verified")
+                f"thumbnail grab failed: {(proc.stderr or '')[-300:]}")
+
+        try:
+            import numpy as np
+            from PIL import Image
+
+            arr = np.asarray(Image.open(tmp).convert("L"), dtype=np.float32)
+            if float(arr.std()) < 8.0:
+                raise ClipForgeError(
+                    f"thumbnail at {at_s:.1f}s has no picture (spread "
+                    f"{float(arr.std()):.1f}); try a different timestamp")
+        except ImportError:
+            log.warning("export.thumbnail_unchecked",
+                        note="numpy/Pillow missing; blank frame not verified")
+
+        _atomic_replace(tmp, dest)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
     return dest
 
 
@@ -229,8 +267,16 @@ def build_pack(clip: Path, *, title: str = "", transcript_text: str = "",
 
     if write:
         dest = clip.with_suffix(".export.json")
-        dest.write_text(json.dumps(pack.as_dict(), indent=2, sort_keys=True),
-                        encoding="utf-8")
+        # Atomic: the dashboard parses this file every poll, so a partial
+        # write would show a shipped clip as title-less until the next run.
+        tmp = _tmp_beside(dest)
+        try:
+            tmp.write_text(
+                json.dumps(pack.as_dict(), indent=2, sort_keys=True),
+                encoding="utf-8")
+            _atomic_replace(tmp, dest)
+        finally:
+            tmp.unlink(missing_ok=True)
         log.info("export.pack_written", path=str(dest),
                  platforms=len(pack.platforms))
     return pack

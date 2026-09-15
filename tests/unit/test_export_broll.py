@@ -121,6 +121,67 @@ def test_a_real_thumbnail_is_written(tmp_path):
     assert out.is_file() and out.stat().st_size > 500
 
 
+# ---------------------------------------------- atomic sidecar writes
+#
+# The export pack JSON and the thumbnail are read by the dashboard on
+# every four-second poll (clipmeta -> /api/clips, uimedia.poster). Both
+# were written in place, so a cancel or crash mid-write could show a
+# shipped clip as title-less or render a broken thumbnail. S6 already
+# writes the render itself through a .partial swap; these sidecars now
+# follow the same rule. Adopted from hotclip's per-encode file protection.
+
+def test_a_rejected_thumbnail_does_not_destroy_a_good_one(tmp_path):
+    """A blank grab used to unlink dest on its way to raising — so a bad
+    re-grab wiped the thumbnail a good run had already produced. The temp
+    swap means a failed grab leaves the existing file untouched."""
+    good = _video(tmp_path / "good.mp4")
+    dest = tmp_path / "t.jpg"
+    grab_thumbnail(good, dest, at_s=1.0)
+    before = dest.read_bytes()
+
+    blank = _video(tmp_path / "blank.mp4", source="color=c=#5c4a30")
+    with pytest.raises(ClipForgeError):
+        grab_thumbnail(blank, dest, at_s=1.0)
+    assert dest.read_bytes() == before, "a rejected grab clobbered a good thumb"
+
+
+def test_thumbnail_leaves_no_partial_behind(tmp_path):
+    real = _video(tmp_path / "real.mp4")
+    dest = tmp_path / "t.jpg"
+    grab_thumbnail(real, dest, at_s=1.0)
+    leftovers = [p.name for p in tmp_path.iterdir() if ".partial" in p.name]
+    assert leftovers == [], f"temp files left behind: {leftovers}"
+
+
+def test_the_export_json_is_written_atomically(tmp_path, monkeypatch):
+    """A parse of the sidecar mid-write must be impossible: the file the
+    dashboard reads is only ever the complete one. We prove it by making
+    the atomic replace the ONLY way bytes reach the destination — the temp
+    must hold valid JSON and the destination must never be the temp."""
+    clip = _video(tmp_path / "clip.mp4")
+    dest = clip.with_suffix(".export.json")
+
+    seen: dict[str, str] = {}
+    import clipforge.export_pack as ep
+    real_replace = ep.os.replace
+
+    def _spy(src, dst):
+        # build_pack also swaps a thumbnail; only inspect the JSON one.
+        if Path(dst) == dest:
+            # The source must already be complete, valid JSON — never a
+            # half-written destination.
+            seen["src_json"] = Path(src).read_text(encoding="utf-8")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(ep.os, "replace", _spy)
+    build_pack(clip, title="Atomic", transcript_text="focus and ship")
+
+    json.loads(seen["src_json"])                    # temp held valid JSON
+    assert json.loads(dest.read_text(encoding="utf-8"))["title"] == "Atomic"
+    leftovers = [p.name for p in tmp_path.iterdir() if ".partial" in p.name]
+    assert leftovers == [], f"temp files left behind: {leftovers}"
+
+
 # ------------------------------------------------------ full pack
 
 def test_the_pack_covers_every_platform_within_its_limit(tmp_path):
