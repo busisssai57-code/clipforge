@@ -10,7 +10,23 @@ Built and verified on Windows 11 / RTX 3090 (24 GB).
 
 ## Quick start
 
-Everything runs through `bta`. From `D:\clipforge`:
+First time on a machine, from `D:\clipforge`:
+
+```bash
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+That is the CPU-side install: the CLI, the dashboard and everything that
+does not need a GPU. It is enough to run `doctor`, browse the Library and
+serve clips. The model stack is a separate, much larger step — `torch`
+from the CUDA wheel index **first**, then the rest of
+`requirements.txt`, in that order, because several of those packages will
+otherwise resolve torch themselves and quietly replace a working CUDA
+build with a CPU one. The file says so at the top, at length, with the
+three times it has happened here.
+
+Everything then runs through `bta`:
 
 ```bash
 .\.venv\Scripts\bta.exe doctor
@@ -41,25 +57,58 @@ everything below without touching a terminal again.
 
 ### From your phone
 
-Bind to all interfaces instead of localhost:
-
 ```bash
-.\.venv\Scripts\bta.exe web --host 0.0.0.0 --port 8011
+.\.venv\Scripts\bta.exe web --lan --port 8011
 ```
 
-Then on a device on the same Wi-Fi, open `http://<your-pc-ip>:8011/`.
-Find the IP with `ipconfig` (IPv4 under your active adapter).
+`--lan` binds every interface **and turns on the access token**, because
+this API starts pipeline runs on this machine and an open port that does
+that is a remote shell with a nicer front end. Loopback stays open, so
+nothing changes for the browser on the PC itself.
 
-If it does not load, Windows Firewall is blocking the port. In an
+The banner then prints the addresses that actually work, with the token
+already in the link — open one on the phone and it is paired. If you
+would rather not paste a 43-character token into a phone keyboard, open
+the bare address instead and use **Connect a device** in the sidebar: it
+shows six digits that are good for one exchange, for ten minutes, and
+die after five wrong guesses.
+
+If it does not load at all, Windows Firewall is blocking the port. In an
 **Administrator** PowerShell:
 
 ```bash
 New-NetFirewallRule -DisplayName "BTA Studio 8011" -Direction Inbound -Protocol TCP -LocalPort 8011 -Action Allow -Profile Private,Public
 ```
 
-> Binding to `0.0.0.0` exposes the control API to your whole network —
-> anyone on it can trigger renders and read clips. Fine at home, not on
-> public Wi-Fi. Use `--host 127.0.0.1` when you do not need the phone.
+Reaching the dashboard by a *name* rather than an address (an mDNS alias,
+a hosts-file entry) needs that name listed, or the server answers 421:
+
+```bash
+set BTA_WEB_ALLOWED_HOSTS=studio.lan
+```
+
+That check exists because a web page can point its own DNS name at
+127.0.0.1 and reach a localhost server from your browser as though it
+owned it. Addresses and tailnet names need no listing.
+
+### From anywhere
+
+```bash
+.\.venv\Scripts\bta.exe web --tunnel cloudflare --port 8011
+```
+
+A public https URL, no VPN, token enforced — including for the tunnel's
+own traffic, which arrives looking like it came from this machine. Stop
+the server when you are done: the URL is on the public internet and
+anyone holding the token can drive this machine.
+
+Tailscale, if you have it, is strictly safer and the banner offers it
+first — a tailnet address works from any device on your account, over an
+encrypted link, with nothing exposed publicly.
+
+> `--insecure-no-auth` exists and does what it says: no token, every
+> device on the network can run this pipeline. It refuses to combine with
+> `--tunnel`.
 
 ---
 
@@ -168,6 +217,18 @@ Run the test suite with:
 
 ```bash
 .\.venv\Scripts\python.exe -m pytest -q
+```
+
+It passes on a machine with **no GPU at all** — the tests that need
+CUDA, the generation weights or a second interpreter skip and say which,
+so a red run means something is broken rather than something is missing.
+That is what CI runs (`.github/workflows/tests.yml`): Python, ffmpeg,
+`pip install -e .`.
+
+To deselect the heavy ones explicitly:
+
+```bash
+.\.venv\Scripts\python.exe -m pytest -q -m "not gpu and not network"
 ```
 
 ---

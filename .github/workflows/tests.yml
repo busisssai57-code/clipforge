@@ -1,0 +1,75 @@
+# The suite runs on a machine with no GPU, so this is what it is allowed
+# to need: Python, ffmpeg, and `pip install -e .`.
+#
+# That is a real claim, not a convenience. Until 2026-09-15 twenty-three
+# tests failed on any machine without a CUDA torch build, the generation
+# weights or Windows, which meant a red run said nothing and CI would
+# have been red from its first day. Tests that need a prerequisite this
+# runner does not have now skip and say why; everything else must pass.
+#
+# Deliberately NOT here: the GPU stack. torch, diffusers, bitsandbytes,
+# ultralytics and the model weights are tens of gigabytes and want a card
+# no hosted runner has. The tests that need them are marked and skipped,
+# and `tests/integration/test_*_real_weights.py` stays a thing you run on
+# the machine that has them.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push makes the previous run's answer irrelevant, so stop paying
+# for it.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # pyproject requires >=3.11; this is the version the project is
+          # built and verified on.
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ffmpeg
+        # Not optional and not mocked: the render, concat, loudness and
+        # caption tests drive the real binary, because a filter graph that
+        # ffmpeg rejects is the failure this project keeps having.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+
+      - name: Install the package
+        # `-e .` is the CPU-side core. If this line is not enough to run
+        # the suite, the dependency belongs in pyproject rather than in a
+        # step here — that is exactly how fastapi, uvicorn, pillow and
+        # numpy went undeclared while the README's first command needed
+        # them.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-asyncio httpx watchdog
+
+      - name: The README's first command must work
+        # `bta doctor` before `bta web` is what the quick start tells a
+        # new operator to run, and it imports most of the tree. It reports
+        # missing GPU prerequisites here and exits non-zero for that, so
+        # this asserts it RAN rather than that it approved of the runner.
+        run: |
+          python -m clipforge.cli doctor || true
+          python -c "import clipforge.web, clipforge.cli; print('the dashboard and CLI import clean')"
+
+      - name: pytest
+        run: pytest -q -m "not gpu and not network" --durations=10
