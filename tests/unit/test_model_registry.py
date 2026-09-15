@@ -102,16 +102,19 @@ def test_forcing_a_model_that_cannot_render_the_size_says_why(two_models):
 
 @pytest.mark.skipif(not describe_registry()[0]["installed"],
                     reason="no weights installed")
-
-
-@pytest.mark.skipif(not describe_registry()[0]["installed"],
-                    reason="no weights installed")
 def test_a_size_only_one_model_supports_selects_that_model():
     """704x1280 is over LTX's budget, inside Wan's. Selection must follow
     capability, not preference."""
     assert _pick({"atmospheric"}, w=704, h=1280).key == "wan22"
 
 
+# The stray copy of this decorator used to sit above, applied to nothing
+# — and the test it belonged to went unguarded. Without weights on disk
+# select_model reports "not downloaded" before it ever reaches the latent
+# grid, so the assertion below was measuring the absence of a 14 GB
+# download rather than the message it is about.
+@pytest.mark.skipif(not describe_registry()[0]["installed"],
+                    reason="no weights installed")
 def test_an_impossible_size_explains_which_constraint_failed():
     """'No model fits' sends someone shopping for a GPU when the real
     problem is that 720 is off the latent grid."""

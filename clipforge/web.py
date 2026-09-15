@@ -1037,18 +1037,25 @@ def list_generated() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if not gen_dir.is_dir():
         return out
-    for seq in sorted(gen_dir.glob("*/sequence.mp4"),
-                      key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
-        shots = sorted(seq.parent.glob("shot_*.mp4"))
+    # stat() once per sequence, not three times. This is polled every four
+    # seconds alongside the gallery, and the sort key, the size and the
+    # timestamp were each asking the filesystem the same question.
+    sequences: list[tuple[float, Path, int]] = []
+    for seq in gen_dir.glob("*/sequence.mp4"):
         try:
-            size_mb = round(seq.stat().st_size / (1024 * 1024), 2)
+            st = seq.stat()
         except OSError:
             continue
+        sequences.append((st.st_mtime, seq, st.st_size))
+    sequences.sort(key=lambda row: row[0], reverse=True)
+
+    for mtime, seq, size in sequences[:20]:
+        shots = sorted(seq.parent.glob("shot_*.mp4"))
         out.append({
             "slug": seq.parent.name,
             "shots": len(shots),
-            "size_mb": size_mb,
-            "created_at": seq.stat().st_mtime,
+            "size_mb": round(size / (1024 * 1024), 2),
+            "created_at": mtime,
             # `url` is what the gallery binds to; `sequence_url` is kept
             # because the name says what the file is.
             "url": f"/api/generated/stream/{seq.parent.name}/sequence.mp4",

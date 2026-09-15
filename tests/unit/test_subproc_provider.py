@@ -34,6 +34,26 @@ REPO = Path(__file__).resolve().parents[2]
 
 # ------------------------------------------------------- interpreter
 
+@pytest.fixture()
+def stubbed_weights(monkeypatch):
+    """Let the stub worker stand in for the 22 GB checkpoint.
+
+    ``available()`` insists three things are present: the interpreter, the
+    worker file and the WEIGHTS. The tests below replace the first two
+    deliberately — that is the whole design, a stub worker over the real
+    line protocol — and then fell at the third on any machine without the
+    download, which is every machine but the one this was written on. So
+    nine tests covering the pipe, the lifecycle and the card handoff were
+    reporting a broken provider instead of exercising it.
+
+    Not autouse: `test_a_missing_interpreter_is_unavailable_not_a_crash`
+    is about that check saying no, and must keep reaching it.
+    """
+    from clipforge.genvideo import models as _models
+    monkeypatch.setattr(_models, "weights_present", lambda spec: True)
+
+
+
 def test_interpreter_is_none_for_a_model_that_runs_in_this_venv():
     assert interpreter_for(WAN22_TI2V_5B) is None
 
@@ -231,8 +251,8 @@ for line in sys.stdin:
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
-def test_frames_round_trip_from_a_worker_into_a_real_video(tmp_path,
-                                                           monkeypatch):
+def test_frames_round_trip_from_a_worker_into_a_real_video(
+        tmp_path, monkeypatch, stubbed_weights):
     """End to end over the pipe, with the model replaced by noise.
 
     Proves the parts that have nothing to do with the model: the child
@@ -260,7 +280,8 @@ def test_frames_round_trip_from_a_worker_into_a_real_video(tmp_path,
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
-def test_the_worker_is_reused_across_shots(tmp_path, monkeypatch):
+def test_the_worker_is_reused_across_shots(tmp_path, monkeypatch,
+                                           stubbed_weights):
     """The whole reason this provider is stateful.
 
     Loading is 81-103 s and a generation 56-61 s, so a process per shot
@@ -385,7 +406,8 @@ for line in sys.stdin:
 '''
 
 
-def test_a_failed_generation_releases_the_card(tmp_path, monkeypatch):
+def test_a_failed_generation_releases_the_card(tmp_path, monkeypatch,
+                                               stubbed_weights):
     """Failing while still holding the GPU breaks the fallback.
 
     The router answers a ProviderError by trying the next provider, which
@@ -407,8 +429,8 @@ def test_a_failed_generation_releases_the_card(tmp_path, monkeypatch):
     assert provider._proc is None, "the worker outlived its own failure"
 
 
-def test_a_worker_that_dies_on_startup_is_reported_at_once(tmp_path,
-                                                           monkeypatch):
+def test_a_worker_that_dies_on_startup_is_reported_at_once(
+        tmp_path, monkeypatch, stubbed_weights):
     """A dead child never fills the queue, so waiting on it learns nothing.
 
     Measured while writing this file: a stub that exited immediately took

@@ -14,14 +14,37 @@ between that model running and not running at all.
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
-from clipforge.genvideo.models import REGISTRY, available_models, select_model
+from clipforge.genvideo.models import (REGISTRY, available_models,
+                                       describe_registry, select_model)
 from clipforge.genvideo.providers import LocalDiffusersProvider
 
 
 def _provider(mode: str) -> LocalDiffusersProvider:
     return LocalDiffusersProvider("some/model", quantize=mode)
+
+
+#: `_quantization_config` deliberately returns None and logs when the
+#: quantization stack is absent — that degrade is itself tested below, by
+#: `test_missing_bitsandbytes_is_not_a_crash`. The tests that assert a
+#: REAL config therefore need the real libraries, and without this guard
+#: they reported a broken knob on any machine that simply had not
+#: installed them. A suite that cannot tell "you broke it" from "you do
+#: not have CUDA here" is a suite nobody trusts on the second red run.
+#: Auto-selection can only pick a model whose weights are on disk, so
+#: with an empty model cache these assert on an empty candidate set
+#: rather than on the selection rule they are named for.
+needs_weights = pytest.mark.skipif(
+    not describe_registry()[0]["installed"],
+    reason="no weights installed")
+
+needs_quant_stack = pytest.mark.skipif(
+    importlib.util.find_spec("bitsandbytes") is None
+    or importlib.util.find_spec("diffusers") is None,
+    reason="needs bitsandbytes + diffusers (the GPU stack, CP2+)")
 
 
 # ------------------------------------------------------- the knob works
@@ -35,6 +58,7 @@ def test_every_spelling_of_off_is_off(mode):
     assert _provider(mode)._quantization_config() is None
 
 
+@needs_quant_stack
 def test_nf4_produces_a_real_quantization_config():
     """The test that fails against the shipped code, where this method
     did not exist and the knob was inert."""
@@ -42,10 +66,12 @@ def test_nf4_produces_a_real_quantization_config():
     assert cfg is not None
 
 
+@needs_quant_stack
 def test_int8_produces_a_real_quantization_config():
     assert _provider("int8")._quantization_config() is not None
 
 
+@needs_quant_stack
 def test_only_the_transformer_is_quantized():
     """Quantizing the VAE is how the brown-frame bug comes back — it
     already has to run in fp32."""
@@ -55,6 +81,7 @@ def test_only_the_transformer_is_quantized():
     assert set(mapping) == {"transformer"}
 
 
+@needs_quant_stack
 def test_nf4_computes_in_bfloat16():
     """The 3090 is Ampere and has no native FP4 tensor cores, so 4-bit is
     a storage format dequantized per layer. Compute must stay bf16 or the
@@ -138,6 +165,7 @@ def test_ltx25_is_not_auto_selected_while_unverified():
     assert "ltx25" not in [m.key for m in available_models(24.0)]
 
 
+@needs_weights
 def test_the_unverified_model_is_not_what_auto_selection_picks():
     """The regression guard. LTX 0.9 was retired on 2026-08-13, so this no
     longer names it — what must stay true is that selection never lands on
@@ -147,6 +175,7 @@ def test_the_unverified_model_is_not_what_auto_selection_picks():
     assert picked.key != "ltx25"
 
 
+@needs_weights
 def test_a_verified_model_is_still_selectable():
     keys = {m.key for m in available_models(24.0)}
     assert keys, "no model is auto-selectable — generation cannot run"

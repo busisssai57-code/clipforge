@@ -7,6 +7,8 @@ import weakref
 from pathlib import Path
 from typing import Any
 
+import importlib.util
+
 import pytest
 
 from clipforge.errors import CoResidencyError, RetryableStageError
@@ -394,6 +396,8 @@ def test_engine_import_failure_is_retryable(env):
                   media_path=media)
 
 
+@pytest.mark.skipif(importlib.util.find_spec("torch") is None,
+                    reason="the diarizer probe imports torch for real")
 def test_engine_picks_the_token_kwarg_the_install_accepts(monkeypatch):
     """whisperx renamed the diarizer's token kwarg (use_auth_token -> token
     in 3.8). Guessing wrong raises TypeError, which the stage then reports

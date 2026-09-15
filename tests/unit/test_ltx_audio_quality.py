@@ -84,6 +84,13 @@ def provider(tmp_path, monkeypatch):
     stub = tmp_path / "stub_worker.py"
     stub.write_text(_STUB, encoding="utf-8")
     monkeypatch.setattr(subproc, "WORKER", stub)
+    # `available()` also insists the real 22 GB checkpoint is on disk.
+    # Nothing below loads a weight — the worker is the stub above and the
+    # VRAM budget is 0.1 GB — so that check was the only thing standing
+    # between these tests and every machine without the download. Stub it
+    # and they run everywhere instead of silently covering nothing.
+    from clipforge.genvideo import models as _models
+    monkeypatch.setattr(_models, "weights_present", lambda spec: True)
     # A budget any machine has: nothing here asserts about VRAM.
     spec = dataclasses.replace(LTX_25, vram_gb=0.1)
     p = SubprocessModelProvider(spec, seed=7, interpreter=Path(sys.executable))

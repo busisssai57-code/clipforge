@@ -21,3 +21,8 @@ __pycache__/
 *.pt
 *.task
 *.safetensors
+
+# PowerShell accident: `... > $null` on Windows creates a literal file
+# named $null rather than discarding output (that is `$null = ...` or
+# `Out-Null`). One got committed; this keeps the next one out.
+$null
