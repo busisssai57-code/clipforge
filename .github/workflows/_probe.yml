@@ -1,8 +1,0 @@
-name: probe
-on:
-  pull_request:
-jobs:
-  ok:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo hello
