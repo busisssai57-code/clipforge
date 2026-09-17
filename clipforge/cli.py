@@ -310,7 +310,14 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             manifest: Path = typer.Option(
                 None, "--manifest",
                 help="Write a machine-readable JSON result here. Automation "
-                     "should read this instead of parsing console output")) -> None:
+                     "should read this instead of parsing console output"),
+            chat: Path = typer.Option(
+                None, "--chat",
+                help="A live-chat log for this source (YouTube live_chat.json, "
+                     "a Twitch VOD chat export, an IRC-style log, or "
+                     "offset_seconds,user CSV). Its per-second engagement "
+                     "becomes an S2 ranking signal — the audience vote. "
+                     "Auto-discovered beside the source if not given")) -> None:
     """Run the clip DAG on one local file (no ingestion)."""
     import os
 
@@ -328,6 +335,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
     enhance = _cli_value(enhance, None)
     niche_name = _cli_value(niche, None)
     manifest = _cli_value(manifest, None)
+    chat = _cli_value(chat, None)
     campath_file = _cli_value(campath_file, None)
     authored_keys = None
     if campath_file is not None:
@@ -419,6 +427,18 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             "window_max_s": cfg.s2.window_max_s,
             "top_k": cfg.s2.top_k, "nms_iou": cfg.s2.nms_iou,
         }
+        # Live chat, if a log was given or sits beside the source: its
+        # per-second engagement becomes an S2 signal. The CURVE (content,
+        # not the file path) rides in params so it folds into the S2 cache
+        # key correctly — same chat scores the same clip, a moved file does
+        # not bust the cache, a different chat does. Absent → nothing added,
+        # and S2 scores exactly as before.
+        from clipforge.ingest import chat as _chat
+        _curve = _chat.curve_for(input_path, chat)
+        if _curve:
+            s2_params["chat_curve"] = _curve.to_params()
+            console.print(f"  chat signal: {len(_curve.bins)} active second(s), "
+                          f"busiest {_curve.peak:.0f} msg/s")
         cands = s2.run(input_digest=transcript.cache_key, job_id=job_id,
                        params=s2_params,
                        transcript=transcript)
@@ -1731,6 +1751,14 @@ def web(host: str = typer.Option("127.0.0.1", "--host",
     os.environ[remote.ENV_TOKEN] = access_token or ""
     os.environ[remote.ENV_REQUIRE_AUTH] = "0" if access_token is None else "1"
     os.environ["BTA_WEB_PORT"] = str(port)
+    # A tunnel connects to us FROM 127.0.0.1, so every public request
+    # arrives wearing a loopback address. Leaving loopback trusted while
+    # one is up hands the whole internet an API that spawns subprocesses
+    # on this machine — the token is set, and nothing ever checks it.
+    # Loopback trust is therefore off for the life of the tunnel; the
+    # banner prints a local link with the token already in it so the
+    # operator's own browser is one click, exactly as before.
+    os.environ[remote.ENV_TRUST_LOOPBACK] = "0" if want_tunnel != "off" else "1"
 
     live_tunnel = None
     if want_tunnel != "off":
@@ -1770,7 +1798,13 @@ def _print_access_banner(host: str, port: int, token: str | None, *,
 
     console.print()
     console.print("[bold green]BTA Studio[/bold green]")
-    console.print(f"  [bold]On this machine[/]  http://127.0.0.1:{port}/")
+    # With a tunnel up, loopback is no longer trusted (a tunnelled request
+    # wears a loopback address), so the local link has to carry the token
+    # or the operator's own browser lands on the pairing page.
+    local_suffix = (f"/?{remote.TOKEN_QUERY}={token}"
+                    if (tunnel_url and token) else "/")
+    console.print(
+        f"  [bold]On this machine[/]  http://127.0.0.1:{port}{local_suffix}")
 
     if host in ("127.0.0.1", "localhost", "::1") and not tunnel_url:
         console.print("  [dim]Loopback only. Add --lan to reach it from your "

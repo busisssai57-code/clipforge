@@ -28,11 +28,17 @@ def _sent(text: str, *, start: float = 0.0, end: float = 10.0,
 
 
 def test_default_weights_are_exactly_the_tuned_values():
-    """Flattening all six to 1.0 destroyed the tuning invisibly."""
+    """Flattening the components to 1.0 destroyed the tuning invisibly.
+
+    `chat` is the live-audience signal, weighted level with `turns`: it
+    contributes exactly 0 when no chat log is supplied (its score is 0),
+    so this weight only takes effect on a run that has one. Pinned here so
+    it cannot be flattened or dropped by accident either."""
     assert DEFAULT_WEIGHTS == {
         "boundary": 2.0,
         "qa": 1.5,
         "turns": 1.5,
+        "chat": 1.5,
         "energy": 0.75,
         "laughter": 0.75,
         "selfcont": 0.5,

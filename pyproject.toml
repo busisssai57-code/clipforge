@@ -19,6 +19,21 @@ dependencies = [
     "structlog>=24.1",
     "typer>=0.12",
     "rich>=13.7",
+    # CPU-side, despite looking like part of the model stack: export_pack
+    # writes a thumbnail for every clip that passes QA and socialpost
+    # draws the sticker cards. Both import these, neither touches a GPU,
+    # and until now both were relying on some GPU wheel to have pulled
+    # them in first.
+    "pillow>=10.0",
+    "numpy>=1.26",
+    # `bta web` is the command the README is organised around, and until
+    # now neither of these was declared anywhere — not here, not in
+    # requirements.txt. A fresh install per the README died on
+    # `ModuleNotFoundError: No module named 'uvicorn'` before the server
+    # printed a line. They were present on the build machine because
+    # something else had pulled them in.
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
 ]
 
 [project.scripts]

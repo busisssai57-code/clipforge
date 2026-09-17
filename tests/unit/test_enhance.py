@@ -296,8 +296,15 @@ def test_voiceover_text_travels_in_a_file_with_escaped_path(monkeypatch,
     spec = next(a for a in cmd if a.startswith("flite="))
     assert "textfile=" in spec
     assert text not in spec  # the prose is not inline in the graph
-    # the textfile path's drive colon is escaped for the filter parser
-    assert "\\:" in spec
+    # A colon in the PATH would end the filter's option list, so it is
+    # escaped. Only a Windows path has one to escape (`C:\\...`), and
+    # asserting unconditionally made this fail on POSIX for the one
+    # reason that is not a bug — so assert on the escaping rule itself.
+    raw_path = str((tmp_path / "x").parent.resolve()).replace("\\", "/")
+    if ":" in raw_path:
+        assert "\\:" in spec
+    assert ":" not in spec.split("textfile='", 1)[1].split("'", 1)[0] \
+        .replace("\\:", "")
     # the temp text file is cleaned up whether or not synthesis succeeded
     assert not list(tmp_path.glob("*.txt"))
 

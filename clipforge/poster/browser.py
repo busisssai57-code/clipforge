@@ -17,10 +17,31 @@ from clipforge.log import get_logger
 log = get_logger(__name__)
 
 
+def _restrict(path: Path, *, directory: bool = False) -> None:
+    """Best-effort owner-only permissions on a saved sign-in.
+
+    What lands here is a live session for the operator's TikTok, YouTube,
+    Instagram or X account — cookies that are, for anyone who reads them,
+    that account. It was being written with the default umask, so on a
+    shared or multi-user box every other user could take it. The access
+    token gets this treatment already (``clipforge.remote._restrict``);
+    the thing that is worth more was missing it.
+
+    Advisory, never fatal: on Windows chmod only moves the read-only bit,
+    and a session that could not be locked down is still better than no
+    session at all. It is logged rather than raised.
+    """
+    try:
+        path.chmod(0o700 if directory else 0o600)
+    except OSError as exc:  # noqa: BLE001 - advisory only
+        log.debug("poster.chmod_failed", path=str(path), error=str(exc))
+
+
 def get_auth_file(auth_dir: Path, platform: str) -> Path:
     """Path to platform storage state JSON file."""
     auth_dir = Path(auth_dir)
     auth_dir.mkdir(parents=True, exist_ok=True)
+    _restrict(auth_dir, directory=True)
     return auth_dir / f"{platform}_session.json"
 
 
@@ -44,17 +65,21 @@ def launch_stealth_browser(
     with sync_playwright() as p:
         user_data_dir = auth_dir / f"{platform}_profile"
         user_data_dir.mkdir(parents=True, exist_ok=True)
+        # The profile holds the same cookies the session file does, so
+        # locking down one and not the other protects nothing.
+        _restrict(user_data_dir, directory=True)
 
         browser_type = p.chromium
+        # No --no-sandbox here. It was disabling Chromium's renderer
+        # sandbox in a browser that then loads whatever a social platform
+        # serves, which trades the strongest boundary in the process for
+        # nothing — the sandbox is not what makes automation detectable,
+        # and the two flags below are the ones that address that.
         args = [
             "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
             "--disable-infobars",
             "--window-size=1280,800",
         ]
-
-        storage_state = str(session_file) if session_file.exists() else None
 
         context = browser_type.launch_persistent_context(
             user_data_dir=str(user_data_dir),
@@ -80,7 +105,9 @@ def launch_stealth_browser(
 
             if save_session_on_exit or not session_file.exists():
                 context.storage_state(path=str(session_file))
-                log.info("poster.session_saved", platform=platform, path=str(session_file))
+                _restrict(session_file)
+                log.info("poster.session_saved", platform=platform,
+                         path=str(session_file))
         finally:
             context.close()
 

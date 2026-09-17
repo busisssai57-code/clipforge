@@ -109,6 +109,15 @@ _policy: remote.AccessPolicy = remote.AccessPolicy.from_env()
 _pairing = remote.PairingCodes()
 
 
+def current_policy() -> remote.AccessPolicy:
+    return _policy
+
+
+def set_policy(policy: remote.AccessPolicy) -> None:
+    global _policy
+    _policy = policy
+
+
 
 
 
@@ -121,11 +130,14 @@ def _presented(request: Request) -> remote.Presented:
         if auth.lower().startswith("bearer "):
             header = auth[7:]
     client = request.client.host if request.client else None
+    forwarded = any(h in request.headers for h in remote.FORWARD_HEADERS)
     return remote.Presented(
         client_host=client,
         header_token=header,
         cookie_token=request.cookies.get(remote.COOKIE_NAME),
         query_token=request.query_params.get(remote.TOKEN_QUERY),
+        forwarded=forwarded,
+        host_header=request.headers.get("host"),
     )
 
 
@@ -146,6 +158,23 @@ def _wants_html(request: Request) -> bool:
 
 async def _access_middleware(request: Request, call_next):
     path = request.url.path
+
+    # Host first, and before the OPTIONS/open-path shortcut: a rebinding
+    # page reaches a loopback server as same-origin, so CORS never runs
+    # and the token is never asked for. The Host header is the one part
+    # of that request the attacker's page cannot choose, which makes it
+    # the only place the check can live. Applied to every path, because
+    # /login is reachable without a credential by design.
+    if not remote.host_is_allowed(request.headers.get("host")):
+        log.warning("web.host_rejected",
+                    host=(request.headers.get("host") or "")[:120],
+                    path=path[:120])
+        return JSONResponse(
+            status_code=421,
+            content={"error": "this server does not answer to that host "
+                              "name — reach it by address, or add the name "
+                              f"to {remote.ENV_ALLOWED_HOSTS}"})
+
     # Preflight carries no credentials by design and reveals nothing; it
     # must pass or every cross-origin call fails as a CORS error rather
     # than the 401 it actually is.
@@ -189,6 +218,34 @@ def _set_access_cookie(response: Response, value: str) -> None:
 def _quote(value: str) -> str:
     from urllib.parse import quote
     return quote(value, safe="")
+
+
+def _safe_next(value: str | None) -> str:
+    """Confine a post-login destination to a path on this server.
+
+    ``next`` is attacker-choosable — it rides in the URL of a link anyone
+    can send. Two things it must not be allowed to become:
+
+    * an absolute URL, which turns /login into an open redirect that
+      lends this server's name to a phishing page;
+    * a ``javascript:`` URI, which the login page's own
+      ``location.replace(next)`` would execute as script in this origin.
+
+    So: one leading slash, never two (``//evil.com`` is protocol-relative
+    and absolute), no scheme, no backslashes (browsers normalise those to
+    forward slashes, so ``/\evil.com`` is another spelling of the same
+    trick). Anything else becomes ``/``.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return "/"
+    if not raw.startswith("/"):
+        return "/"
+    if raw.startswith("//") or raw.startswith("/\\"):
+        return "/"
+    if "\\" in raw or "\n" in raw or "\r" in raw:
+        return "/"
+    return raw
 
 
 # Registration order decides nesting: Starlette wraps the LAST-added
@@ -405,6 +462,37 @@ def kill_process_tree(proc: subprocess.Popen | None, guard: Any = None) -> str:
 def _bta_cmd() -> list[str]:
     """The bta CLI invocation for subprocesses."""
     return [sys.executable, "-m", "clipforge.cli"]
+
+
+def _cli_value(value: str, field: str) -> str:
+    """Pass ``value`` to the CLI as data, or refuse it.
+
+    Nothing here is shell-quoted — commands are spawned as an argv list,
+    never through a shell — so this is not about shell metacharacters. It
+    is about the OTHER parser: Typer reads argv, and an argument that
+    begins with ``-`` is an OPTION, not the filename or brief the caller
+    meant. A request naming its source ``--help`` or ``--niche`` does not
+    inject a shell command, but it does steer the CLI somewhere the
+    endpoint never intended, which is the same class of bug one layer in.
+
+    A ``--`` separator cannot fix this: Click ends option parsing for the
+    whole remaining argv, so it would swallow the flags the endpoint
+    itself appends. Refusing the leading dash is the honest fix, and it
+    costs nothing real — no clip, brief, URL or language legitimately
+    starts with one.
+
+    NUL is refused for the same reason every layer below refuses it: it
+    truncates the string in the C API and what the CLI then sees is not
+    what was validated.
+    """
+    text = (value or "").strip()
+    if text.startswith("-"):
+        raise HTTPException(
+            400, f"{field} cannot start with '-' — that would read as a "
+                 f"command-line option rather than a value")
+    if "\x00" in text:
+        raise HTTPException(400, f"{field} contains a null byte")
+    return text
 
 
 def _spawn_task(kind: str, description: str, args: list[str]) -> str:
@@ -1005,7 +1093,8 @@ def start_process(req: ProcessRequest) -> dict[str, Any]:
         raise HTTPException(
             400, f"enhance must be one of {', '.join(_ENHANCE_CHOICES)}")
 
-    args = ["process", req.source, "--clips", str(req.clips)]
+    args = ["process", _cli_value(req.source, "source"),
+            "--clips", str(req.clips)]
     # Only pass the flag when the operator actually chose one; otherwise
     # the CLI applies the configured default, which is the point of the
     # "Niche default" option in the dashboard.
@@ -1014,7 +1103,7 @@ def start_process(req: ProcessRequest) -> dict[str, Any]:
     if req.enhance is not None:
         args.extend(["--enhance", req.enhance])
     if req.niche:
-        args.extend(["--niche", req.niche])
+        args.extend(["--niche", _cli_value(req.niche, "niche")])
 
     task_id = _spawn_task(
         "process",
@@ -1045,7 +1134,8 @@ def start_grab(req: GrabRequest) -> dict[str, Any]:
     if not 1 <= req.clips <= 20:
         raise HTTPException(400, "clips must be 1-20")
     task_id = _spawn_task("grab", f"Download and clip {url[:60]}",
-                          ["grab", url, "--clips", str(req.clips)])
+                          ["grab", _cli_value(url, "url"),
+                           "--clips", str(req.clips)])
     return {"task_id": task_id, "status": "started"}
 
 
@@ -1123,12 +1213,12 @@ def start_live(req: LiveRequest) -> dict[str, Any]:
     if not 30.0 <= req.segment_s <= 3600.0:
         raise HTTPException(400, "segment_s must be between 30 and 3600")
 
-    args = ["live", target, "--platform", req.platform,
+    args = ["live", _cli_value(target, "target"), "--platform", req.platform,
             "--segment", str(req.segment_s)]
     if req.clips:
         args.extend(["--clips", str(req.clips)])
     if req.quality.strip():
-        args.extend(["--quality", req.quality.strip()])
+        args.extend(["--quality", _cli_value(req.quality, "quality")])
 
     task_id = _spawn_task("live", f"Capture live · {target[:70]}", args)
     return {"task_id": task_id, "status": "started",
@@ -1174,7 +1264,8 @@ def rerun_clip(req: RerunRequest) -> dict[str, Any]:
     if not 1 <= req.clips <= 20:
         raise HTTPException(400, "clips must be 1-20")
 
-    args = ["process", meta.source_path, "--clips", str(req.clips)]
+    args = ["process", _cli_value(meta.source_path, "source"),
+            "--clips", str(req.clips)]
     if req.jumpcut is not None:
         args.append("--jumpcut" if req.jumpcut else "--no-jumpcut")
     if req.enhance is not None:
@@ -1269,7 +1360,7 @@ def start_recam(req: CamPathRequest) -> dict[str, Any]:
         _json.dumps({"keyframes": [k.as_dict() for k in keys]}, indent=1),
         encoding="utf-8")
 
-    args = ["process", meta.source_path, "--clips", "1",
+    args = ["process", _cli_value(meta.source_path, "source"), "--clips", "1",
             "--campath-file", str(path_file)]
     task_id = _spawn_task(
         "recam", f"Re-frame {req.filename[:32]} ({len(keys)} keyframe(s))",
@@ -1465,9 +1556,9 @@ def prepare_draft(req: PostRequest) -> dict[str, Any]:
     args = ["post", "--clip", str(clip_path), "--platform", req.platform,
             "--yes"]
     if meta.title:
-        args.extend(["--title", meta.title])
+        args.extend(["--title", _cli_value(meta.title, "title")])
     if meta.caption:
-        args.extend(["--caption", meta.caption])
+        args.extend(["--caption", _cli_value(meta.caption, "caption")])
 
     label = meta.title or req.filename[:40]
     task_id = _spawn_task("post", f"Draft {req.platform} post · {label}", args)
@@ -1574,7 +1665,8 @@ def start_dub(req: DubRequest) -> dict[str, Any]:
     ws = _workspace()
     _confined_clip(ws, req.filename, rejected=req.rejected)
 
-    args = ["dub", "--clip", req.filename, "--lang", req.lang]
+    args = ["dub", "--clip", _cli_value(req.filename, "filename"),
+            "--lang", req.lang]
     if req.subtitles_only:
         args.append("--subtitles-only")
     if req.keep_original > 0:
@@ -1740,7 +1832,7 @@ def _spawn_recut(ws: Workspace, meta: Any, req: RecutRequest,
     cut_file.write_text(_json.dumps([[a, b] for a, b in spans]),
                         encoding="utf-8")
 
-    args = ["process", meta.source_path, "--clips", "1",
+    args = ["process", _cli_value(meta.source_path, "source"), "--clips", "1",
             "--cut-file", str(cut_file)]
     task_id = _spawn_task(
         "recut", f"Re-cut {req.filename[:32]} ({len(spans)} cut(s))", args)
@@ -1787,11 +1879,11 @@ def start_voiceover(req: VoiceoverRequest) -> dict[str, Any]:
     script_file = tmp / f"vo_{uuid.uuid4().hex[:12]}.txt"
     script_file.write_text(script, encoding="utf-8")
 
-    args = ["voiceover", "--clip", req.filename,
+    args = ["voiceover", "--clip", _cli_value(req.filename, "filename"),
             "--script-file", str(script_file),
             "--duck-db", str(req.duck_db), "--gain-db", str(req.gain_db)]
     if req.voice:
-        args.extend(["--voice", req.voice])
+        args.extend(["--voice", _cli_value(req.voice, "voice")])
 
     task_id = _spawn_task("voiceover",
                           f"Voiceover on {req.filename[:36]}", args)
@@ -1819,7 +1911,8 @@ def start_upscale(req: UpscaleRequest) -> dict[str, Any]:
 
     task_id = _spawn_task(
         "upscale", f"Upscale {req.filename[:36]} to {req.height}p",
-        ["upscale", "--clip", req.filename, "--height", str(req.height)])
+        ["upscale", "--clip", _cli_value(req.filename, "filename"),
+         "--height", str(req.height)])
     return {"task_id": task_id, "status": "started"}
 
 
@@ -2039,7 +2132,18 @@ code{background:#1c1c1f;padding:1px 5px;border-radius:4px;font-size:11.5px}
      <code>bta web --lan</code> again to print one.</div>
 </div>
 <script>
-const q=new URLSearchParams(location.search), next=q.get('next')||'/';
+const q=new URLSearchParams(location.search);
+// Same rule the server applies to ?next=: one leading slash and no
+// scheme. Without it, location.replace() below happily runs a
+// `javascript:` URI as script in this origin, and an absolute URL turns
+// the pairing page into an open redirect.
+const rawNext=q.get('next')||'/';
+// fromCharCode(92) rather than a literal backslash: this page is a
+// non-raw Python string, so every backslash here is read twice and
+// an escape written the obvious way arrives in the browser broken.
+const BS=String.fromCharCode(92);
+const next=(rawNext.charAt(0)==='/' && rawNext.charAt(1)!=='/'
+            && rawNext.indexOf(BS)<0) ? rawNext : '/';
 const inp=document.getElementById('c'), btn=document.getElementById('go'),
       err=document.getElementById('err');
 inp.addEventListener('input',()=>{
@@ -2069,11 +2173,11 @@ async function submit(){
 def login_page(request: Request, next: str = "/") -> Response:
     """The pairing page, or a straight-through if the URL carries a token."""
     if not _policy.enforced:
-        return RedirectResponse(next or "/", status_code=303)
+        return RedirectResponse(_safe_next(next), status_code=303)
     supplied = request.query_params.get(remote.TOKEN_QUERY)
     if supplied and _policy.token and secrets.compare_digest(
             supplied.strip(), _policy.token):
-        resp = RedirectResponse(next or "/", status_code=303)
+        resp = RedirectResponse(_safe_next(next), status_code=303)
         _set_access_cookie(resp, _policy.token)
         return resp
     return HTMLResponse(_LOGIN_PAGE)

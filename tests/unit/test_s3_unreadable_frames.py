@@ -14,6 +14,7 @@ defect. The window being unreadable is not.
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,18 @@ from pathlib import Path
 import pytest
 
 from clipforge.errors import StageError
+
+#: S3 refuses to fall back when its model stack is missing — that refusal
+#: is deliberate (ranking silently degrading to heuristics is how a bad
+#: clip ships looking scored). It also means these tests, which are about
+#: what S3 does with an UNREADABLE WINDOW, never reach that code without
+#: the stack installed: the run dies earlier with "transformers not
+#: installed" and the assertion reports a frame-reading bug that is not
+#: there.
+needs_vl_stack = pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None
+    or importlib.util.find_spec("transformers") is None,
+    reason="S3 ranking needs torch + transformers (the GPU stack, CP2+)")
 from clipforge.schemas.candidates import CandidatesArtifact, CandidateWindow
 from clipforge.stages import s3_semantic
 from clipforge.stages.s3_semantic import S3SemanticRanker, _extract_frames_cv2
@@ -42,6 +55,7 @@ def _tiny_video(path: Path, seconds: float = 1.0) -> Path:
 
 
 @needs_ffmpeg
+@needs_vl_stack
 def test_a_window_past_the_end_reads_no_frames_and_does_not_raise(tmp_path):
     """The extractor's own contract: nothing to read is [], not an error."""
     video = _tiny_video(tmp_path / "tiny.mp4")
@@ -95,6 +109,7 @@ def _candidates(*windows):
 
 
 @needs_ffmpeg
+@needs_vl_stack
 def test_every_window_unreadable_names_the_video_instead_of_indexing(
         tmp_path, monkeypatch):
     """`IndexError: list index out of range` told nobody anything.
@@ -117,6 +132,7 @@ def test_every_window_unreadable_names_the_video_instead_of_indexing(
 
 
 @needs_ffmpeg
+@needs_vl_stack
 def test_one_unreadable_window_does_not_lose_the_other_candidates(
         tmp_path, monkeypatch):
     """The shape of the bug: ten candidates died for one bad window.
