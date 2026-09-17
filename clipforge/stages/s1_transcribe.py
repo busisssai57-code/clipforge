@@ -269,6 +269,25 @@ class S1Transcribe(Stage[TranscriptArtifact]):
         compute_type = str(params.get("compute_type", "float16"))
         language = params.get("language") or None
 
+        # Bring-your-own subtitles: an accurate caption file supplied by the
+        # operator stands in for the whole ASR suite. The cues arrive in
+        # params (content, not path — so they fold into the cache key), are
+        # shaped into the same segment form the aligner produces, and skip
+        # ASR, alignment and diarization entirely. Word times are apportioned
+        # per line, not measured, so the artifact says words_aligned=False;
+        # a caption file has no speakers, so diarization_ok=False. The media
+        # still has to exist (checked above) — every later stage reads it.
+        subtitle_rows = params.get("subtitles")
+        if subtitle_rows:
+            from clipforge.ingest.subtitles import (  # noqa: PLC0415
+                cues_to_aligned, from_params)
+            cues = from_params(subtitle_rows)
+            log.info("s1.subtitles_used", cues=len(cues), aligned=False)
+            return self._build_artifact(
+                cache_key, media_path, abs_offset, language,
+                cues_to_aligned(cues), turns=[], diarization_ok=False,
+                words_aligned=False, no_speech=(len(cues) == 0))
+
         self._last_unload_order = []
         diarization_ok = True
         words_aligned = True
