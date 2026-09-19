@@ -42,6 +42,19 @@ class CaptionStyle:
     animation: str
     #: Words per caption line. Small numbers read as poetry, large as prose.
     max_words: int
+    #: The BASE word colour, when it differs from the highlighted one.
+    #:
+    #: S5 has always taken two — `highlight_color` for the word being
+    #: spoken and `base_color` for the rest of the line — and
+    #: `niche_s5_params` fed `primary` to both, so a niche could only ever
+    #: be monochrome. That is right for a quiet documentary caption and
+    #: wrong for the karaoke look this platform actually uses, which is a
+    #: white line with the active word popping in colour. S5's own
+    #: fallbacks are exactly that pair: &H0000FFFF on &H00FFFFFF.
+    #:
+    #: None means "same as primary" — what every niche written before this
+    #: field did — so none of their renders change.
+    secondary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +147,28 @@ _VIRAL_POP = CaptionStyle(
     outline_colour="&H00000000", outline=4.0, shadow=1.0,
     alignment=2, margin_v=260, uppercase=True, animation="pop",
     max_words=4,
+)
+
+#: The shop look: white line, active word popping in TikTok yellow, three
+#: words at a time, parked ABOVE the product anchor.
+#:
+#: `margin_v` is the load-bearing number and it is not a taste decision.
+#: At 1080x1920 the platform's own furniture owns the bottom of the frame
+#: — handle, caption, music ticker — and on a Shop video the orange cart
+#: pill sits in there too. Captions in the house 260 band land underneath
+#: it: the one element of a shop video that must never be covered is the
+#: thing the video exists to point at. 520 is 1920 minus the 1400 where
+#: that band starts, measured on the delivery frame.
+#:
+#: Three words, not four, because this caption is now competing for
+#: vertical space with the cart rather than sitting alone above the fold,
+#: and a wrapped line eats the clearance the margin just bought.
+_SHOP_POP = CaptionStyle(
+    font="Arial Black", size=88, primary="&H0000E8FF",
+    secondary="&H00FFFFFF",
+    outline_colour="&H00000000", outline=4.0, shadow=2.0,
+    alignment=2, margin_v=520, uppercase=True, animation="pop",
+    max_words=3,
 )
 
 #: Monochrome grade matching the reference: full desaturation, crushed
@@ -513,9 +548,116 @@ ARI_GOAT = Niche(
     post_layer=True,
 )
 
+#: TikTok Shop UGC: one synthetic creator, a bathroom mirror, a product,
+#: and thirty seconds to get a thumb onto the cart.
+#:
+#: This is the first niche in the file whose look is constrained by
+#: something OUTSIDE the picture. Every other niche answers "what should
+#: this feel like"; this one also has to answer "where is the platform
+#: going to put its own buttons", because a caption that lands under the
+#: product anchor is invisible and a hand that points at a covered cart is
+#: pointing at nothing. Hence `_SHOP_POP`'s margin and its own comment.
+#:
+#: The pacing is the other half. `jumpcut=True` here is not the house
+#: default leaking back in: an e-commerce read is a person talking to a
+#: phone, the dead air between sentences is a scroll, and the format's
+#: whole problem is a 30-second piece that has to survive its own first
+#: three. That is the exact case silence removal was written for — and
+#: the opposite of dark_mindset, where the pauses ARE the piece.
+TIKTOK_SHOP_UGC = Niche(
+    name="tiktok_shop_ugc",
+    label="TikTok Shop UGC",
+    summary=("Synthetic creator product review: handheld vertical, candid "
+             "direct-to-camera, three-word karaoke captions parked above "
+             "the cart, fast cuts tuned for e-commerce retention."),
+    #: Photoreal human subject, stated first and stated plainly, because
+    #: README documents model selection as automatic on exactly that
+    #: distinction: "photoreal and human-subject work routes to Wan,
+    #: atmospheric and fast work to LTX". A style block that opens with
+    #: mood rather than with a person is a block that can route to the
+    #: wrong model, and the wrong model here is the one that does not do
+    #: faces.
+    gen_style=(
+        "photorealistic UGC smartphone footage of a single real person "
+        "talking directly to camera, candid and unperformed, handheld "
+        "vertical selfie framing at arm's length in a small bathroom, "
+        "soft north-facing window key light from camera left at 45 "
+        "degrees with warm bulb fill on the shadow side, natural "
+        "unretouched skin with visible pores and fine vellus hair, "
+        "35mm lens at f1.8, shallow depth of field, believable handheld "
+        "micro-drift, true-to-life colour at 5200K, natural film grain, "
+        "mild sensor noise in the shadows, one clear physical action per "
+        "shot, product held so its label faces the lens"),
+    #: The first three entries are the ones that matter commercially. A
+    #: warped label is not a cosmetic defect on a shop video — it is the
+    #: frame a buyer screenshots, and it is why the kit's post pass
+    #: composites real product into the label-legible seconds rather than
+    #: trusting any of this.
+    gen_avoid=(
+        "warped label text, garbled packaging text, unreadable product "
+        "label, deformed hands, malformed fingers, extra fingers, fused "
+        "fingers, plastic skin, waxy skin, airbrushed skin, poreless, "
+        "beauty filter, skin smoothing, oversaturated skin, orange skin, "
+        "doll face, uncanny valley, dead eyes, identity drift, face "
+        "melt, morphing, temporal flicker, background shifting, "
+        "cartoon, anime, 3d render, CGI, studio lighting, ring light, "
+        "professional model, stock photo, fashion editorial, "
+        "subtitles, captions, text overlays, watermark, logo"),
+    #: 2.5s. Fast, but not GEEL_SKETCH's 1.9 — that number is comic
+    #: timing, cutting on every reaction, and a product demonstration has
+    #: to let a physical action COMPLETE or it sells nothing. The kit this
+    #: niche was written for divides its thirty seconds into a 3s hook and
+    #: three clips of 7-10s, and those clips are cut internally to about
+    #: this length.
+    shot_seconds=2.5,
+    fps=30,
+    #: 12 x 2.5s = 30s, the format's whole length.
+    default_shots=12,
+    aspect="9:16",
+    #: Saturation 1.06, deliberately below viral_clips' 1.12 and nowhere
+    #: near geel_sketch's 1.16. ARI_GOAT's note records what a saturated
+    #: grade does to a face that fills the frame — sunburnt orange,
+    #: blotchy, yellow-green in the cheeks — and this niche is a face at
+    #: arm's length for twenty-seven of its thirty seconds. The unsharp
+    #: pass is here for the product label, which is the one thing in
+    #: frame that has to survive the platform's transcode legibly.
+    grade="eq=saturation=1.06:contrast=1.04,unsharp=5:5:0.4",
+    caption=_SHOP_POP,
+    jumpcut=True,
+    enhance_speech="gentle",
+    #: The same reason ARI_GOAT sets it: one person, one bathroom, one
+    #: afternoon. Unchained shots come back as a different creator in a
+    #: different room, and identity drift is the defining failure of this
+    #: format — the anchors exist to fight it and this is the same fight
+    #: on the generation side.
+    continuity=True,
+    #: NOT set, and the reason is the format rather than an oversight.
+    #: Pinning the last frame back to the first is what makes a loop, and
+    #: this piece deliberately does not loop: it ends on a hand pointing
+    #: down at the cart, which is the one frame that must NOT return to
+    #: the opening. `loop_strength` stays 0.0.
+    #:
+    #: The hook card is real, though — the format opens on a text card
+    #: over product b-roll before anyone speaks — so the post layer is on
+    #: and its hold matches the kit's 0:00-0:02 card.
+    post_layer=True,
+    hook_seconds=2.0,
+    #: Emoji punchline stamps are sketch grammar. On a shop video the
+    #: on-screen text is designed copy — the value stack, the cart arrow —
+    #: and a 😂 landing on a product claim reads as parody of the thing
+    #: being sold.
+    stickers=False,
+    #: The delivered voice is a performed read (the kit specifies the
+    #: voice model and its slider values), laid in afterwards. Model audio
+    #: would arrive underneath it as room tone nobody chose.
+    model_audio=False,
+    keywords=("ugc", "tiktok", "shop", "product", "review", "creator",
+              "haircare", "skincare", "beauty", "affiliate", "unboxing"),
+)
+
 NICHES: dict[str, Niche] = {
     n.name: n for n in (ASCENDRO_MIND, VIRAL_CLIPS, CINEMATIC_DOC,
-                        GEEL_SKETCH, ARI_GOAT)
+                        GEEL_SKETCH, ARI_GOAT, TIKTOK_SHOP_UGC)
 }
 
 
@@ -547,15 +689,35 @@ def niche_aspect(name: str) -> str | None:
 
 
 def niche_s5_params(niche: Niche) -> dict[str, object]:
-    """Caption settings in the shape S5 expects."""
+    """Caption settings in the shape S5 expects.
+
+    "The shape S5 expects" is the whole job of this function, and it got
+    one key wrong. It emitted `max_words`; S5 reads **`max_words_per_line`**
+    (`s5_subtitles.py`, `params.get("max_words_per_line", 4)`). Since
+    `process` builds its params from config FIRST and then `.update()`s
+    this dict over the top, the niche's value was not merely ignored — it
+    was shadowed by `cfg.s5.max_words_per_line`, which is 3 by default.
+    Every niche in this file therefore captioned at the config's line
+    length: dark_mindset's 7-word lines and geel_sketch's 5 never once
+    reached a render.
+
+    That is the same class of failure this module was written to fix, and
+    the same one its own tests exist to catch — a niche whose look quietly
+    reverts to the house default still produces a perfectly valid video,
+    so nothing fails, and nobody looks. `max_words` is emitted alongside
+    for anything already reading it; `max_words_per_line` is the one S5
+    acts on.
+    """
     c = niche.caption
     return {
         "font": c.font, "font_size": c.size,
-        "highlight_color": c.primary, "base_color": c.primary,
+        "highlight_color": c.primary,
+        "base_color": c.secondary or c.primary,
         "outline_color": c.outline_colour, "outline": c.outline,
         "shadow": c.shadow, "alignment": c.alignment,
         "margin_v": c.margin_v, "uppercase": c.uppercase,
-        "animation": c.animation, "max_words": c.max_words,
+        "animation": c.animation,
+        "max_words": c.max_words, "max_words_per_line": c.max_words,
     }
 
 

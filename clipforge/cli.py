@@ -48,16 +48,35 @@ def _cli_value(value: Any, fallback: Any) -> Any:
     return fallback if isinstance(value, (OptionInfo, ArgumentInfo)) else value
 
 
-def _pacing_enabled(jumpcut: Any, config_default: bool) -> bool:
+def _pacing_enabled(jumpcut: Any, config_default: bool,
+                    niche_default: bool | None = None) -> bool:
     """Whether jump-cut silence removal runs for this invocation.
 
     A function, not an inline expression, so the decision can be tested
     behaviourally. The inline form was pinned by a source-string
     assertion, which a mutant defeated by leaving the string in a
     comment — the ninth accidental pass in this project.
+
+    Precedence is explicit flag > niche > config, the same rule stated at
+    `enhance_speech`'s call site: a niche is a considered default, not an
+    override of what the operator typed on this specific run.
+
+    `niche_default` is new, and its absence was a hole of exactly the kind
+    this module keeps finding. `Niche.jumpcut` is documented on the
+    dataclass as "Jump-cut silence removal. Wrong for anything with
+    musical timing", and it reached nothing — this call read the config
+    and skipped the niche entirely. So selecting a niche applied its
+    captions, its grade and its speech cleanup while its PACING silently
+    stayed at whatever config said, which for `dark_mindset` means a
+    contemplative narration was one config flag away from having its
+    pauses cut out by the niche that exists to preserve them.
     """
     jumpcut = _cli_value(jumpcut, None)
-    return bool(config_default) if jumpcut is None else bool(jumpcut)
+    if jumpcut is not None:
+        return bool(jumpcut)
+    if niche_default is not None:
+        return bool(niche_default)
+    return bool(config_default)
 
 
 def _boot(config_path: Path, *, sweep_partials: bool = True) -> tuple:
@@ -672,7 +691,9 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                                   f"{cut_s:.1f}s of silence removed")
                 return out
 
-            pacing_on = _pacing_enabled(jumpcut, cfg.pacing.enabled)
+            niche_jumpcut = active_niche.jumpcut if active_niche else None
+            pacing_on = _pacing_enabled(jumpcut, cfg.pacing.enabled,
+                                        niche_default=niche_jumpcut)
             keeps = _keeps_for(win_start, win_end, pacing_on)
             console.print(f"[green]clip {pos}: window "
                           f"{win_start:.1f}-{win_end:.1f}s ({cand_id})[/]")
