@@ -237,6 +237,20 @@ renderer (1920 − 1400, measured up from the bottom as ASS does). If you
 change one, change the other, or burned-in captions land under the cart.
 The house `_VIRAL_POP` sits at 260 and would do exactly that.
 
+Note the 20px difference between the two numbers: `margin_v = 520` puts
+the caption's lower edge at exactly y = 1400, flush against the band,
+while the `y 260 → 1380` box above carries a cushion for manually placed
+overlays. To hold the captions to the same cushion, override for the run:
+
+```bash
+.\.venv\Scripts\bta.exe process "D:\ugc\rosemary_cut.mp4" --niche tiktok_shop_ugc --margin-v 540
+```
+
+`--margin-v` is the only way to move them without editing the niche:
+caption params are built from config and then updated from the niche, so
+a selected niche wins over `config.toml` by construction. Precedence is
+flag > niche > config.
+
 ---
 
 ## 4. Running it through the pipeline
