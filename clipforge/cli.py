@@ -79,6 +79,33 @@ def _pacing_enabled(jumpcut: Any, config_default: bool,
     return bool(config_default)
 
 
+def _caption_margin_v(margin_v: Any, config_default: int,
+                      niche_default: int | None = None) -> int:
+    """Caption distance from the bottom edge, in pixels at the render height.
+
+    Precedence is the house rule: explicit flag > niche > config.
+
+    The niche half is not a nicety. `process` builds its caption params
+    from config and then updates them from the niche, so a selected niche
+    WINS over config by construction — correct, since a niche carries the
+    whole look, but it meant an operator who wanted a different caption
+    height had nowhere to say so. Editing config.toml did nothing while a
+    niche was selected, and the only remaining lever was editing the niche
+    in source, which changes it for every future render rather than for
+    this one.
+
+    The number matters more than most: it is the gap between the captions
+    and whatever the platform draws over the bottom of the frame, and on a
+    Shop video what sits there is the cart.
+    """
+    margin_v = _cli_value(margin_v, None)
+    if margin_v is not None:
+        return int(margin_v)
+    if niche_default is not None:
+        return int(niche_default)
+    return int(config_default)
+
+
 def _boot(config_path: Path, *, sweep_partials: bool = True) -> tuple:
     """Shared startup: DLL paths → config → workspace → logging → debris sweep.
 
@@ -317,6 +344,13 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                 None, "--niche",
                 help="Apply a niche's caption style, pacing and grade "
                      "(see: bta niches)"),
+            margin_v: int = typer.Option(
+                None, "--margin-v", min=0,
+                help="Caption distance from the bottom edge in pixels, "
+                     "overriding the niche and the config for this run. "
+                     "At 1080x1920: 260 is the house band, 520 clears "
+                     "TikTok's product anchor, 540 adds the 20px cushion "
+                     "the manual-overlay safe box uses"),
             campath_file: Path = typer.Option(
                 None, "--campath-file",
                 help="Operator-authored camera keyframes (JSON). Overrides "
@@ -544,6 +578,19 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             console.print(f"[green]niche:[/] {active_niche.label} — "
                           f"{active_niche.caption.animation} captions"
                           + (", graded" if active_niche.grade else ""))
+
+        # After the niche update, deliberately: the flag is the last word.
+        # Stated as an assignment rather than left to dict-update ordering,
+        # because "which of these two lines runs second" is not a place to
+        # keep a precedence rule.
+        s5_params["margin_v"] = _caption_margin_v(
+            margin_v, cfg.s5.margin_v,
+            niche_default=(active_niche.caption.margin_v
+                           if active_niche else None))
+        if _cli_value(margin_v, None) is not None:
+            console.print(f"[green]caption margin_v:[/] "
+                          f"{s5_params['margin_v']}px (overrides "
+                          f"{'niche' if active_niche else 'config'})")
         s6_params = {
             "width": cfg.s6.width, "height": cfg.s6.height,
             "encoder": cfg.s6.encoder, "nvenc_preset": cfg.s6.nvenc_preset,
