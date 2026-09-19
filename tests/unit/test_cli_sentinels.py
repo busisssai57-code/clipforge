@@ -70,6 +70,38 @@ def test_an_explicit_flag_beats_the_config_in_both_directions():
     assert cli._pacing_enabled(None, config_default=False) is False
 
 
+def test_a_niche_sets_the_pacing_the_config_would_have_set():
+    """`Niche.jumpcut` is documented on the dataclass and reached nothing.
+
+    Selecting a niche applied its captions, its grade and its speech
+    cleanup while its PACING stayed at whatever config said — so
+    dark_mindset, whose whole point is that the pauses are the piece, was
+    one config flag away from having them cut out.
+    """
+    assert cli._pacing_enabled(None, False, niche_default=True) is True
+    assert cli._pacing_enabled(None, True, niche_default=False) is False
+
+
+def test_an_explicit_flag_still_beats_the_niche():
+    """Precedence is flag > niche > config: a niche is a considered
+    default, not an override of what the operator typed on this run."""
+    assert cli._pacing_enabled(True, False, niche_default=False) is True
+    assert cli._pacing_enabled(False, True, niche_default=True) is False
+
+
+def test_without_a_niche_the_config_still_decides():
+    sentinel = inspect.signature(cli.process).parameters["jumpcut"].default
+    assert cli._pacing_enabled(sentinel, True, niche_default=None) is True
+    assert cli._pacing_enabled(sentinel, False, niche_default=None) is False
+
+
+def test_process_passes_the_selected_niche_into_the_pacing_decision():
+    """The fix is only real if the call site actually hands the niche over."""
+    src = inspect.getsource(cli.process)
+    assert "niche_default=niche_jumpcut" in src
+    assert "active_niche.jumpcut" in src
+
+
 def test_process_uses_the_shared_pacing_decision():
     """Guard against the decision being re-inlined somewhere else."""
     src = inspect.getsource(cli.process)
