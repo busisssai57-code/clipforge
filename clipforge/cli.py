@@ -370,7 +370,14 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                      "a Twitch VOD chat export, an IRC-style log, or "
                      "offset_seconds,user CSV). Its per-second engagement "
                      "becomes an S2 ranking signal — the audience vote. "
-                     "Auto-discovered beside the source if not given")) -> None:
+                     "Auto-discovered beside the source if not given"),
+            subtitles: Path = typer.Option(
+                None, "--subtitles",
+                help="An accurate SRT/VTT caption file for this source. Used "
+                     "INSTEAD of running speech recognition — faster, and "
+                     "better where your captions beat Whisper. Word timing is "
+                     "apportioned per line, not measured. Auto-discovered "
+                     "(exact stem .srt/.vtt) beside the source if not given")) -> None:
     """Run the clip DAG on one local file (no ingestion)."""
     import os
 
@@ -389,6 +396,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
     niche_name = _cli_value(niche, None)
     manifest = _cli_value(manifest, None)
     chat = _cli_value(chat, None)
+    subtitles = _cli_value(subtitles, None)
     campath_file = _cli_value(campath_file, None)
     authored_keys = None
     if campath_file is not None:
@@ -459,6 +467,21 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             "batch_size": cfg.s1.batch_size, "language": cfg.s1.language,
             "abs_offset_s": abs_offset,
         }
+        # Bring-your-own subtitles: an accurate caption file, given or found
+        # beside the source, replaces the ASR. The cues (content, not path)
+        # ride in params so they fold into S1's cache key.
+        from clipforge.ingest import subtitles as _subs
+        _sub_path = (Path(subtitles) if subtitles
+                     else _subs.discover_beside(input_path))
+        if _sub_path is not None:
+            try:
+                _cues = _subs.parse_subtitles(_sub_path)
+            except ClipForgeError as exc:
+                console.print(f"[red]--subtitles is not usable:[/] {exc}")
+                raise typer.Exit(2) from exc
+            s1_params["subtitles"] = _subs.to_params(_cues)
+            console.print(f"  subtitles: {len(_cues)} caption(s) from "
+                          f"{_sub_path.name} — skipping speech recognition")
         transcript = s1.run(input_digest=source_digest, job_id=job_id,
                             params=s1_params, media_path=input_path)
         n_words = sum(len(s.words) for s in transcript.segments)
@@ -1207,6 +1230,30 @@ def _js_runtime() -> str | None:
 
 
 @app.command()
+def _grab_ytdlp_cmd(url: str, dest_dir: "Path", runtime: str | None) -> list[str]:
+    """The yt-dlp invocation `grab` runs. Extracted so its flags are
+    testable without a network download.
+
+    Alongside the video it now writes the live chat (`--sub-langs
+    live_chat`): for a livestream VOD or premiere that lands a
+    `<title>.live_chat.json` beside the media, which `process`
+    auto-discovers and turns into the S2 audience signal. For an ordinary
+    video there is no live chat and yt-dlp simply writes nothing — a
+    warning at most, never a failure, so this is safe to always request.
+    """
+    cmd = [sys.executable, "-m", "yt_dlp",
+           "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/b",
+           "--merge-output-format", "mp4", "--no-playlist",
+           # Live chat as a subtitle track; ignored when the video has none.
+           "--write-subs", "--sub-langs", "live_chat",
+           "-o", str(dest_dir / "%(title).60s.%(ext)s"),
+           "--print", "after_move:filepath"]
+    if runtime:
+        cmd.extend(["--js-runtimes", runtime])
+    cmd.append(url)
+    return cmd
+
+
 def grab(url: str = typer.Argument(..., help="Video URL (yt-dlp supported)"),
          config: Path = CONFIG_OPT,
          clips: int = typer.Option(3, "--clips", "-n", min=1)) -> None:
@@ -1221,26 +1268,20 @@ def grab(url: str = typer.Argument(..., help="Video URL (yt-dlp supported)"),
     # considers files this run produced, never a stale prior download.
     started_at = time.time()
     console.print(f"[green]downloading {url}[/]")
-    # Height cap, not "best": a 4K source triples every decode in the DAG
-    # for pixels that 1080x1920 throws away.
-    cmd = [sys.executable, "-m", "yt_dlp",
-           "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/b",
-           "--merge-output-format", "mp4", "--no-playlist",
-           "-o", str(dest_dir / "%(title).60s.%(ext)s"),
-           "--print", "after_move:filepath"]
     # YouTube extraction needs a JavaScript runtime to solve the player
     # challenge; without one yt-dlp warns and then 403s on the media URL.
     # Only deno is enabled by default, but node is far more likely to be
     # present — point yt-dlp at whichever this machine actually has
     # rather than making the operator discover the flag from a 403.
+    # Height cap, not "best": a 4K source triples every decode in the DAG
+    # for pixels that 1080x1920 throws away. Command building (including the
+    # live-chat fetch) lives in _grab_ytdlp_cmd so its flags are testable.
     runtime = _js_runtime()
-    if runtime:
-        cmd.extend(["--js-runtimes", runtime])
-    else:
+    if not runtime:
         console.print("[yellow]no JavaScript runtime found (node/deno/bun). "
                       "YouTube downloads will likely fail with 403; install "
                       "Node and retry.[/]")
-    cmd.append(url)
+    cmd = _grab_ytdlp_cmd(url, dest_dir, runtime)
     proc = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace")
