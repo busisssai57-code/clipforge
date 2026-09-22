@@ -18,6 +18,7 @@ from typer.models import ArgumentInfo, OptionInfo
 from clipforge.config import load_config
 from clipforge.dllpaths import ensure_nvidia_dll_dirs
 from clipforge.errors import ClipForgeError
+from clipforge.idle import idle_checkpoint
 from clipforge.log import setup_logging
 from clipforge.paths import Workspace, discard_partials
 
@@ -242,9 +243,43 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
                 abs_offset=abs_start_s, clips=cfg.orchestration.clips_per_window,
                 jumpcut=None)
 
+    def _settled(key, outcome: str) -> None:
+        """Record in the DB that this source needs no more clipping.
+
+        The clip queue is memory. Holding windows until the machine is
+        idle is the whole design, and a four-hour gaming session leaves a
+        dozen waiting — so a reboot, a Ctrl+C or one of this box's
+        power-offs used to throw away every clip from that stream. The
+        queue is rebuilt from these rows at the next start.
+        """
+        try:
+            if key[0] == "segment":
+                db.set_segment_status(int(key[1]), int(key[2]), "processed")
+            elif key[0] == "video":
+                db.set_video_status(key[1], key[2], key[3], "processed")
+        except Exception as exc:  # noqa: BLE001 - bookkeeping never kills work
+            console.print(f"[yellow]could not record {key}: {exc}[/]")
+        if outcome != "processed":
+            console.print(f"  [yellow]{key[0]} settled as {outcome}[/]")
+
+    gate = preempt = None
+    if cfg.watch.clip_only_when_idle:
+        from clipforge.idle import IdleGate, PreemptCheck
+
+        gate = IdleGate(idle_after_s=cfg.watch.idle_after_s,
+                        gpu_busy_pct=cfg.watch.gpu_busy_pct,
+                        min_free_vram_gb=cfg.watch.min_free_vram_gb).reason_busy
+        # Starting needs a quiet machine; STOPPING needs only that the
+        # operator is back. Asymmetric on purpose: a job pauses the moment
+        # they touch the keyboard, and resumes only once they have been
+        # gone for idle_after_s again.
+        preempt = PreemptCheck(within_s=cfg.watch.preempt_within_s).reason_busy
     dispatcher = ClipDispatcher(
         handler=_clip_window,
-        maxsize=cfg.orchestration.queue_maxsize).start()
+        maxsize=cfg.orchestration.queue_maxsize,
+        gate=gate, preempt=preempt, on_settled=_settled,
+        gate_poll_s=cfg.watch.idle_poll_s).start()
+    retry_stop = _start_telegram_retry(cfg, ws)
     monitor = ChannelMonitor(cfg=cfg, db=db, ws=ws, watchlist=wl,
                              on_media=dispatcher.submit)
 
@@ -267,6 +302,29 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
     if stale:
         console.print(f"[yellow]{len(stale)} job(s) were left running by an "
                       "earlier crash; marked failed[/]")
+
+    # Windows that were recorded but never clipped — a reboot, a Ctrl+C,
+    # or a power-off while the queue waited for an idle machine — are
+    # still on disk and still 'ready' in the DB. Offer them again before
+    # the loop starts recording more.
+    import time as _time
+
+    requeued = 0
+    cutoff = _time.time() - cfg.disk.retention_hours * 3600
+    for row in db.segments_with_status("ready"):
+        seg_path = Path(row["path"])
+        try:
+            if not seg_path.is_file() or seg_path.stat().st_mtime < cutoff:
+                continue
+        except OSError:
+            continue
+        monitor.emit_recovered(seg_path, float(row["abs_start_s"] or 0.0),
+                               key=("segment", int(row["session_id"]),
+                                    int(row["seg_index"])))
+        requeued += 1
+    if requeued:
+        console.print(f"[yellow]re-queued {requeued} recorded window(s) that "
+                      "were never clipped[/]")
 
     async def _serve() -> None:
         # Install the handler INSIDE the loop: waiting for asyncio.run() to
@@ -304,6 +362,12 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
 
     console.print(f"[green]watching {len(wl.enabled_sorted())} channel(s); "
                   "Ctrl+C to stop (chunker finalizes tails on exit)[/]")
+    if gate is not None:
+        console.print(f"  clipping waits until the PC has been idle "
+                      f"{cfg.watch.idle_after_s:.0f}s, and pauses mid-job "
+                      f"when you come back; recording never waits")
+    if cfg.notify.telegram:
+        console.print("  accepted clips are sent to Telegram")
     try:
         asyncio.run(_serve())
     except KeyboardInterrupt:  # backstop if a signal slipped past the handler
@@ -313,6 +377,7 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
         # return the terminal, and every queued window is still a file on
         # disk that `bta process` can pick up.
         dispatcher.stop()
+        retry_stop.set()
         stats = dispatcher.stats.snapshot()
         if stats["submitted"] or stats["dropped"]:
             console.print(
@@ -321,6 +386,176 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
                 f"queued/abandoned[/]")
         console.print("[yellow]stopped - tails finalized, sessions closed[/]")
         db.close()
+
+
+def _start_telegram_retry(cfg, ws) -> "threading.Event":
+    """Retry queued Telegram deliveries on a timer for as long as watch runs.
+
+    Returns the event that stops it. A no-op thread-free event when
+    delivery is off, so the caller has one shape either way.
+    """
+    import threading
+
+    stop = threading.Event()
+    if not cfg.notify.telegram:
+        return stop
+
+    def _loop() -> None:
+        from clipforge import notify
+
+        while not stop.wait(cfg.notify.retry_interval_s):
+            try:
+                notify.flush_outbox(target=notify.target_from_config(cfg),
+                                    ws_root=Path(ws.root))
+            except Exception as exc:  # noqa: BLE001 - retry loop never dies
+                console.print(f"[yellow]telegram retry failed: {exc}[/]")
+
+    threading.Thread(target=_loop, name="telegram-retry", daemon=True).start()
+    return stop
+
+
+@app.command()
+def telegram(clip: str = typer.Argument(
+                 None, help="A clip in clips/ to send now (name or path)"),
+             config: Path = CONFIG_OPT,
+             retry: bool = typer.Option(
+                 False, "--retry", help="Resend every queued delivery"),
+             again: bool = typer.Option(
+                 False, "--again", help="Send even if already delivered")) -> None:
+    """Check Telegram delivery, send a clip to the phone, or retry the queue.
+
+    With no arguments, only validates the bot token and chat id (getMe) and
+    sends nothing.
+    """
+    from clipforge import notify
+
+    # No partial sweep: `bta watch` may be running and own those files.
+    cfg, ws = _boot(config, sweep_partials=False)
+    target = notify.target_from_config(cfg)
+    try:
+        bot = notify.check(target)
+    except ValueError as exc:
+        console.print(f"[red]telegram not usable: {exc}[/]")
+        raise typer.Exit(1)
+    console.print(f"[green]bot {bot} ok[/] (credentials from {target.source}); "
+                  f"delivery is {'ON' if cfg.notify.telegram else 'OFF'} in "
+                  "config \[notify]")
+    if retry:
+        counts = notify.flush_outbox(target=target, ws_root=Path(ws.root))
+        console.print(f"queue: {counts or 'empty'}")
+    if clip:
+        path = Path(clip)
+        if not path.is_file():
+            # A bare clip name is what the help text advertises, and
+            # _resolve_clip_name reads `.name` off what it is given.
+            name, rejected = _resolve_clip_name(ws, path)
+            path = Path(ws.clips) / ("rejected" if rejected else "") / name
+        outcome = notify.send_clip(path, target=target, ws_root=Path(ws.root),
+                                   again=again)
+        console.print(f"{path.name}: {outcome}")
+        if outcome not in ("sent", "already_sent"):
+            raise typer.Exit(1)
+
+
+@app.command()
+def autostart(action: str = typer.Argument(
+                  "status", help="install | remove | status"),
+              config: Path = CONFIG_OPT) -> None:
+    """Start `bta watch` automatically when you log in.
+
+    Without this, watching only happens while a terminal someone opened
+    stays up: after a reboot, a logoff or one of this machine's crashes,
+    the next broadcast is neither recorded nor clipped and nothing says so.
+
+    The task is deliberately "run only when you are logged on". A task
+    that runs whether or not you are logged on lives in session 0, where
+    the idle check reads a desktop nobody uses — it would report the
+    machine free while you were typing, and clip straight through your
+    games.
+    """
+    import subprocess
+
+    if sys.platform != "win32":
+        console.print("[red]autostart is Windows-only[/]")
+        raise typer.Exit(2)
+
+    name = "BTA clip watcher"
+    root = Path(__file__).resolve().parent.parent
+    runner = root / "tools" / "watch_forever.ps1"
+
+    def _ps(script: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=120)
+
+    if action == "status":
+        out = _ps(f"$t = Get-ScheduledTask -TaskName '{name}' "
+                  "-ErrorAction SilentlyContinue; if ($t) { "
+                  "$i = $t | Get-ScheduledTaskInfo; "
+                  "Write-Output \"$($t.State)|$($i.LastRunTime)|"
+                  "$($i.LastTaskResult)\" } else { Write-Output 'absent' }")
+        text = (out.stdout or "").strip()
+        if not text or text == "absent":
+            console.print("[yellow]not installed[/] - run `bta autostart "
+                          "install` to watch from every logon")
+            raise typer.Exit(1)
+        state, last_run, last_result = (text.split("|") + ["", ""])[:3]
+        console.print(f"[green]installed[/]: state={state}, "
+                      f"last run {last_run}, last result {last_result}")
+        return
+
+    if action == "remove":
+        _ps(f"Unregister-ScheduledTask -TaskName '{name}' -Confirm:$false")
+        console.print(f"[yellow]removed '{name}'[/]")
+        return
+
+    if action != "install":
+        console.print("[red]action must be install, remove or status[/]")
+        raise typer.Exit(2)
+
+    runner.parent.mkdir(parents=True, exist_ok=True)
+    runner.write_text(_WATCH_RUNNER.replace("__ROOT__", str(root)),
+                      encoding="utf-8")
+
+    script = f"""
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' \
+  -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{runner}"' \
+  -WorkingDirectory '{root}'
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries \
+  -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -ExecutionTimeLimit ([TimeSpan]::Zero) \
+  -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
+Register-ScheduledTask -TaskName '{name}' -Action $action -Trigger $trigger \
+  -Principal $principal -Settings $settings -Force | Out-Null
+Write-Output 'registered'
+"""
+    out = _ps(script)
+    if "registered" not in (out.stdout or ""):
+        console.print(f"[red]could not register the task[/]: "
+                      f"{(out.stderr or out.stdout or '').strip()[:400]}")
+        raise typer.Exit(1)
+    console.print(f"[green]installed '{name}'[/] - `bta watch` starts at "
+                  f"every logon and restarts if it exits")
+    console.print(f"  wrapper: {runner}")
+    console.print("  stop it now with: bta autostart remove")
+
+
+#: The wrapper the task actually runs. A loop, because the point is that
+#: watching survives: `bta watch` exiting (a crash, a bad config, another
+#: instance holding the workspace lock) must not end the watching for the
+#: rest of the day. The pause keeps a permanently-failing start from
+#: spinning, and the transcript is where to look when nothing arrives.
+_WATCH_RUNNER = """# Generated by `bta autostart install`. Safe to delete.
+Set-Location '__ROOT__'
+$log = Join-Path '__ROOT__' 'workspace\\logs\\watch_autostart.log'
+while ($true) {
+    "$(Get-Date -Format s) starting bta watch" | Out-File -Append -Encoding utf8 $log
+    & '__ROOT__\\.venv\\Scripts\\bta.exe' watch *>> $log
+    "$(Get-Date -Format s) bta watch exited with $LASTEXITCODE" | Out-File -Append -Encoding utf8 $log
+    Start-Sleep -Seconds 60
+}
+"""
 
 
 @app.command()
@@ -459,6 +694,12 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             "batch_size": cfg.s1.batch_size, "language": cfg.s1.language,
             "abs_offset_s": abs_offset,
         }
+        # Stage boundaries double as pause points: in `bta watch` the
+        # operator coming back mid-job stops the pipeline here, where the
+        # previous stage has already unloaded (so pausing hands back the
+        # VRAM, not just the compute). Outside watch no checkpoint is
+        # installed and these are no-ops.
+        idle_checkpoint("s1_transcribe")
         transcript = s1.run(input_digest=source_digest, job_id=job_id,
                             params=s1_params, media_path=input_path)
         n_words = sum(len(s.words) for s in transcript.segments)
@@ -492,6 +733,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             s2_params["chat_curve"] = _curve.to_params()
             console.print(f"  chat signal: {len(_curve.bins)} active second(s), "
                           f"busiest {_curve.peak:.0f} msg/s")
+        idle_checkpoint("s2_candidates")
         cands = s2.run(input_digest=transcript.cache_key, job_id=job_id,
                        params=s2_params,
                        transcript=transcript)
@@ -513,9 +755,15 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             "max_pixels": cfg.s3.max_pixels,
             "seed": cfg.s3.seed,
         }
+        idle_checkpoint("s3_semantic")
+        # abs_offset rides along as an INPUT, not a param: candidate times
+        # are absolute stream seconds and this file starts at 0. It is not
+        # in the cache key because it does not need to be — the key already
+        # depends on the S1 transcript, whose own params carry the offset.
         ranked = s3.run(input_digest=cands.cache_key, job_id=job_id,
                         params=s3_params,
-                        candidates_artifact=cands, video_path=input_path)
+                        candidates_artifact=cands, video_path=input_path,
+                        abs_offset_s=abs_offset)
         console.print(f"  {len(ranked.items)} candidates ranked (source={ranked.ranking_source})")
 
         from clipforge.stages.s5_subtitles import S5Subtitles
@@ -873,6 +1121,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             attempt = 0
             repairs: list[str] = []
             while True:
+                idle_checkpoint("render" if not attempt else "repair")
                 clip, qa, editor_art = _attempt(cur_start, cur_end,
                                                 cur_keeps, overrides)
                 if qa.passed:
@@ -938,6 +1187,17 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                          f"{', '.join(repairs)}" if repairs else "")
                 console.print(f"  QA: [green]PASSED[/] "
                               f"({len(qa.checks)} checks{note}){fixed}")
+                if cfg.notify.telegram:
+                    # After the export pack, so the phone gets its title
+                    # and hashtags. send_clip never raises: delivery
+                    # failing is queued for retry, never a failed clip.
+                    from clipforge import notify
+
+                    outcome = notify.send_clip(
+                        Path(clip.clip_path),
+                        target=notify.target_from_config(cfg),
+                        ws_root=Path(ws.root))
+                    console.print(f"  telegram: {outcome}")
             else:
                 rejected_dir = ws.clips / "rejected"
                 rejected_dir.mkdir(parents=True, exist_ok=True)
@@ -1228,6 +1488,10 @@ def grab(url: str = typer.Argument(..., help="Video URL (yt-dlp supported)"),
            "--merge-output-format", "mp4", "--no-playlist",
            "-o", str(dest_dir / "%(title).60s.%(ext)s"),
            "--print", "after_move:filepath"]
+    # Use exported cookies if available (for sign-in-gated videos).
+    _cookie_jar = Path(__file__).resolve().parent.parent / "cookies.txt"
+    if _cookie_jar.is_file():
+        cmd.extend(["--cookies", str(_cookie_jar)])
     # YouTube extraction needs a JavaScript runtime to solve the player
     # challenge; without one yt-dlp warns and then 403s on the media URL.
     # Only deno is enabled by default, but node is far more likely to be

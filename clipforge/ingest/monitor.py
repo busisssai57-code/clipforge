@@ -6,10 +6,18 @@ network-bound, high concurrency). Each tick:
   * housekeeping first — retention sweep, then the disk guard: below the
     free-space floor ingestion PAUSES (loudly) rather than filling the
     drive (§6);
-  * twitch/kick: ``is_live`` poll → on live, start a ChunkerSession and
-    babysit it until it returns;
-  * youtube: pending VOD ids (newly discovered + previously-failed
-    requeues) → download each → hand the file to the DAG seam.
+  * twitch/kick/youtube: ``is_live`` poll → on live, start a
+    ChunkerSession and babysit it until it returns;
+  * youtube, when NOT live: pending VOD ids (newly discovered +
+    previously-failed requeues) → download each → hand the file to the
+    DAG seam.
+
+YouTube channels used to take the VOD branch unconditionally, so a
+creator broadcasting live produced nothing until the stream had ended and
+been published as a VOD — hours late, and for multi-hour streams often
+never (the download itself timed out). The live probe and streamlink argv
+had existed in ``ingest.youtube`` for weeks with only `bta live` calling
+them.
 
 **Everything blocking runs off the event loop.** ``is_live`` shells out to
 streamlink with a 30 s timeout; review demonstrated that calling it inline
@@ -75,6 +83,39 @@ SESSION_RESUME_WINDOW_S = 300.0
 UNPRODUCTIVE_SESSION_S = 60.0
 
 
+def _segment_key(ev: SegmentEvent) -> tuple | None:
+    """How to find this window's SOURCE again after a restart.
+
+    Recovered media (session_id -1) has no row to mark, so it carries no
+    key rather than a wrong one.
+    """
+    if ev.session_id < 0 or ev.seg_index < 0:
+        return None
+    return ("segment", ev.session_id, ev.seg_index)
+
+
+def _either(a: threading.Event, b: threading.Event) -> threading.Event:
+    """An event that is set when either input is.
+
+    Polled rather than chained: threading.Event has no composition, and
+    the only consumer (yt-dlp's runner) asks ``is_set()`` on a cadence.
+    """
+
+    class _Either(threading.Event):
+        def is_set(self) -> bool:  # type: ignore[override]
+            return a.is_set() or b.is_set()
+
+        def wait(self, timeout=None) -> bool:  # type: ignore[override]
+            deadline = None if timeout is None else time.monotonic() + timeout
+            while not self.is_set():
+                if deadline is not None and time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.2)
+            return True
+
+    return _Either()
+
+
 def disk_allows(root: Path, floor_gb: float) -> bool:
     """The §6 disk guard: False ⇒ pause ingestion this tick."""
     try:
@@ -97,11 +138,17 @@ class ChannelMonitor:
     db: StateDB
     ws: Workspace
     watchlist: Watchlist
-    #: DAG seam: called with (path, abs_start_s) for every ready media file.
-    on_media: Callable[[Path, float], None] | None = None
+    #: DAG seam: called with (path, abs_start_s, key) for every ready media
+    #: file. ``key`` identifies the SOURCE - ("segment", session_id,
+    #: seg_index) or ("video", platform, handle, video_id) - so whoever
+    #: clips it can record that it is done somewhere that survives a
+    #: restart. The window file itself is derived data in tmp/.
+    on_media: Callable[..., None] | None = None
     #: Injectable platform probes (tests): defaults are the real modules.
     twitch_is_live: Callable[..., bool] = twitch.is_live
     kick_is_live: Callable[..., bool | None] = kick.is_live
+    #: Tri-state like kick: None ("could not tell") falls through to VODs.
+    youtube_is_live: Callable[..., bool | None] = youtube.is_live
     discover: Callable[..., list[str]] = youtube.pending_vod_ids
     download: Callable[..., Path] = youtube.download_vod
     make_chunker: Callable[..., ChunkerSession] | None = None
@@ -113,6 +160,11 @@ class ChannelMonitor:
     #: for the whole broadcast — the exact starvation the separate task was
     #: supposed to fix.
     _housekeeper: ThreadPoolExecutor | None = field(default=None, init=False)
+    #: Set while a channel is broadcasting, so the VOD backlog for that
+    #: channel stands aside: a live stream cannot be fetched later, and a
+    #: multi-hour VOD download used to hold the only thread that probes.
+    _live_now: dict[tuple[str, str], threading.Event] = field(
+        default_factory=dict, init=False)
     #: Consecutive unproductive capture sessions per channel — drives the
     #: anti-reconnect-storm backoff.
     _barren: dict[tuple[str, str], int] = field(default_factory=dict, init=False)
@@ -137,7 +189,9 @@ class ChannelMonitor:
         # A live capture occupies its thread for the entire broadcast, so the
         # pool must fit every live channel PLUS the network-bound VOD work;
         # sharing the default executor let captures starve VOD ingestion.
-        live_channels = sum(1 for c in channels if c.platform != "youtube")
+        # Every platform can hold a thread for a whole broadcast now that
+        # YouTube channels are captured live too.
+        live_channels = len(channels)
         workers = max(2, live_channels + max(1, self.cfg.orchestration.ingest_concurrency))
         self._executor = ThreadPoolExecutor(max_workers=workers,
                                             thread_name_prefix="cf-ingest")
@@ -147,6 +201,14 @@ class ChannelMonitor:
         tasks = [asyncio.create_task(self._channel_loop(ch),
                                      name=f"monitor:{ch.platform}:{ch.handle}")
                  for ch in channels]
+        # The VOD backlog gets its OWN task per channel. Sharing the live
+        # loop meant one 54-minute download (there were nine pending) held
+        # the live probe for as long as it ran, and a broadcast that
+        # started meanwhile was simply not recorded.
+        if self.cfg.ingest.youtube_vods:
+            tasks += [asyncio.create_task(self._vod_loop(ch),
+                                          name=f"vods:{ch.handle}")
+                      for ch in channels if ch.platform == "youtube"]
         # Housekeeping is its OWN task: hanging it off a channel loop meant
         # it stopped for the entire duration of every live capture — i.e.
         # exactly when chunks accumulate and reclamation matters most.
@@ -192,7 +254,18 @@ class ChannelMonitor:
             try:
                 if disk_allows(self.ws.root, self.cfg.disk.free_floor_gb):
                     if ch.platform == "youtube":
-                        await self._to_thread(self._tick_youtube, ch)
+                        # Live ONLY: a broadcast in progress is the one
+                        # thing that cannot be fetched later, so nothing
+                        # in this loop may delay the next probe. The VOD
+                        # backlog runs in _vod_loop.
+                        live = await self._to_thread(self.youtube_is_live,
+                                                     ch.handle)
+                        self._set_live(ch, bool(live))
+                        if live:
+                            try:
+                                await self._tick_live(ch, live=True)
+                            finally:
+                                self._set_live(ch, False)
                     else:
                         await self._tick_live(ch)
                 attempt = 0
@@ -222,6 +295,27 @@ class ChannelMonitor:
                 await self._sleep(delay)
                 continue
             log.debug("monitor.tick", platform=ch.platform, handle=ch.handle)
+            await self._sleep(self.cfg.ingest.poll_interval_s)
+
+    def _live_event(self, ch: ChannelSpec) -> threading.Event:
+        return self._live_now.setdefault((ch.platform, ch.handle),
+                                         threading.Event())
+
+    def _set_live(self, ch: ChannelSpec, live: bool) -> None:
+        ev = self._live_event(ch)
+        ev.set() if live else ev.clear()
+
+    async def _vod_loop(self, ch: ChannelSpec) -> None:
+        """Fetch this channel's published VODs - never while it is live."""
+        while not self._stop.is_set():
+            try:
+                if (not self._live_event(ch).is_set()
+                        and disk_allows(self.ws.root,
+                                        self.cfg.disk.free_floor_gb)):
+                    await self._to_thread(self._tick_youtube, ch)
+            except Exception as exc:  # noqa: BLE001 - never kills the live loop
+                log.warning("monitor.vod_loop_error", handle=ch.handle,
+                            error=f"{type(exc).__name__}: {exc}")
             await self._sleep(self.cfg.ingest.poll_interval_s)
 
     async def _housekeeping_loop(self) -> None:
@@ -266,8 +360,16 @@ class ChannelMonitor:
         different folders.
         """
         pending = self.discover(self.db, ch.handle, self.cfg.ingest.playlist_end)
+        live = self._live_event(ch)
         for vid in pending:
             if self._stop.is_set():
+                return
+            if live.is_set():
+                # The channel went live mid-backlog. Leave the rest
+                # 'seen' (no attempt counted) and give the bandwidth to
+                # the broadcast, which cannot be downloaded later.
+                log.info("monitor.vod_yielded_to_live", handle=ch.handle,
+                         remaining=len(pending) - pending.index(vid))
                 return
             if not disk_allows(self.ws.root, self.cfg.disk.free_floor_gb):
                 # Status stays 'seen'/'failed': the requeue sweep offers this
@@ -275,8 +377,10 @@ class ChannelMonitor:
                 break
             dest = self.ws.chunks / "youtube" / ch.handle.lstrip("@")
             self.db.bump_video_attempt("youtube", ch.handle, vid)
+            # A download in flight also stops when the channel goes live.
+            stop_or_live = _either(self._stop, live)
             try:
-                path = self.download(vid, dest, stop=self._stop)
+                path = self.download(vid, dest, stop=stop_or_live)
             except IngestError as exc:
                 self.db.set_video_status("youtube", ch.handle, vid, "failed")
                 log.warning("monitor.vod_download_failed", video_id=vid,
@@ -285,15 +389,25 @@ class ChannelMonitor:
                 continue
             self.db.set_video_status("youtube", ch.handle, vid, "downloaded")
             # A VOD is a complete recording: no predecessor, no overlap.
-            self._emit_media(path, abs_start_s=0.0)
+            self._emit_media(path, abs_start_s=0.0,
+                             key=("video", "youtube", ch.handle, vid))
 
     # ----------------------------------------------------------------- live
 
-    async def _tick_live(self, ch: ChannelSpec) -> None:
-        if ch.platform == "twitch":
-            live = await self._to_thread(self.twitch_is_live, ch.handle)
-        else:  # kick — T4: None means "cannot determine" ⇒ offline
-            live = bool(await self._to_thread(self.kick_is_live, ch.handle))
+    async def _tick_live(self, ch: ChannelSpec, *,
+                         live: bool | None = None) -> None:
+        """Capture ``ch`` for as long as it broadcasts.
+
+        ``live`` lets a caller that already probed skip a second probe;
+        YouTube's costs a yt-dlp launch (seconds), and probing twice would
+        also race a stream that ends between the two calls.
+        """
+        if live is None:
+            if ch.platform == "twitch":
+                live = await self._to_thread(self.twitch_is_live, ch.handle)
+            else:  # kick — T4: None means "cannot determine" ⇒ offline
+                live = bool(await self._to_thread(self.kick_is_live,
+                                                  ch.handle))
         if not live:
             return
 
@@ -342,6 +456,8 @@ class ChannelMonitor:
         if ch.platform == "twitch":
             sl_args = twitch.chunker_args(ch.handle, ing.quality,
                                           disable_ads=ing.twitch_disable_ads)
+        elif ch.platform == "youtube":
+            sl_args = youtube.chunker_args(ch.handle, ing.quality)
         else:
             sl_args = kick.chunker_args(ch.handle, ing.quality)
         return ChunkerSession(
@@ -383,14 +499,16 @@ class ChannelMonitor:
             # chunk rather than losing the segment.
             log.warning("monitor.window_failed", path=str(ev.path),
                         error=str(exc), action="emitting bare chunk")
-            self._emit_media(ev.path, ev.abs_start_s)
+            self._emit_media(ev.path, ev.abs_start_s, key=_segment_key(ev))
             return
         log.info("monitor.window_ready", path=str(window.path),
                  abs_start_s=round(window.abs_start_s, 2),
                  overlap_s=round(window.overlap_s, 2))
-        self._emit_media(window.path, window.abs_start_s)
+        self._emit_media(window.path, window.abs_start_s,
+                         key=_segment_key(ev))
 
-    def emit_recovered(self, path: Path, abs_start_s: float) -> None:
+    def emit_recovered(self, path: Path, abs_start_s: float,
+                       key: tuple | None = None) -> None:
         """Emit a segment recovered by startup reconciliation.
 
         Recovered media goes through the SAME T1 path as live segments —
@@ -399,14 +517,23 @@ class ChannelMonitor:
         after a crash, so these windows carry no overlap; that is recorded
         rather than faked.
         """
+        if key is not None:
+            # A re-queued window knows the segment row it came from, so
+            # clipping it can mark that row processed. Crash recovery does
+            # not, and carries no key rather than a wrong one.
+            self._on_segment(SegmentEvent(
+                session_id=int(key[1]), seg_index=int(key[2]), path=path,
+                abs_start_s=abs_start_s, duration_s=0.0, prev_path=None))
+            return
         self._on_segment(SegmentEvent(
             session_id=-1, seg_index=-1, path=path, abs_start_s=abs_start_s,
             duration_s=0.0, prev_path=None))
 
-    def _emit_media(self, path: Path, abs_start_s: float) -> None:
+    def _emit_media(self, path: Path, abs_start_s: float,
+                    key: tuple | None = None) -> None:
         if self.on_media is not None:
             try:
-                self.on_media(path, abs_start_s)
+                self.on_media(path, abs_start_s, key)
             except Exception as exc:  # DAG seam bug ≠ ingestion death
                 log.error("monitor.on_media_failed", path=str(path),
                           error=f"{type(exc).__name__}: {exc}")

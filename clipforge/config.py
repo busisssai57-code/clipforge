@@ -49,6 +49,11 @@ class IngestConfig(_StrictModel):
     twitch_disable_ads: bool = True
     kick_enabled: bool = Field(False, description="T4: Kick is best-effort, off by default")
     quality: str = Field("best", description="streamlink stream quality selector")
+    #: The VOD backlog is a different product from live capture: it clips
+    #: uploads the operator may never have asked for, and on a watched
+    #: channel it is usually the live broadcast that matters.
+    youtube_vods: bool = Field(
+        True, description="Also clip a YouTube channel's published VODs")
 
 
 class DiskConfig(_StrictModel):
@@ -289,6 +294,52 @@ class OrchestrationConfig(_StrictModel):
         description="Clips per ingested window in watch mode")
 
 
+class WatchConfig(_StrictModel):
+    """`bta watch`: when the GPU half of the loop is allowed to run.
+
+    Recording is never gated — a live stream cannot be replayed. Clipping
+    is, because it saturates the one GPU the operator is also using.
+    """
+
+    clip_only_when_idle: bool = Field(
+        True, description="Hold rendered-clip work until the machine is idle")
+    idle_after_s: float = Field(
+        300.0, ge=0, description="Keyboard/mouse quiet this long = idle")
+    gpu_busy_pct: int = Field(
+        40, ge=1, le=100,
+        description="Another process using this much GPU = not idle")
+    idle_poll_s: float = Field(
+        30.0, gt=0, description="Re-check cadence while waiting for idle")
+    #: Asymmetric with idle_after_s on purpose: a running job yields as
+    #: soon as the operator touches anything, and only resumes once they
+    #: have been away for the full idle window again.
+    preempt_within_s: float = Field(
+        60.0, gt=0,
+        description="Input this recent pauses a job already running")
+    min_free_vram_gb: float = Field(
+        8.0, ge=0,
+        description="Another process holding the GPU's memory = not idle")
+
+
+class NotifyConfig(_StrictModel):
+    """Private delivery of each accepted clip to the operator's own phone.
+
+    This is NOT publishing: the clip goes to one Telegram chat, the
+    operator's, and nothing is posted anywhere. The credential lives in
+    ``.env`` (CLIPFORGE_TELEGRAM_BOT_TOKEN / CLIPFORGE_TELEGRAM_CHAT_ID) or,
+    when those are absent, is READ from the OpenClaw gateway's config
+    rather than copied, so a rotated bot token is picked up here too.
+    """
+
+    telegram: bool = Field(
+        False, description="Send every clip that passes QA to Telegram")
+    openclaw_config: Path = Field(
+        Path("~/.openclaw/openclaw.json"),
+        description="Fallback source for the bot token and chat id")
+    retry_interval_s: float = Field(
+        600.0, gt=0, description="`bta watch` retries failed sends this often")
+
+
 class AppConfig(_StrictModel):
     """Root of config.toml."""
 
@@ -306,6 +357,8 @@ class AppConfig(_StrictModel):
     pacing: PacingConfig = PacingConfig()
     posting: PostingConfig = PostingConfig()
     orchestration: OrchestrationConfig = OrchestrationConfig()
+    watch: WatchConfig = WatchConfig()
+    notify: NotifyConfig = NotifyConfig()
 
 
     @field_validator("s2")
@@ -336,6 +389,12 @@ class Secrets(BaseSettings):
         None, description="Anthropic key for the primary VL judge")
     openai_api_key: str | None = Field(
         None, description="OpenAI key for the second VL judge")
+    #: Private clip delivery (see NotifyConfig). Both optional: when absent,
+    #: clipforge.notify reads them from the OpenClaw gateway config.
+    telegram_bot_token: str | None = Field(
+        None, description="Telegram bot token for clip delivery")
+    telegram_chat_id: str | None = Field(
+        None, description="The operator's Telegram chat id")
 
 
 # --------------------------------------------------------------------------

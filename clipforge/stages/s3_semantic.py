@@ -20,6 +20,24 @@ from clipforge.stages.base import Stage
 log = get_logger(__name__)
 
 
+def _local(t_s: float, abs_offset_s: float) -> float:
+    """Candidate time (ABSOLUTE stream seconds) as an offset into the file.
+
+    S1 stamps every word with ``abs_offset + local``, so everything
+    downstream of it — including S2's candidate spans — is on the stream's
+    timeline. The file S3 opens is one window, which starts at 0. Seeking
+    to an absolute time inside it read the wrong part of the clip, and,
+    once the offset passed the window's duration, read nothing at all and
+    failed the whole job. Measured 2026-09-17: every `bta watch` window
+    after the first could not be ranked.
+
+    Clamped at 0: a candidate that starts a hair before the window (edge
+    snapping, a word that straddles the seam) is still readable from its
+    first frame rather than seeking to a negative index.
+    """
+    return max(0.0, float(t_s) - float(abs_offset_s))
+
+
 def _extract_frames_cv2(video_path: Path, start_s: float, end_s: float, num_frames: int = 8) -> list[Any]:
     """Extract evenly-spaced RGB frames from video_path within [start_s, end_s]."""
     import cv2
@@ -111,7 +129,8 @@ class S3SemanticRanker(Stage[RankedArtifact]):
     def _rank_with_cloud(self, ranker: Any, *, cache_key: str,
                          candidates_artifact: CandidatesArtifact,
                          video_path: Path,
-                         frames_per_cand: int) -> RankedArtifact:
+                         frames_per_cand: int,
+                         abs_offset_s: float = 0.0) -> RankedArtifact:
         """Judge every candidate with the cloud model.
 
         Any failure propagates: the caller decides to fall back, and it
@@ -125,7 +144,9 @@ class S3SemanticRanker(Stage[RankedArtifact]):
         items: list[RankedItem] = []
         for i, cand in enumerate(candidates[:10]):
             frames = _extract_frames_cv2(
-                video_path=video_path, start_s=cand.start, end_s=cand.end,
+                video_path=video_path,
+                start_s=_local(cand.start, abs_offset_s),
+                end_s=_local(cand.end, abs_offset_s),
                 num_frames=frames_per_cand)
             judgement: Judgement = ranker.judge(
                 transcript=cand.text, frames=frames,
@@ -160,6 +181,7 @@ class S3SemanticRanker(Stage[RankedArtifact]):
         params: dict[str, Any],
         candidates_artifact: CandidatesArtifact,
         video_path: Path | None = None,
+        abs_offset_s: float = 0.0,
         **kwargs: Any,
     ) -> RankedArtifact:
         candidates = candidates_artifact.candidates
@@ -196,7 +218,8 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                     cloud, cache_key=cache_key,
                     candidates_artifact=candidates_artifact,
                     video_path=Path(video_path),
-                    frames_per_cand=frames_per_cand)
+                    frames_per_cand=frames_per_cand,
+                    abs_offset_s=abs_offset_s)
             except _PROGRAMMING_ERRORS:
                 raise
             except Exception as exc:  # noqa: BLE001 - degraded, not broken
@@ -244,7 +267,7 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                         models["model"] = (
                             Qwen2_5_VLForConditionalGeneration.from_pretrained(
                                 model_id,
-                                torch_dtype=torch.float16,
+                                dtype=torch.float16,
                                 device_map="auto",
                             ))
                     except Exception:
@@ -268,8 +291,8 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                     for i, cand in enumerate(candidates[:10]):
                         frames = _extract_frames_cv2(
                             video_path=Path(video_path),
-                            start_s=cand.start,
-                            end_s=cand.end,
+                            start_s=_local(cand.start, abs_offset_s),
+                            end_s=_local(cand.end, abs_offset_s),
                             num_frames=frames_per_cand,
                         )
                         if not frames:
@@ -381,6 +404,10 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                                     justification=f"Parse failure for candidate {i}",
                                 )
                             )
+                        total_eval = len(candidates[:10])
+                        print(f"  candidate {i + 1}/{total_eval}: scored ({cand.start:.1f}s-{cand.end:.1f}s)", flush=True)
+                        log.info("s3.candidate_scored", candidate=i + 1, total=total_eval,
+                                 start=round(cand.start, 1), end=round(cand.end, 1))
 
                     if unreadable and unreadable == len(ranked_items):
                         # Every window unreadable is a broken VIDEO, not a

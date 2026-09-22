@@ -196,3 +196,265 @@ def test_the_watch_command_actually_passes_the_seam():
     assert "jumpcut=None" in src, (
         "watch must pass jumpcut explicitly or the Typer sentinel forces "
         "pacing on")
+
+
+# ------------------------------------------------------------- idle gate
+#
+# Clipping waits for an idle machine; recording never does. These pin the
+# three ways that could go wrong: the gate ignored, the queue refusing work
+# while the gate is shut, and every window that waited for the operator
+# being thrown away as "stale" the moment the operator left.
+
+
+def test_a_closed_gate_holds_the_clip_but_keeps_accepting(media):
+    busy = threading.Event()
+    busy.set()
+    seen: list[Path] = []
+    disp = ClipDispatcher(handler=lambda p, t: seen.append(p), maxsize=8,
+                          gate=lambda: "operator active" if busy.is_set() else None,
+                          gate_poll_s=0.02).start()
+    try:
+        for i in range(3):
+            assert disp.submit(media(f"w{i}.mp4"), 0.0), (
+                "the queue must keep accepting while clipping is held")
+        time.sleep(0.2)
+        assert seen == [], "a clip ran while the operator was using the PC"
+        busy.clear()
+        _drain(disp)
+        time.sleep(0.1)
+    finally:
+        busy.clear()
+        disp.stop()
+    assert [p.name for p in seen] == ["w0.mp4", "w1.mp4", "w2.mp4"]
+    assert disp.stats.dropped == 0
+
+
+def test_time_spent_waiting_for_idle_is_not_staleness(media):
+    """max_age_s catches a machine that cannot keep up. A machine that
+    yielded to its owner for longer than max_age_s is not that, and must
+    not throw away everything it recorded meanwhile."""
+    busy = threading.Event()
+    busy.set()
+    seen: list[Path] = []
+    disp = ClipDispatcher(handler=lambda p, t: seen.append(p), maxsize=8,
+                          max_age_s=0.2,
+                          gate=lambda: "busy" if busy.is_set() else None,
+                          gate_poll_s=0.02).start()
+    try:
+        disp.submit(media("first.mp4"), 0.0)
+        disp.submit(media("second.mp4"), 0.0)
+        time.sleep(0.6)             # three times the freshness window
+        busy.clear()
+        _drain(disp)
+        time.sleep(0.1)
+    finally:
+        busy.clear()
+        disp.stop()
+    assert [p.name for p in seen] == ["first.mp4", "second.mp4"]
+    assert disp.stats.dropped == 0
+
+
+def test_the_freshness_rule_still_applies_while_the_gate_is_open(media):
+    """Control for the test above: excluding gated time must not switch
+    the staleness check off altogether."""
+    release = threading.Event()
+    seen: list[Path] = []
+
+    def handler(p: Path, _t: float) -> None:
+        if p.name == "blocker.mp4":
+            release.wait(timeout=10)
+            return
+        seen.append(p)
+
+    disp = ClipDispatcher(handler=handler, max_age_s=0.25, maxsize=8,
+                          gate=lambda: None, gate_poll_s=0.02).start()
+    try:
+        disp.submit(media("blocker.mp4"), 0.0)
+        time.sleep(0.05)
+        disp.submit(media("stale.mp4"), 0.0)
+        time.sleep(0.4)
+        release.set()
+        _drain(disp)
+    finally:
+        release.set()
+        disp.stop()
+    assert seen == []
+    assert disp.stats.dropped == 1
+
+
+def test_stop_wakes_a_worker_waiting_for_idle(media):
+    disp = ClipDispatcher(handler=lambda p, t: None,
+                          gate=lambda: "busy", gate_poll_s=30.0).start()
+    disp.submit(media("held.mp4"), 0.0)
+    time.sleep(0.1)
+    started = time.monotonic()
+    disp.stop(timeout=5)
+    assert time.monotonic() - started < 2.0, (
+        "stop() waited out the 30 s gate poll instead of waking the worker")
+
+
+def test_a_broken_gate_does_not_park_the_queue_forever(media):
+    def boom() -> str | None:
+        raise OSError("nvidia-smi vanished")
+
+    seen: list[Path] = []
+    disp = ClipDispatcher(handler=lambda p, t: seen.append(p), gate=boom,
+                          gate_poll_s=0.02).start()
+    try:
+        disp.submit(media("w.mp4"), 0.0)
+        _drain(disp)
+        time.sleep(0.1)
+    finally:
+        disp.stop()
+    assert [p.name for p in seen] == ["w.mp4"]
+
+
+def test_the_watch_command_gates_clipping_on_idle():
+    """Structural guard, same reason as the seam guard above: a gate that
+    exists and is never passed is the bug this project keeps finding."""
+    import inspect
+
+    from clipforge import cli
+
+    src = inspect.getsource(cli._watch_locked)
+    assert "gate=gate" in src, "watch no longer passes the idle gate"
+    assert "IdleGate(" in src
+    assert "_start_telegram_retry(" in src, (
+        "watch no longer retries failed Telegram deliveries")
+
+
+# --------------------------------------------------- mid-job preemption
+#
+# The gate alone is only a STARTING condition, and one window is 6-33
+# minutes of GPU work (measured from this workspace's stage_runs). The
+# operator coming back partway through is the normal case, not a rare one.
+
+
+def test_a_running_job_pauses_when_the_operator_comes_back(media):
+    from clipforge.idle import idle_checkpoint
+
+    back = threading.Event()
+    at_checkpoint = threading.Event()
+    stages: list[str] = []
+    resumed = threading.Event()
+
+    def handler(p: Path, _t: float) -> None:
+        stages.append("s1")
+        at_checkpoint.wait(timeout=5)   # ... and now the operator is back
+        idle_checkpoint("s2")
+        stages.append("s2")
+        resumed.set()
+
+    disp = ClipDispatcher(
+        handler=handler, gate=lambda: "busy" if back.is_set() else None,
+        preempt=lambda: "operator came back" if back.is_set() else None,
+        gate_poll_s=0.02).start()
+    try:
+        disp.submit(media("w.mp4"), 0.0)     # gate open: the job starts
+        time.sleep(0.15)
+        assert stages == ["s1"]
+        back.set()                            # operator touches the keyboard
+        at_checkpoint.set()
+        time.sleep(0.3)
+        assert stages == ["s1"], "the job ran on through the checkpoint"
+        back.clear()                          # they leave again
+        assert resumed.wait(timeout=5), "the job never resumed"
+    finally:
+        back.clear()
+        disp.stop()
+    assert stages == ["s1", "s2"]
+    assert disp.stats.processed == 1
+
+
+def test_a_paused_job_lets_go_on_shutdown(media):
+    """Ctrl-C during a 20-minute render must return the terminal, not
+    wait the render out."""
+    from clipforge.idle import idle_checkpoint
+
+    busy = threading.Event()
+    paused = threading.Event()
+
+    def handler(p: Path, _t: float) -> None:
+        busy.set()          # from here the gate and preempt both say busy
+        paused.set()
+        idle_checkpoint("s2")
+        raise AssertionError("the checkpoint should not have returned")
+
+    disp = ClipDispatcher(
+        handler=handler,
+        gate=lambda: "busy" if busy.is_set() else None,
+        preempt=lambda: "busy" if busy.is_set() else None,
+        gate_poll_s=30.0).start()
+    disp.submit(media("w.mp4"), 0.0)
+    assert paused.wait(timeout=5)
+    time.sleep(0.2)
+    started = time.monotonic()
+    disp.stop(timeout=5)
+    assert time.monotonic() - started < 2.0
+    assert disp.stats.failed == 0, "a preempted job is not a failed job"
+
+
+def test_a_checkpoint_does_nothing_without_a_dispatcher():
+    """`bta process` by hand must behave exactly as it always did."""
+    from clipforge.idle import idle_checkpoint
+
+    idle_checkpoint("s1")      # no checkpoint installed: a no-op
+
+
+def test_a_broken_preempt_probe_does_not_wedge_a_job(media):
+    from clipforge.idle import idle_checkpoint
+
+    done = threading.Event()
+
+    def handler(p: Path, _t: float) -> None:
+        idle_checkpoint("s2")
+        done.set()
+
+    def boom() -> str | None:
+        raise OSError("nvidia-smi vanished")
+
+    disp = ClipDispatcher(handler=handler, gate=lambda: None, preempt=boom,
+                          gate_poll_s=0.02).start()
+    try:
+        disp.submit(media("w.mp4"), 0.0)
+        assert done.wait(timeout=5)
+    finally:
+        disp.stop()
+
+
+def test_stop_finishes_the_backlog_when_asked_to_drain(media):
+    """The documented opt-in: with a gate configured but open, drain=True
+    must finish the queue instead of dropping it at the gate."""
+    seen: list[Path] = []
+    disp = ClipDispatcher(handler=lambda p, t: seen.append(p), maxsize=8,
+                          gate=lambda: None, gate_poll_s=0.02).start()
+    for i in range(3):
+        disp.submit(media(f"d{i}.mp4"), 0.0)
+    disp.stop(timeout=10, drain=True)
+    assert len(seen) == 3, "drain=True dropped the backlog it promised to finish"
+    assert disp.stats.dropped == 0
+
+
+def test_a_window_queued_during_a_long_wait_is_not_credited_twice(media):
+    """Staleness is measured net of gate time, and the credit must cover
+    only the part of the wait that happened AFTER the window queued."""
+    busy = threading.Event()
+    busy.set()
+    seen: list[Path] = []
+    disp = ClipDispatcher(handler=lambda p, t: seen.append(p), maxsize=8,
+                          max_age_s=0.3,
+                          gate=lambda: "busy" if busy.is_set() else None,
+                          gate_poll_s=0.02).start()
+    try:
+        disp.submit(media("first.mp4"), 0.0)
+        time.sleep(0.5)                       # the wait is already running
+        disp.submit(media("late.mp4"), 0.0)   # queued mid-wait
+        time.sleep(0.5)
+        busy.clear()
+        _drain(disp)
+        time.sleep(0.1)
+    finally:
+        busy.clear()
+        disp.stop()
+    assert [p.name for p in seen] == ["first.mp4", "late.mp4"]
+    assert disp.stats.dropped == 0

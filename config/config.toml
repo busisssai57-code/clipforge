@@ -20,6 +20,9 @@ backoff_max_s = 300.0
 twitch_disable_ads = true     # streamlink --twitch-disable-ads
 kick_enabled = false          # T4: Kick is best-effort; off unless you opt in
 quality = "best"              # streamlink stream selector
+youtube_vods = false          # live only: the nine pending uploads from
+                              # August are not what this watch is for, and
+                              # clipping them would push them to the phone
 
 [disk]
 free_floor_gb = 50.0          # below this free space, ingestion PAUSES
@@ -110,3 +113,22 @@ ingest_concurrency = 4
 gpu_concurrency = 1           # LAW â€” exactly one GPU stage at a time
 render_concurrency = 2        # NVENC consumer session cap
 queue_maxsize = 32            # bounded queues => backpressure, not OOM
+
+[watch]
+# Recording a live stream is never delayed - it cannot be replayed. The GPU
+# clipping behind it waits until nobody is using the machine.
+clip_only_when_idle = true
+idle_after_s = 300            # no keyboard/mouse input for this long = idle
+gpu_busy_pct = 40             # another program using this much GPU = busy
+idle_poll_s = 30
+preempt_within_s = 60         # input this recent pauses a running job
+min_free_vram_gb = 8          # VRAM held by another program = not idle
+
+[notify]
+# Send every clip that passes QA to the operator's own Telegram chat. Private
+# delivery, not publishing. Token/chat id come from .env
+# (CLIPFORGE_TELEGRAM_BOT_TOKEN / CLIPFORGE_TELEGRAM_CHAT_ID) or are read
+# from the OpenClaw gateway config below.
+telegram = true
+openclaw_config = "~/.openclaw/openclaw.json"
+retry_interval_s = 600

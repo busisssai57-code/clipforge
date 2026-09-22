@@ -4059,3 +4059,64 @@ prompt change, and it wants its own round.
 
 **clipforge: pytest 1397 passed, 5 skipped; `bta verify all` exit 0.**
 **ari_channel: 93 passed.**
+
+---
+
+## Amendment — clips may be delivered to the operator's own phone (2026-09-22)
+
+§3.5 and §10 say this pipeline produces files and stops. That still holds
+for PUBLISHING: nothing here posts to a platform, and the draft-only gate
+(`PostingConfig`) is untouched. This amendment allows ONE outbound path,
+off by default and pointed at a single chat:
+
+* `[notify] telegram = true` sends each clip that passes S7 to the
+  operator's own Telegram chat — private delivery, so the clip is on the
+  phone they will post it from.
+* The credential is read, not copied: `CLIPFORGE_TELEGRAM_BOT_TOKEN` /
+  `CLIPFORGE_TELEGRAM_CHAT_ID` from `.env`, else the OpenClaw gateway's
+  own config. A rotated bot token is picked up here with no second edit.
+* The chat id is resolved from the gateway's DM allow-list only when it
+  names exactly one person; two candidates is an error, not a guess.
+* A failed send is queued under `workspace/outbox/telegram/` and retried;
+  a delivered clip is marked by a `<clip>.telegram.json` sidecar so the
+  same clip never arrives twice.
+
+Measured on 2026-09-17: a 26 MB clip uploads in 57 s, and a blocked bot is
+detected in 2 s by a chat-action probe before any upload starts.
+
+## Watcher round (2026-09-22)
+
+**What `bta watch` did before this round:** recorded YouTube channels only
+after a broadcast had become a VOD, clipped whenever a window arrived
+regardless of who was using the machine, and lost the queue on restart.
+
+**Fixed, each with tests that fail against the old behaviour:**
+
+* **S3 ranked the wrong frames (blocker).** Candidate times are absolute
+  stream seconds; a window file starts at 0. Every window after the first
+  failed with "no frames could be read", so a broadcast could only produce
+  clips from its first 15 minutes. S3 now converts to window-relative
+  time (`_local`), on both the local and the cloud ranking paths.
+* **YouTube live is captured live.** The monitor probes `is_live` and
+  runs a ChunkerSession, instead of waiting for the VOD.
+* **The VOD backlog no longer blocks the live probe.** It runs as its own
+  task, stands aside while the channel is live, and stops an in-flight
+  download when a broadcast starts.
+* **Clipping waits for an idle machine, and yields when the operator
+  returns.** The gate was only a starting condition, and a window is 6-33
+  minutes of GPU (measured from `stage_runs`). Stage boundaries are now
+  pause points, taken where the previous stage has unloaded, so a pause
+  hands back the VRAM and not just the compute.
+* **The idle check stopped lying.** Fullscreen video and presentation
+  mode, GPU decoder load, free VRAM, and a session check — a task running
+  in session 0 reads a desktop nobody uses and would have reported the
+  machine free while the operator typed. That case now fails closed.
+* **The backlog survives a restart.** Windows settle as `processed` in
+  the DB and unclipped `ready` segments are re-queued at the next start.
+* **Delivery is crash-safe.** The outbox entry is written before the
+  upload, and each clip is claimed with an OS lock so `bta telegram
+  --retry` and the watch timer cannot both upload it.
+* **`bta autostart install`** registers a logon task (interactive session,
+  no time limit, restarts if it exits) so watching survives a reboot.
+
+**Gate:** pytest and `clipforge verify all`, both recorded below.
