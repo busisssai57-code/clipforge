@@ -290,6 +290,26 @@ def _pop_events(groups: list[list[tuple[float, float, str]]],
     return out
 
 
+#: A complete but empty ASS script. Not an empty FILE: ffmpeg's
+#: subtitles filter opens what it is given, and a zero-byte script makes
+#: libass log a parse error on every render even though it then draws
+#: nothing. This draws nothing and parses clean.
+_EMPTY_ASS = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, Alignment, MarginV
+Style: Default,Arial,48,&H00FFFFFF,2,60
+
+[Events]
+Format: Layer, Start, End, Style, Text
+"""
+
+
 class S5Subtitles(Stage[SubtitleArtifact]):
     name = "s5_subtitles"
     version = "5"
@@ -303,6 +323,29 @@ class S5Subtitles(Stage[SubtitleArtifact]):
             raise FatalStageError(
                 "S5 requires transcript_artifact and campath_artifact",
                 stage=self.name)
+
+        if str(params.get("captions", "")) == "already_in_picture":
+            # The footage carries its own words. An EMPTY subtitle script
+            # rather than a skipped stage: S6 takes a subtitle artifact as
+            # an input and builds its cache key from this one, so removing
+            # it would change the shape of the DAG instead of the content
+            # of a clip. The marker rides in params, so it is in the key —
+            # the same window with and without existing captions is two
+            # different clips and must not share an artifact.
+            import hashlib as _hashlib
+
+            ass_path = self.artifact_path(cache_key).with_suffix(".ass")
+            ass_path.parent.mkdir(parents=True, exist_ok=True)
+            body = _EMPTY_ASS
+            ass_path.write_text(body, encoding="utf-8")
+            return SubtitleArtifact(
+                cache_key=cache_key, stage=self.name,
+                source_campath=campath.cache_key,
+                ass_path=str(ass_path.resolve()),
+                clip_start=float(campath.clip_start),
+                clip_end=float(campath.clip_end),
+                line_count=0, word_count=0,
+                ass_sha256=_hashlib.sha256(body.encode("utf-8")).hexdigest())
 
         clip_start = float(campath.clip_start)
         clip_end = float(campath.clip_end)

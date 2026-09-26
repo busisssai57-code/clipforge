@@ -4266,3 +4266,61 @@ injected now.
 **Teeth:** 9 mutants on this change (each threshold ignored, our own load
 counted as someone else's, the clamp removed, watch dropping each knob) —
 all killed, after two survived a first pass and the tests were fixed.
+
+
+## Captioned footage, and the phone as a remote (2026-09-26)
+
+**Two sets of words stop fighting.** A great deal of short-form video
+arrives with its captions already burned in — a shipped clip of this
+project showed exactly what that costs: the source's own caption at the
+top of frame, our hook card landing on it, neither readable.
+`clipforge/subdetect.py` asks the cheapest question first (a subtitle
+TRACK, via ffprobe, in milliseconds) and then the only one that can see
+burned-in words: the local Qwen VL weights S3 already ranks with, three
+frames, one question, under the same one-VL lease. Unsure means NO, on
+purpose — a clip that needed captions and got none is silent for a viewer
+on mute, which is worse than a captioned clip keeping its own.
+
+When the footage is already captioned the clip gets: no karaoke, a hook
+card burned on as an overlay beside the QA'd file, and a plain export
+pack — caption and title, no hashtag wall, no chapters. Knobs:
+`[s5] detect_existing`, `[s5] hook_y` (0.30, because 0.11 was measured
+landing on a real clip's own text).
+
+**The phone can drive it.** `bta bot` is the listening half of the
+delivery bot: `/clip <url>`, `/status`, `/retry`, `/help`. The
+authorisation IS the feature — a bot token is a password, and this
+process spends GPU hours and reaches the network:
+
+* one chat, the operator's own, resolved exactly as delivery resolves it;
+  any other chat id is logged and dropped with no reply at all;
+* a fixed verb list, each mapped to one function, nothing interpolated
+  into a command line, no verb that runs an arbitrary subcommand;
+* one job at a time — a queue on a phone is a way to start six hours of
+  work by tapping six times;
+* the token is redacted out of anything the bot says back.
+
+The autostart wrapper now keeps both alive: `bta watch` in its loop and
+`bta bot` beside it, restarted if it dies.
+
+**Verified live, not only in tests:** a real `/status` answered onto the
+operator's phone, and a stranger's chat id produced no message at all.
+
+**Two of my own defects, found the hard way and recorded because the
+pattern repeats:**
+
+1. The S5 early-return built a `SubtitleArtifact` with fields the schema
+   does not have. Every test passed, because no test ran that path — the
+   branch was only string-matched. The decision is a function now
+   (`subdetect.caption_params`), the path has a test that runs S5 and
+   reads the file, and the mutants that survived are dead.
+2. The empty script was a zero-byte file; libass logs a parse error on
+   every render for one of those. It is a complete ASS script with no
+   events.
+
+**Gate:** pytest 1404 passed / 5 skipped; `clipforge verify all` PASSED.
+**Teeth:** 14 mutants on this round — the stranger obeyed, two jobs at
+once, any argument as a link, the token leaking, captions over existing
+ones, hashtags returning, unsure read as yes, the track shortcut skipped,
+S5 ignoring the marker, the zero-byte script — all killed, after two
+survived a first pass and the tests were strengthened.

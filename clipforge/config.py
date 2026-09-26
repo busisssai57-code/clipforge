@@ -142,6 +142,19 @@ class PacingConfig(_StrictModel):
 
 
 class S5Config(_StrictModel):
+    #: Footage that already carries words gets none of ours on top: two
+    #: sets of captions fighting over one frame is what a shipped clip of
+    #: this project looked like. Off turns the check off, not the
+    #: captions.
+    detect_existing: bool = Field(
+        True, description="Skip our captions when the footage already has "
+                          "words burned in (asks the local VL model)")
+    #: Where the burned-in hook card's top sits, as a fraction of the
+    #: frame. Measured: at 0.11 it landed on a real clip's own caption.
+    hook_y: float = Field(
+        0.30, ge=0.0, le=0.9,
+        description="Hook card position when the footage is already "
+                    "captioned (fraction of frame height)")
     font: str = "Arial Black"
     font_size: int = Field(72, gt=0)
     highlight_color: str = Field("&H0000FFFF", description="ASS BGR — yellow active word")
