@@ -493,6 +493,85 @@ def status(config: Path = CONFIG_OPT) -> None:
 
 
 @app.command()
+def brand(clip: str = typer.Argument(..., help="A clip in clips/ (name or path)"),
+          handle: str = typer.Option(
+              None, "--handle",
+              help="Your own handle, stamped in the corner of every frame"),
+          hook: str = typer.Option(
+              None, "--hook",
+              help="Opening card text. Default: the hook the editor wrote"),
+          hook_seconds: float = typer.Option(
+              2.0, "--hook-seconds", min=0.4, max=8.0),
+          hook_y: float = typer.Option(
+              0.11, "--hook-y", min=0.0, max=0.9,
+              help="Where the card's top sits, as a fraction of the frame. "
+                   "Raise it when the footage has its own text up there"),
+          config: Path = CONFIG_OPT,
+          send: bool = typer.Option(
+              False, "--send", help="Deliver the branded cut to Telegram")) -> None:
+    """Stamp a hook card and your handle onto a finished clip.
+
+    The post layer (`clipforge/socialpost.py`) was written for the
+    generation half, which is gone; it rasterises with Pillow rather than
+    ffmpeg's drawtext because drawtext renders colour emoji as monochrome
+    tofu and eats the punctuation in any text taken from a script. None of
+    that stopped being true for clips, and nothing called it.
+
+    Writes `<clip>.branded.mp4` beside the clip. The original is never
+    touched: QA measured THAT file, and a burned-in overlay is a taste
+    decision an operator should be able to undo by deleting one file.
+    """
+    from clipforge.socialpost import PostError, PostSpec, apply_post
+
+    cfg, ws = _boot(config, sweep_partials=False)
+    path = Path(clip)
+    if not path.is_file():
+        name, rejected = _resolve_clip_name(ws, path)
+        path = Path(ws.clips) / ("rejected" if rejected else "") / name
+
+    # The hook the editor already wrote for this clip, unless told another.
+    text = hook
+    if text is None:
+        try:
+            pack = _json_module().loads(
+                path.with_suffix(".export.json").read_text(encoding="utf-8"))
+            text = str(pack.get("hook") or pack.get("title") or "")
+        except (OSError, ValueError):
+            text = ""
+    if not (text or handle):
+        console.print("[red]nothing to stamp[/]: pass --handle, pass --hook, "
+                      "or run this on a clip whose export pack has one")
+        raise typer.Exit(2)
+
+    spec = PostSpec(hook=text or "", hook_seconds=hook_seconds,
+                    hook_y=hook_y, watermark=handle or "")
+    dest = path.with_suffix(".branded.mp4")
+    console.print(f"[green]stamping[/] {path.name}"
+                  + (f" · hook: {text[:60]!r}" if text else "")
+                  + (f" · handle: {handle}" if handle else ""))
+    try:
+        apply_post(path, dest, spec, work_dir=Path(ws.tmp) / "post")
+    except PostError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1)
+    console.print(f"[green]wrote[/] {dest}")
+
+    if send:
+        from clipforge import notify
+
+        outcome = notify.send_clip(dest, target=notify.target_from_config(cfg),
+                                   ws_root=Path(ws.root),
+                                   caption=notify.caption_for(path))
+        console.print(f"  telegram: {outcome}")
+
+
+def _json_module():
+    import json
+
+    return json
+
+
+@app.command()
 def telegram(clip: str = typer.Argument(
                  None, help="A clip in clips/ to send now (name or path)"),
              config: Path = CONFIG_OPT,

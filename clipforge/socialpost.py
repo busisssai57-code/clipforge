@@ -121,6 +121,13 @@ class PostSpec:
     #: Smaller than the hook: the hook is an ask read once, a subtitle is
     #: read while the picture is doing the work.
     subtitle_size: float = 0.040
+    #: Where the card's TOP sits, as a fraction of the frame. 0.11 was
+    #: chosen against generated sequences, which carry nothing else. A
+    #: clip is cut from real footage that often has its own burned-in
+    #: text at the top — measured on a shipped clip, the card landed
+    #: exactly on the source's own caption and both became unreadable —
+    #: so it is a knob, and `bta brand --hook-y` exposes it.
+    hook_y: float = 0.11
 
     def is_empty(self) -> bool:
         return not (self.hook or self.watermark or self.stickers)
@@ -276,7 +283,7 @@ def build_overlay(spec: PostSpec, *, width: int, height: int,
         # Held from 0, then gone. `enable` rather than a shorter input so
         # the card cannot extend the piece.
         steps.append(
-            f"{chain}[{idx}:v]overlay=x=(W-w)/2:y=H*0.11:"
+            f"{chain}[{idx}:v]overlay=x=(W-w)/2:y=H*{spec.hook_y:.3f}:"
             f"enable='lt(t,{spec.hook_seconds:.3f})'[v{idx}]")
         chain = f"[v{idx}]"
         idx += 1

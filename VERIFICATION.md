@@ -4156,3 +4156,36 @@ rendered in a browser against the real API.
 the outbox; they deliver themselves once it is unblocked. `bta autostart
 install` is written and tested but NOT installed — that is the operator's
 call.
+
+
+## The post layer, wired (2026-09-26)
+
+A caller audit over all 79 package modules (import graph, package
+imports only, tests excluded) found exactly one orphan that was not an
+entry point: `socialpost.py` — 18 KB, tested, imported by four test files
+and by nothing in the product. It was written for the generation half and
+outlived it. The fifth finished-but-uncalled module this ledger has
+recorded.
+
+Wired rather than deleted, because what it does is not specific to
+generated shots: a hook card on the opening, the operator's own handle in
+the corner, colour emoji stamped with Pillow (ffmpeg's drawtext renders
+CBDT/COLR glyphs as monochrome tofu and eats the punctuation in any text
+taken from a script).
+
+`bta brand <clip> [--handle @you] [--hook "..."] [--hook-y 0.30] [--send]`
+writes `<clip>.branded.mp4` beside the clip. The original is never
+touched: S7 measured THAT file, and burned-in text is a taste decision
+the operator should undo by deleting one file.
+
+**Found by looking at the output, not the code:** on a real clip the hook
+card landed exactly on the footage's own burned-in caption and both
+became unreadable. The 0.11 default was chosen against generated
+sequences, which carry nothing else in frame. `hook_y` is now a field on
+PostSpec and a flag on the command; the default is unchanged, so nothing
+that relied on it moved.
+
+**Gate:** pytest 1344 passed / 5 skipped; `clipforge verify all` PASSED.
+**Teeth:** 17 mutants across this round and the two before it — including
+the hook knob being ignored, branding overwriting the original, and
+`--send` delivering the unbranded cut — 17 killed, 0 survivors.
