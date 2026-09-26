@@ -424,6 +424,84 @@ def nms(candidates: list[CandidateWindow], *, iou_threshold: float,
     return kept
 
 
+def _cluster_peaks(peaks: list[tuple[int, float]], *, gap_s: float
+                   ) -> list[tuple[int, float]]:
+    """Collapse runs of busy seconds into one reaction each.
+
+    A real reaction is many consecutive loud seconds, not one — seeding a
+    candidate per second would make twenty near-identical windows for a
+    single laugh. Seconds within ``gap_s`` of each other are one cluster,
+    represented by its busiest second (earliest on a tie, for
+    determinism). Input is time-sorted; output is one (second, strength)
+    per cluster.
+    """
+    if not peaks:
+        return []
+    clusters: list[list[tuple[int, float]]] = []
+    cur: list[tuple[int, float]] = []
+    for sec, val in peaks:
+        if cur and sec - cur[-1][0] > gap_s:
+            clusters.append(cur)
+            cur = []
+        cur.append((sec, val))
+    if cur:
+        clusters.append(cur)
+    out: list[tuple[int, float]] = []
+    for c in clusters:
+        center, strength = max(c, key=lambda t: (t[1], -t[0]))
+        out.append((center, strength))
+    return out
+
+
+def _seed_chat_peaks(sentences: Sequence[Sentence], chat_curve: Any, *,
+                     min_s: float, weights: dict[str, float],
+                     limit: int) -> list[CandidateWindow]:
+    """Candidate windows centred on chat reactions that the transcript
+    windows would miss.
+
+    S2's windows are sentence-aligned, so a spike of hype or laughter with
+    NO words behind it — the moment a play lands, a chat explodes, nobody
+    narrates it — generates no candidate at all, however hard the room
+    reacted. This seeds one minimum-length window per reaction cluster,
+    scored the normal way: structural components come from whatever
+    sentences overlap (often none, scoring 0), and the chat component from
+    the window's own span. A pure reaction therefore competes on the
+    audience vote alone, and NMS downstream drops any that merely duplicate
+    a transcript window it already has.
+    """
+    from clipforge.ingest import chat as _chat  # noqa: PLC0415
+
+    clusters = _cluster_peaks(_chat.peaks(chat_curve, min_fraction=0.6),
+                              gap_s=min_s)
+    # Strongest reactions first, then bounded: NMS keeps only top_k overall,
+    # so there is no value in seeding more than that many.
+    clusters.sort(key=lambda t: (-t[1], t[0]))
+    span_ms = round(min_s * 1000.0)
+    half_ms = span_ms // 2
+
+    seeded: list[CandidateWindow] = []
+    for center_sec, _strength in clusters[:max(0, limit)]:
+        start_ms = max(0, center_sec * 1000 - half_ms)
+        start = start_ms / 1000.0
+        end = (start_ms + span_ms) / 1000.0
+        overlap = [s for s in sentences if s.end > start and s.start < end]
+        scores = {
+            "boundary": score_boundary(overlap),
+            "qa": score_qa(overlap),
+            "turns": score_turns(overlap, end - start),
+            "chat": _chat.score_window(start, end, chat_curve),
+            "energy": score_energy(overlap, end - start),
+            "laughter": score_laughter(overlap),
+            "selfcont": score_selfcontained(overlap),
+        }
+        out = dict(sorted(scores.items()))
+        out["total"] = weighted_total(scores, weights)
+        seeded.append(CandidateWindow(
+            start=start, end=end, total_score=out["total"], scores=out,
+            text=" ".join(s.text for s in overlap)))
+    return seeded
+
+
 # --------------------------------------------------------------------------
 # the stage
 # --------------------------------------------------------------------------
@@ -470,9 +548,21 @@ class S2Prefilter(Stage[CandidatesArtifact]):
                     scores=scores,
                     text=" ".join(s.text for s in window)))
 
+            # Seed candidates from chat reactions with no transcript behind
+            # them — hype and laughs the sentence-aligned windows cannot see.
+            # On by default when a chat curve is present; NMS dedupes any
+            # that overlap a transcript window already found.
+            seeded = 0
+            if chat_curve is not None and bool(
+                    params.get("chat_seed_peaks", True)):
+                extra = _seed_chat_peaks(sentences, chat_curve, min_s=min_s,
+                                         weights=weights, limit=top_k)
+                seeded = len(extra)
+                candidates += extra
+
             kept = nms(candidates, iou_threshold=iou_thr, top_k=top_k)
             log.info("s2.candidates", generated=len(candidates),
-                     kept=len(kept))
+                     seeded_from_chat=seeded, kept=len(kept))
             return CandidatesArtifact(
                 cache_key=cache_key,
                 source_transcript=transcript.cache_key,

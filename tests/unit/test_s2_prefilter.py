@@ -307,3 +307,64 @@ def test_stage_threads_chat_curve_from_params(db, tmp_path):
     assert all(c.scores.get("chat", 0.0) == 0.0 for c in plain.candidates)
     assert any(c.scores.get("chat", 0.0) > 0.0 for c in withchat.candidates), \
         "no candidate picked up the chat reaction at 32s"
+
+
+def test_chat_peaks_seed_a_candidate_with_no_transcript(db, tmp_path):
+    """A reaction with no words behind it becomes a candidate on the audience
+    vote alone — the whole point of seeding. The transcript here stops at 90s;
+    the chat erupts at 200s, where no sentence-aligned window can reach."""
+    from clipforge.ingest.chat import ChatEvent, build_curve
+
+    t = _transcript()  # sentences span 0..90 s
+    curve = build_curve([ChatEvent(t_s=200.0 + (i % 3), user=f"u{i}")
+                         for i in range(60)])
+    s2 = S2Prefilter(db, tmp_path)
+    art = s2.run(input_digest=digest_bytes(b"t"),
+                 params={"chat_curve": curve.to_params(), "top_k": 10},
+                 transcript=t)
+
+    reaction = [c for c in art.candidates if c.start >= 150.0]
+    assert reaction, "the 200s chat reaction seeded no candidate"
+    c = reaction[0]
+    assert c.scores["chat"] > 0.0
+    assert 29.9 <= (c.end - c.start) <= 60.1, "seeded window is not clip-length"
+
+
+def test_no_seeding_without_chat(db, tmp_path):
+    """No chat curve -> no seeded candidates, identical to before."""
+    t = _transcript()
+    s2 = S2Prefilter(db, tmp_path)
+    art = s2.run(input_digest=digest_bytes(b"t"), params={"top_k": 10},
+                 transcript=t)
+    assert all(c.start < 90.0 for c in art.candidates), \
+        "a candidate appeared past the transcript with no chat to seed it"
+
+
+def test_seeding_can_be_disabled(db, tmp_path):
+    from clipforge.ingest.chat import ChatEvent, build_curve
+    t = _transcript()
+    curve = build_curve([ChatEvent(t_s=200.0, user=f"u{i}") for i in range(60)])
+    s2 = S2Prefilter(db, tmp_path)
+    art = s2.run(input_digest=digest_bytes(b"t"),
+                 params={"chat_curve": curve.to_params(),
+                         "chat_seed_peaks": False, "top_k": 10},
+                 transcript=t)
+    assert all(c.start < 150.0 for c in art.candidates), \
+        "seeding was disabled but a peak candidate still appeared"
+
+
+def test_seeding_is_deterministic(db, tmp_path):
+    from clipforge.ingest.chat import ChatEvent, build_curve
+    t = _transcript()
+    ev = [ChatEvent(t_s=200.0 + (i % 4), user=f"u{i}") for i in range(60)]
+    curve = build_curve(ev)
+    s2 = S2Prefilter(db, tmp_path)
+    a = s2.run(input_digest=digest_bytes(b"t"),
+               params={"chat_curve": curve.to_params(), "top_k": 10},
+               transcript=t)
+    curve2 = build_curve(list(reversed(ev)))
+    b = s2.run(input_digest=digest_bytes(b"t"),
+               params={"chat_curve": curve2.to_params(), "top_k": 10},
+               transcript=t)
+    assert [(c.start, c.end, c.text) for c in a.candidates] == \
+           [(c.start, c.end, c.text) for c in b.candidates]
