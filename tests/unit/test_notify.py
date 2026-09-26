@@ -347,3 +347,23 @@ def test_a_personal_chat_id_is_accepted(tmp_path):
 def test_a_nonsense_chat_id_is_refused(tmp_path):
     cfg = write_openclaw(tmp_path, TOKEN, ["@somechannel"])
     assert notify.resolve_target(cfg) is None
+
+
+def test_the_outbox_is_empty_when_nothing_is_owed(clip):
+    """Its whole purpose is to be empty. The per-clip lock file outlived
+    the delivery, so one stayed behind for every clip ever sent."""
+    box = ws_root(clip) / "outbox" / "telegram"
+    notify.send_clip(clip, target=TARGET, ws_root=ws_root(clip),
+                     post=FakeTelegram())
+    assert sorted(p.name for p in box.iterdir()) == [], (
+        "a delivered clip left files behind in the outbox")
+
+
+def test_a_vanished_clip_leaves_nothing_behind(clip):
+    notify.send_clip(clip, target=TARGET, ws_root=ws_root(clip),
+                     post=FakeTelegram(sendVideo=ConnectionError("offline")))
+    clip.unlink()
+    notify.flush_outbox(target=TARGET, ws_root=ws_root(clip),
+                        post=FakeTelegram())
+    box = ws_root(clip) / "outbox" / "telegram"
+    assert list(box.iterdir()) == []

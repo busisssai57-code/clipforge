@@ -241,6 +241,25 @@ def _entry(ws_root: Path, clip: Path) -> Path:
     return _outbox(ws_root) / f"{Path(clip).stem}.json"
 
 
+def _forget(ws_root: Path, clip: Path) -> None:
+    """Drop this clip's queue entry — it is owed nothing more."""
+    _entry(ws_root, clip).unlink(missing_ok=True)
+
+
+def _drop_lock(ws_root: Path, clip: Path) -> None:
+    """Remove the per-clip lock file, once nobody holds it open.
+
+    The lock is released by the OS, but the empty file stays — one per
+    clip ever delivered, in a directory whose whole purpose is to be
+    empty when nothing is owed. Called only AFTER the claim is released:
+    Windows refuses to unlink a file that is still open, including by us.
+    A failure means another process holds it, and that process will tidy
+    up after its own delivery.
+    """
+    with contextlib.suppress(OSError):
+        (_outbox(ws_root) / f"{Path(clip).stem}.lock").unlink(missing_ok=True)
+
+
 def _queue(ws_root: Path, clip: Path, caption: str, error: str, *,
            state: str = "failed", bump: bool = False) -> None:
     """Record this clip as owed to the phone. Atomic; keeps the attempt count.
@@ -353,8 +372,13 @@ def send_clip(clip: Path, *, target: TelegramTarget | None, ws_root: Path,
                 log.info("notify.in_flight", clip=Path(clip).name,
                          note="another process is sending this clip")
                 return "in_flight"
-            return _send_claimed(clip, target=target, ws_root=ws_root,
-                                 caption=caption, again=again, post=post)
+            outcome = _send_claimed(clip, target=target, ws_root=ws_root,
+                                    caption=caption, again=again, post=post)
+        # Outside the claim: the lock file cannot be removed while the
+        # handle that holds it is open.
+        if outcome in ("sent", "already_sent", "missing"):
+            _drop_lock(ws_root, clip)
+        return outcome
 
 
 def _send_claimed(clip: Path, *, target: TelegramTarget | None, ws_root: Path,
@@ -442,7 +466,7 @@ def _send_claimed(clip: Path, *, target: TelegramTarget | None, ws_root: Path,
             "sent_at": time.time(), "method": method,
             "message_id": result.get("message_id"),
             "source": target.source}, indent=2), encoding="utf-8")
-        _entry(ws_root, clip).unlink(missing_ok=True)
+        _forget(ws_root, clip)
         log.info("notify.sent", clip=clip.name, method=method,
                  size_mb=round(size / 1024 ** 2, 1), source=target.source)
         return "sent"
@@ -470,7 +494,8 @@ def flush_outbox(*, target: TelegramTarget | None, ws_root: Path,
         outcome = send_clip(clip, target=target, ws_root=ws_root,
                             caption=item.get("caption"), post=post)
         if outcome in ("missing", "already_sent"):
-            entry.unlink(missing_ok=True)
+            _forget(ws_root, clip)
+            _drop_lock(ws_root, clip)
         counts[outcome] = counts.get(outcome, 0) + 1
     if counts:
         log.info("notify.outbox_flushed", **counts)
