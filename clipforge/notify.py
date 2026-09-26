@@ -91,6 +91,20 @@ def _read_openclaw(config_path: Path) -> tuple[str | None, str | None]:
     return token or None, chat
 
 
+def is_private_chat(chat_id: str) -> bool:
+    """A Telegram user id is positive; groups and channels are negative.
+
+    The 2026-09-22 amendment allows ONE outbound path: a clip to the
+    operator's own chat. A negative id is a group or a channel — an
+    audience — which is publishing by another name, so it is refused here
+    rather than left to a config review.
+    """
+    try:
+        return int(str(chat_id).strip()) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def resolve_target(openclaw_config: Path, *,
                    token: str | None = None,
                    chat_id: str | None = None) -> TelegramTarget | None:
@@ -104,6 +118,11 @@ def resolve_target(openclaw_config: Path, *,
             chat_id = oc_chat
             source = "openclaw" if source == "openclaw" else "env+openclaw"
     if not (token and chat_id):
+        return None
+    if not is_private_chat(chat_id):
+        log.error("notify.not_a_private_chat", chat_id=str(chat_id)[:24],
+                  note="clips go to the operator's own chat only; a group "
+                       "or channel id is refused (see VERIFICATION.md)")
         return None
     return TelegramTarget(token=str(token), chat_id=str(chat_id), source=source)
 
@@ -133,7 +152,11 @@ def caption_for(clip: Path) -> str:
     for piece in (title, body if body != title else "", tags):
         if piece:
             parts.append(piece)
-    parts.append(clip.name)
+    if not parts:
+        # No export pack (a rejected clip sent by hand, an older render):
+        # the filename is a 64-char content hash, which tells the operator
+        # nothing, but an empty caption tells them less.
+        parts.append(clip.name)
     text = "\n\n".join(parts)
     if len(text) > CAPTION_LIMIT:
         text = text[:CAPTION_LIMIT - 1].rstrip() + "…"
@@ -149,6 +172,61 @@ def _default_post(*args: Any, **kwargs: Any) -> Any:
     import requests
 
     return requests.post(*args, **kwargs)
+
+
+#: Telegram rejects a thumbnail wider than 320 px or bigger than 200 kB.
+THUMB_MAX_PX = 320
+THUMB_MAX_BYTES = 200 * 1024
+
+
+def video_fields(clip: Path) -> dict[str, str]:
+    """width/height/duration, so the phone shows a 9:16 clip as 9:16.
+
+    Without them Telegram guesses from the first frames and a portrait
+    clip can arrive letterboxed into a landscape box. Best-effort: a probe
+    that fails costs nothing but the nicety.
+    """
+    try:
+        from clipforge.ffmpeg import probe
+
+        info = probe(clip)
+    except Exception:  # noqa: BLE001 - never block a delivery on a probe
+        return {}
+    fields: dict[str, str] = {}
+    if info.width and info.height:
+        fields["width"] = str(int(info.width))
+        fields["height"] = str(int(info.height))
+    if info.duration_s:
+        fields["duration"] = str(int(round(float(info.duration_s))))
+    return fields
+
+
+def thumbnail_bytes(clip: Path) -> bytes | None:
+    """The clip's own thumbnail, shrunk to what Telegram accepts.
+
+    S6 already writes ``<clip>.thumb.jpg`` for the gallery — the same
+    frame the export pack chose — so this costs a resize, not a decode of
+    the video.
+    """
+    src = Path(clip).with_suffix(".thumb.jpg")
+    if not src.is_file():
+        return None
+    try:
+        import io
+
+        from PIL import Image
+
+        with Image.open(src) as im:
+            im = im.convert("RGB")
+            im.thumbnail((THUMB_MAX_PX, THUMB_MAX_PX))
+            for quality in (85, 70, 55):
+                buf = io.BytesIO()
+                im.save(buf, format="JPEG", quality=quality)
+                if buf.tell() <= THUMB_MAX_BYTES:
+                    return buf.getvalue()
+        return None
+    except Exception:  # noqa: BLE001 - a thumbnail is never worth a failure
+        return None
 
 
 def _marker(clip: Path) -> Path:
@@ -322,13 +400,20 @@ def _send_claimed(clip: Path, *, target: TelegramTarget | None, ws_root: Path,
         else:
             method, data, files = "sendVideo", {
                 "chat_id": target.chat_id, "caption": text,
-                "supports_streaming": "true"}, True
+                "supports_streaming": "true", **video_fields(clip)}, True
 
         try:
             if files:
+                parts: dict[str, Any] = {}
+                thumb = thumbnail_bytes(clip)
+                if thumb is not None:
+                    # Telegram shows this in the chat list and while the
+                    # video loads; without it the clip is a grey box.
+                    parts["thumbnail"] = ("thumb.jpg", thumb, "image/jpeg")
                 with clip.open("rb") as fh:
+                    parts["video"] = (clip.name, fh, "video/mp4")
                     resp = post(f"{API}/bot{target.token}/{method}", data=data,
-                                files={"video": (clip.name, fh, "video/mp4")},
+                                files=parts,
                                 # One number, not (connect, read): urllib3
                                 # applies the CONNECT timeout to writing the
                                 # body, so (15, 600) aborted a 26 MB upload

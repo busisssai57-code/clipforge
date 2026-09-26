@@ -132,6 +132,15 @@ CREATE TABLE IF NOT EXISTS stream_sessions (
     last_media_at REAL NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS shipped_spans (
+    scope         TEXT NOT NULL,     -- one broadcast: platform:handle:session
+    abs_start_s   REAL NOT NULL,     -- absolute stream seconds
+    abs_end_s     REAL NOT NULL,
+    clip_path     TEXT NOT NULL,
+    shipped_at    REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shipped_spans_scope ON shipped_spans(scope);
+
 CREATE TABLE IF NOT EXISTS segments (
     session_id    INTEGER NOT NULL REFERENCES stream_sessions(id),
     seg_index     INTEGER NOT NULL,
@@ -672,6 +681,28 @@ class StateDB:
                 "UPDATE stream_sessions SET base_offset_s=?, next_segment=?, "
                 "last_media_at=? WHERE id=?",
                 (abs_start_s + duration_s, next_segment, time.time(), session_id))
+
+    @_guarded
+    def record_shipped_span(self, scope: str, abs_start_s: float,
+                            abs_end_s: float, clip_path: str) -> None:
+        """Remember the stream seconds an accepted clip covers.
+
+        Windows overlap by design (T1), so without this the same highlight
+        is clipped once per window that contains it.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO shipped_spans (scope, abs_start_s, abs_end_s, "
+                "clip_path, shipped_at) VALUES (?,?,?,?,?)",
+                (scope, float(abs_start_s), float(abs_end_s), str(clip_path),
+                 time.time()))
+
+    @_guarded
+    def shipped_spans(self, scope: str) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM shipped_spans WHERE scope=? "
+                "ORDER BY abs_start_s", (scope,)).fetchall()
 
     @_guarded
     def segments_with_status(self, status: str) -> Iterable[sqlite3.Row]:

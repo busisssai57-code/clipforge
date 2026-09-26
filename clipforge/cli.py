@@ -17,9 +17,11 @@ from typer.models import ArgumentInfo, OptionInfo
 
 from clipforge.config import load_config
 from clipforge.dllpaths import ensure_nvidia_dll_dirs
+from clipforge import dedup
 from clipforge.errors import ClipForgeError
 from clipforge.idle import idle_checkpoint
 from clipforge.log import setup_logging
+from clipforge import watchstatus
 from clipforge.paths import Workspace, discard_partials
 
 app = typer.Typer(name="bta", no_args_is_help=True,
@@ -236,12 +238,27 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
     # ingestion must never wait for the GPU: a live stream is not
     # replayable, and a four-minute render on the monitor's thread means
     # four minutes of stream lost for good.
-    def _clip_window(path: Path, abs_start_s: float) -> None:
-        # jumpcut=None explicitly: passing nothing would hand `process` a
-        # truthy Typer sentinel and force pacing on, overriding [pacing].
-        process(input_path=path, config=config_path,
-                abs_offset=abs_start_s, clips=cfg.orchestration.clips_per_window,
-                jumpcut=None)
+    def _clip_window(path: Path, abs_start_s: float,
+                     key: tuple | None = None) -> None:
+        # One broadcast = one dedup scope, so a highlight in the overlap
+        # between two windows is clipped once. A manual `bta process` sets
+        # no scope and is unaffected.
+        scope = None
+        if key is not None and key[0] == "segment":
+            scope = dedup.Scope(key=f"session:{key[1]}", db=db)
+        elif key is not None and key[0] == "video":
+            scope = dedup.Scope(key=f"video:{key[3]}", db=db)
+        token = dedup.set_scope(scope)
+        try:
+            # jumpcut=None explicitly: passing nothing would hand `process`
+            # a truthy Typer sentinel and force pacing on, overriding
+            # [pacing].
+            process(input_path=path, config=config_path,
+                    abs_offset=abs_start_s,
+                    clips=cfg.orchestration.clips_per_window,
+                    jumpcut=None)
+        finally:
+            dedup.reset_scope(token)
 
     def _settled(key, outcome: str) -> None:
         """Record in the DB that this source needs no more clipping.
@@ -326,6 +343,43 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
         console.print(f"[yellow]re-queued {requeued} recorded window(s) that "
                       "were never clipped[/]")
 
+    def _start_heartbeat(monitor_ref, dispatcher_ref) -> "threading.Event":
+        """Publish what the watcher is doing, every 15 s.
+
+        Unattended is the point of this command, so "is it recording?",
+        "why has nothing been clipped?" and "is it even alive?" must be
+        answerable without reading a JSONL log.
+        """
+        import threading
+
+        stop_hb = threading.Event()
+
+        def _loop() -> None:
+            while not stop_hb.is_set():
+                live = [h for (p, h), ev in monitor_ref._live_now.items()
+                        if ev.is_set()]
+                owed = 0
+                try:
+                    owed = len(list((Path(ws.root) / "outbox" / "telegram")
+                                    .glob("*.json")))
+                except OSError:
+                    pass
+                watchstatus.write(
+                    Path(ws.root),
+                    channels=len(wl.enabled_sorted()),
+                    live=live,
+                    queue_pending=dispatcher_ref.pending,
+                    gate=(gate() if gate is not None else None),
+                    telegram_outbox=owed,
+                    stats=dispatcher_ref.stats.snapshot())
+                stop_hb.wait(15.0)
+
+        threading.Thread(target=_loop, name="watch-heartbeat",
+                         daemon=True).start()
+        return stop_hb
+
+    heartbeat_stop = _start_heartbeat(monitor, dispatcher)
+
     async def _serve() -> None:
         # Install the handler INSIDE the loop: waiting for asyncio.run() to
         # raise KeyboardInterrupt is too late — an in-flight download would
@@ -378,6 +432,8 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
         # disk that `bta process` can pick up.
         dispatcher.stop()
         retry_stop.set()
+        heartbeat_stop.set()
+        watchstatus.clear(Path(ws.root))
         stats = dispatcher.stats.snapshot()
         if stats["submitted"] or stats["dropped"]:
             console.print(
@@ -412,6 +468,28 @@ def _start_telegram_retry(cfg, ws) -> "threading.Event":
 
     threading.Thread(target=_loop, name="telegram-retry", daemon=True).start()
     return stop
+
+
+@app.command()
+def status(config: Path = CONFIG_OPT) -> None:
+    """Is `bta watch` running, and what is it doing?
+
+    Reads the heartbeat the watcher writes, so this answers honestly even
+    when the watcher is dead — the case where every other signal (no new
+    clips, a quiet phone) looks exactly like a slow day.
+    """
+    cfg, ws = _boot(config, sweep_partials=False)
+    state = watchstatus.read(Path(ws.root))
+    line = watchstatus.summarize(state)
+    console.print(f"[green]{line}[/]" if state.get("running")
+                  else f"[yellow]{line}[/]")
+    if state.get("running"):
+        stats = state.get("stats") or {}
+        if stats:
+            console.print(f"  clips: {stats.get('processed', 0)} rendered, "
+                          f"{stats.get('failed', 0)} failed, "
+                          f"{stats.get('dropped', 0)} not queued")
+    raise typer.Exit(0 if state.get("running") else 1)
 
 
 @app.command()
@@ -913,6 +991,14 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             if not (0 <= idx < len(cands.candidates)):
                 continue
             cand = cands.candidates[idx]
+            # Adjacent windows share `overlap_s` of stream on purpose, so a
+            # highlight in that seam is a candidate in BOTH. Take the
+            # next-ranked one instead of shipping the same moment twice.
+            duplicate = dedup.already_shipped(cand.start, cand.end)
+            if duplicate is not None:
+                console.print(f"  [yellow]skipping a moment already clipped[/] "
+                              f"({Path(duplicate).name})")
+                continue
             win_start = _snap_edge(cand.start - abs_offset)
             win_end = _snap_edge(cand.end - abs_offset)
             cand_id = f"cand_{idx:03d}"
@@ -1154,6 +1240,10 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             if qa.passed:
                 rendered += 1
                 shipped_clips.append(str(Path(clip.clip_path).resolve()))
+                # Absolute stream seconds: the next window's candidates are
+                # on the same timeline, and this file's own times are not.
+                dedup.record(cur_start + abs_offset, cur_end + abs_offset,
+                             str(Path(clip.clip_path).resolve()))
                 # Everything needed to post, written beside the clip. This
                 # is what exists INSTEAD of auto-publishing: the payload is
                 # assembled here where the transcript and title are still

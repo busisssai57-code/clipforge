@@ -1037,6 +1037,16 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
   <div class="view" id="view">
 
   <!-- ============================================================ HOME -->
+  <style>
+    .watchtile{display:flex;align-items:center;gap:9px;margin-top:14px;
+      padding:9px 13px;border:1px solid var(--line);border-radius:10px;
+      font-size:12.5px;color:var(--faint);background:var(--panel);
+      max-width:640px}
+    .wdot{width:8px;height:8px;border-radius:50%;background:#555;flex:none}
+    .wdot.live{background:#3ddc84;box-shadow:0 0 6px #3ddc8488}
+    .wdot.held{background:#e8b84b}
+    .wdot.dead{background:#e0564b}
+  </style>
   <section class="pane" id="v-home">
     <div class="homewrap">
       <div class="wordmark">BTA</div>
@@ -1056,6 +1066,14 @@ pre.log{background:#08080a;border:1px solid var(--line);border-radius:9px;paddin
         </div>
         <button class="bigbtn" id="btnClip1">Get clips in 1 click</button>
         <span class="samplelink" id="btnSample">Open the newest finished project</span>
+      </div>
+
+      <!-- The unattended watcher, in one line. `bta watch` runs for days
+           with nobody looking at it, and a dead watcher and a quiet day
+           produce exactly the same silence. -->
+      <div class="watchtile" id="watchTile" title="bta watch">
+        <span class="wdot" id="watchDot"></span>
+        <span id="watchLine">checking the watcher...</span>
       </div>
 
       <div class="tools" id="toolRow"></div>
@@ -3877,6 +3895,19 @@ async function refresh(){
 
 /* ================================================================ init */
 (async function init(){
+  // The watcher writes a heartbeat; this reads it. `bta web` and
+  // `bta watch` are separate programs, so the API being up says nothing
+  // about whether anything is being recorded.
+  async function refreshWatch(){
+    const dot=$('#watchDot'), line=$('#watchLine');
+    if(!dot||!line) return;
+    let s;
+    try{ s=await api('/api/watch/status'); }
+    catch(e){ dot.className='wdot dead'; line.textContent='watcher status unavailable'; return; }
+    line.textContent=s.summary||'';
+    dot.className='wdot '+(!s.running?'dead':((s.live&&s.live.length)?'live':(s.gate?'held':'')));
+  }
+
   try{
     // Every leg carries its own catch. /api/models was removed with the
     // generation half and this Promise.all had no guard on it, so one 404
@@ -3890,9 +3921,11 @@ async function refresh(){
       api('/api/dub/languages').catch(()=>[]),
       api('/api/ratings').catch(()=>({liked:[],hidden:[]}))]);
     NICHES=n;CAPS=c;DUBLANGS=d;
+    refreshWatch();
     (r.liked||[]).forEach(f=>LIKED.add(f));
     (r.hidden||[]).forEach(f=>HIDDEN.add(f));
     SEL=(NICHES[0]||{}).name||null;
+    if(!window.__watchTimer) window.__watchTimer=setInterval(refreshWatch,15000);
     $('#wsPath').textContent=h.workspace||'workspace/';
     CLI=h.cli||'bta'; CWD=h.cwd||'';
     $('#whoSub').innerHTML='<span class="dot"></span>'+

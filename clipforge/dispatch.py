@@ -68,7 +68,11 @@ class ClipDispatcher:
     testable without the pipeline and cannot create an import cycle.
     """
 
-    handler: Callable[[Path, float], None]
+    #: Called with (window path, absolute start) and, if it declares a
+    #: third parameter, the source key. Introspected once at start so a
+    #: plain two-argument handler — every caller before the key existed,
+    #: and every test — keeps working unchanged.
+    handler: Callable[..., None]
     maxsize: int = 32
     #: Seconds a queued window may wait before it is considered stale. Live
     #: content ages badly, and a backlog older than this is usually a sign
@@ -93,6 +97,8 @@ class ClipDispatcher:
     _q: queue.Queue = field(init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    #: Whether ``handler`` accepts the source key (set in start()).
+    _handler_wants_key: bool = field(default=False, init=False)
     #: Set by stop(): wakes a worker that is sleeping on a closed gate.
     _halt: threading.Event = field(default_factory=threading.Event, init=False)
     #: Total seconds the worker has spent held by the gate. A window's age
@@ -115,6 +121,13 @@ class ClipDispatcher:
         if self._thread is not None:
             return self
         self._halt.clear()
+        try:
+            import inspect
+
+            self._handler_wants_key = len(
+                inspect.signature(self.handler).parameters) >= 3
+        except (TypeError, ValueError):
+            self._handler_wants_key = False
         self._thread = threading.Thread(
             target=self._run, name="clip-dispatch", daemon=True)
         self._thread.start()
@@ -227,7 +240,10 @@ class ClipDispatcher:
             started = time.monotonic()
             token = set_checkpoint(self._checkpoint) if self.gate else None
             try:
-                self.handler(path, abs_start_s)
+                if self._handler_wants_key:
+                    self.handler(path, abs_start_s, key)
+                else:
+                    self.handler(path, abs_start_s)
             except JobPreempted as exc:
                 # Not a failure: the job yielded the GPU to the operator
                 # mid-flight. Its finished stages are in the cache, so the

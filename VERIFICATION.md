@@ -4120,3 +4120,39 @@ regardless of who was using the machine, and lost the queue on restart.
   no time limit, restarts if it exits) so watching survives a reboot.
 
 **Gate:** pytest and `clipforge verify all`, both recorded below.
+
+
+## Watcher round 2 — finishing it (2026-09-26)
+
+Built on the same audit. Everything here is proven by a mutant: the
+behaviour was broken on purpose and the named test failed (14/14 killed,
+0 survivors).
+
+* **One moment, one clip.** Windows overlap by `overlap_s` on purpose
+  (T1), so a highlight in the seam was a candidate in two windows and
+  reached the phone twice with two different names. Accepted clips now
+  record their absolute span against the broadcast (`shipped_spans`), and
+  the next window takes its next-ranked candidate instead. Scoped per
+  broadcast, and `bta process` on a local file sets no scope at all.
+* **What lands on the phone.** width/height/duration so a 9:16 clip is
+  not letterboxed, the clip's own thumbnail (S6 already writes it), and
+  the title instead of a 64-character content hash.
+* **Private delivery, enforced.** A negative chat id is a group or a
+  channel — an audience — and is refused where it is resolved, not left
+  to a config review.
+* **The watcher can be seen.** It publishes a heartbeat every 15 s;
+  `bta status` and `GET /api/watch/status` read it, and the dashboard's
+  home pane carries a tile. A dead watcher and a quiet day used to look
+  identical from outside. `bta status` exits non-zero when it is not
+  running, so a scheduled check can notice.
+
+**Gate:** pytest 1335 passed / 5 skipped; `clipforge verify all` PASSED.
+Verified live, not just in tests: the heartbeat was read off a running
+`bta watch` ("watching 1 channel(s) | none live | clipping held: operator
+active | 4 clip(s) owed to the phone"), and the dashboard tile was
+rendered in a browser against the real API.
+
+**Open:** the operator has blocked @myopenclaw2026_bot, so 4 clips sit in
+the outbox; they deliver themselves once it is unblocked. `bta autostart
+install` is written and tested but NOT installed — that is the operator's
+call.

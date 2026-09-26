@@ -19,6 +19,7 @@ from clipforge.notify import TelegramTarget
 
 TOKEN = "123456:AAFAKE-token-for-tests-only"
 TARGET = TelegramTarget(token=TOKEN, chat_id="42", source="env")
+JPEG_MAGIC = bytes([0xFF, 0xD8]) + b"jpeg"
 
 
 class Resp:
@@ -268,3 +269,81 @@ def test_check_redacts_the_token_from_errors():
     with pytest.raises(ValueError) as err:
         notify.check(TARGET, get=get)
     assert TOKEN not in str(err.value)
+
+
+# --------------------------------------------------- what lands on the phone
+
+def test_a_portrait_clip_is_sent_as_portrait(clip, monkeypatch):
+    """Without width/height/duration Telegram guesses, and a 9:16 clip can
+    arrive letterboxed inside a landscape box."""
+    monkeypatch.setattr(notify, "video_fields",
+                        lambda c: {"width": "1080", "height": "1920",
+                                   "duration": "38"})
+    tg = FakeTelegram()
+    notify.send_clip(clip, target=TARGET, ws_root=ws_root(clip), post=tg)
+    _, data, _ = tg.calls[1]
+    assert (data["width"], data["height"], data["duration"]) == ("1080", "1920", "38")
+
+
+def test_a_failed_probe_still_sends_the_clip(clip, monkeypatch):
+    def boom(_c):
+        raise OSError("ffprobe missing")
+
+    monkeypatch.setattr(notify, "video_fields", boom)
+    tg = FakeTelegram()
+    # The probe is a nicety; the delivery is the product.
+    try:
+        outcome = notify.send_clip(clip, target=TARGET, ws_root=ws_root(clip),
+                                   post=tg)
+    except OSError:
+        raise AssertionError("a failed probe must not sink the delivery")
+    assert outcome == "queued"       # it failed loudly, and kept the clip
+
+
+def test_the_clips_own_thumbnail_rides_along(clip, monkeypatch):
+    monkeypatch.setattr(notify, "thumbnail_bytes", lambda c: JPEG_MAGIC)
+    sent: dict = {}
+
+    def capture(url, data=None, files=None, timeout=None):
+        if url.endswith("sendVideo"):
+            sent.update(files or {})
+        return Resp({"ok": True, "result": {"message_id": 3}})
+
+    notify.send_clip(clip, target=TARGET, ws_root=ws_root(clip), post=capture)
+    assert "thumbnail" in sent and sent["thumbnail"][1] == JPEG_MAGIC
+    assert "video" in sent
+
+
+def test_the_caption_is_the_title_not_a_content_hash(clip):
+    caption = notify.caption_for(clip)
+    assert caption.startswith("He did not see it coming")
+    assert "abc.mp4" not in caption, (
+        "a 64-char content hash tells the operator nothing")
+
+
+def test_a_clip_with_no_export_pack_still_says_something(clip):
+    clip.with_suffix(".export.json").unlink()
+    assert notify.caption_for(clip) == clip.name
+
+
+# ------------------------------------------------- private delivery only
+
+def test_a_group_or_channel_id_is_refused(tmp_path):
+    """The amendment allows one outbound path: the operator's own chat. A
+    negative id is a group or channel — an audience — which is publishing
+    by another name."""
+    cfg = write_openclaw(tmp_path, TOKEN, ["-1001234567890"])
+    assert notify.resolve_target(cfg) is None
+    assert notify.resolve_target(cfg, token=TOKEN,
+                                 chat_id="-1001234567890") is None
+
+
+def test_a_personal_chat_id_is_accepted(tmp_path):
+    cfg = write_openclaw(tmp_path, TOKEN, ["8675309"])
+    target = notify.resolve_target(cfg)
+    assert target is not None and target.chat_id == "8675309"
+
+
+def test_a_nonsense_chat_id_is_refused(tmp_path):
+    cfg = write_openclaw(tmp_path, TOKEN, ["@somechannel"])
+    assert notify.resolve_target(cfg) is None
