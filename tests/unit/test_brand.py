@@ -41,15 +41,18 @@ def clip(tmp_path, monkeypatch):
 
 # -------------------------------------------------------------- placement
 
-def test_the_hook_card_can_be_moved_off_the_footages_own_text():
+def test_the_hook_card_can_be_moved_off_the_footages_own_text(tmp_path):
     """Measured on a shipped clip: at the 0.11 default the card landed on
     the source's own burned-in caption and both became unreadable. The
-    default was chosen against generated shots, which carry nothing."""
-    work = Path(__file__).parent
+    default was chosen against generated shots, which carry nothing.
+
+    Rasterises into tmp_path, not beside the test: the first version of
+    this wrote a PNG into the repository and I committed it.
+    """
     high = build_overlay(PostSpec(hook="HI", hook_y=0.11), width=1080,
-                         height=1920, work_dir=work / "_brandwork")[1]
+                         height=1920, work_dir=tmp_path / "work")[1]
     low = build_overlay(PostSpec(hook="HI", hook_y=0.30), width=1080,
-                        height=1920, work_dir=work / "_brandwork")[1]
+                        height=1920, work_dir=tmp_path / "work")[1]
     assert "y=H*0.110" in high and "y=H*0.300" in low
 
 
