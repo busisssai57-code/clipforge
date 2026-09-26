@@ -120,13 +120,16 @@ def test_youtube_downloads_only_new_ids(env):
     media: list[tuple] = []
     chans = [ChannelSpec(platform="youtube", handle="@c", enabled=True)]
     mon = make_monitor(ws, db, chans, discover=discover, download=download,
-                       on_media=lambda p, t: media.append((p, t)))
+                       on_media=lambda p, t, key=None: media.append((p, t, key)))
 
     mon._tick_youtube(chans[0])
     mon._tick_youtube(chans[0])
 
     assert downloaded == ["aaaaaaaaaaa"]
     assert len(media) == 1 and media[0][1] == 0.0
+    assert media[0][2] == ("video", "youtube", "@c", "aaaaaaaaaaa"), (
+        "a downloaded VOD must say which id it came from, so the clip "
+        "can be recorded as done and not fetched again after a restart")
 
 
 def test_youtube_download_is_stoppable(env):
@@ -147,7 +150,16 @@ def test_youtube_download_is_stoppable(env):
                        discover=lambda d, h, e: ["aaaaaaaaaaa"],
                        download=download)
     mon._tick_youtube(chans[0])
-    assert seen_stop["stop"] is mon._stop, "download must receive the stop event"
+    # The download stops for shutdown OR for the channel going live: a
+    # broadcast cannot be fetched later, a published VOD can.
+    passed = seen_stop["stop"]
+    assert passed is not None and not passed.is_set()
+    mon._stop.set()
+    assert passed.is_set(), "download must stop when the monitor does"
+    mon._stop.clear()
+    mon._live_event(chans[0]).set()
+    assert passed.is_set(), "download must stop when the channel goes live"
+    mon._live_event(chans[0]).clear()
 
 
 def test_youtube_stops_mid_batch_on_shutdown(env):
@@ -308,7 +320,7 @@ def test_t1_window_is_built_for_each_segment(env):
     ws, db = env
     chans = [ChannelSpec(platform="twitch", handle="t", enabled=True)]
     media: list[tuple] = []
-    mon = make_monitor(ws, db, chans, on_media=lambda p, t: media.append((p, t)))
+    mon = make_monitor(ws, db, chans, on_media=lambda p, t, key=None: media.append((p, t, key)))
     mon.cfg.ingest.overlap_s = 60
 
     calls: list[dict] = []
@@ -349,6 +361,8 @@ def test_t1_window_is_built_for_each_segment(env):
     assert calls[1]["overlap_s"] == 60
     # Absolute start is pulled back by the real overlap.
     assert media[1][1] == 900.0 - 63.4
+    assert media[0][2] == ("segment", 1, 0), (
+        "a window must carry the segment it came from")
 
 
 def test_window_failure_still_emits_the_chunk(env):
@@ -356,7 +370,7 @@ def test_window_failure_still_emits_the_chunk(env):
     ws, db = env
     chans = [ChannelSpec(platform="twitch", handle="t", enabled=True)]
     media: list[tuple] = []
-    mon = make_monitor(ws, db, chans, on_media=lambda p, t: media.append((p, t)))
+    mon = make_monitor(ws, db, chans, on_media=lambda p, t, key=None: media.append((p, t, key)))
 
     import clipforge.ingest.monitor as monitor_mod
     from clipforge.errors import FfmpegError
@@ -375,7 +389,8 @@ def test_window_failure_still_emits_the_chunk(env):
     finally:
         monitor_mod.build_virtual_window = original
 
-    assert media == [(p, 0.0)], "must fall back to the bare chunk"
+    assert media == [(p, 0.0, ("segment", 1, 0))], (
+        "must fall back to the bare chunk, still naming its segment")
 
 
 async def test_retention_runs_even_while_a_capture_is_live(env):
@@ -447,3 +462,113 @@ async def test_on_media_callback_failure_is_contained(env):
                            dest / "a.mp4")[-1],
                        on_media=boom)
     mon._tick_youtube(chans[0])  # must not raise
+
+
+# -------------------------------------------------------------- youtube live
+#
+# YouTube channels took the VOD branch unconditionally, so a creator who was
+# live produced nothing until the broadcast became a VOD. These pin the
+# probe-first routing.
+
+
+async def test_a_live_youtube_channel_is_captured_not_downloaded(env):
+    ws, db = env
+    session = DummySession()
+    downloads: list[str] = []
+    chans = [ChannelSpec(platform="youtube", handle="@c", enabled=True)]
+    mon = make_monitor(ws, db, chans,
+                       youtube_is_live=lambda h, **kw: True,
+                       discover=lambda *a, **kw: downloads.append("discover") or [],
+                       make_chunker=lambda ch: session)
+    task = asyncio.create_task(mon._channel_loop(chans[0]))
+    await asyncio.sleep(0.2)
+    mon.stop()
+    await asyncio.wait_for(task, timeout=5)
+    assert session.ran.is_set(), "a live YouTube broadcast was not captured"
+    assert downloads == [], (
+        "the VOD backlog competed with a live broadcast for bandwidth")
+
+
+@pytest.mark.parametrize("state", [False, None])
+async def test_an_offline_or_unknown_youtube_channel_takes_the_vod_path(env, state):
+    ws, db = env
+    session = DummySession()
+    discovered: list[str] = []
+    chans = [ChannelSpec(platform="youtube", handle="@c", enabled=True)]
+    mon = make_monitor(ws, db, chans,
+                       youtube_is_live=lambda h, **kw: state,
+                       discover=lambda *a, **kw: discovered.append("d") or [],
+                       make_chunker=lambda ch: session)
+    task = asyncio.create_task(mon._vod_loop(chans[0]))
+    await asyncio.sleep(0.2)
+    mon.stop()
+    await asyncio.wait_for(task, timeout=5)
+    assert not session.ran.is_set()
+    assert discovered, "an off-air channel must still pick up new VODs"
+
+
+async def test_the_live_loop_never_downloads_a_vod(env):
+    """The live probe must stay responsive: one 54-minute VOD download
+    (there were nine pending) used to hold this loop for as long as it
+    ran, and a broadcast that began meanwhile was never recorded."""
+    ws, db = env
+    discovered: list[str] = []
+    chans = [ChannelSpec(platform="youtube", handle="@c", enabled=True)]
+    mon = make_monitor(ws, db, chans,
+                       youtube_is_live=lambda h, **kw: False,
+                       discover=lambda *a, **kw: discovered.append("d") or [])
+    task = asyncio.create_task(mon._channel_loop(chans[0]))
+    await asyncio.sleep(0.2)
+    mon.stop()
+    await asyncio.wait_for(task, timeout=5)
+    assert discovered == [], "the live loop went looking for VODs"
+
+
+async def test_the_vod_backlog_stands_aside_when_the_channel_goes_live(env):
+    """A published VOD can be fetched later; a broadcast cannot."""
+    ws, db = env
+    downloaded: list[str] = []
+    chans = [ChannelSpec(platform="youtube", handle="@c", enabled=True)]
+    ids = ["a" * 11, "b" * 11, "c" * 11]
+
+    def discover(_db, _handle, _end, **kw):
+        for v in ids:
+            db.mark_video_seen("youtube", "@c", v)
+        return list(ids)
+
+    def download(vid, dest, **kw):
+        downloaded.append(vid)
+        mon._live_event(chans[0]).set()      # the stream starts mid-backlog
+        dest.mkdir(parents=True, exist_ok=True)
+        p = dest / f"yt_{vid}.mp4"
+        p.write_bytes(b"\x00")
+        return p
+
+    mon = make_monitor(ws, db, chans, discover=discover, download=download)
+    mon._tick_youtube(chans[0])
+    assert downloaded == [ids[0]], (
+        "the backlog kept downloading while the channel was broadcasting")
+    still_pending = [r["video_id"] for r in
+                     db.videos_needing_download("youtube", "@c")]
+    assert set(ids[1:]) <= set(still_pending), (
+        "the skipped ids must stay pending, with no attempt counted")
+
+
+def test_a_youtube_capture_uses_youtube_streamlink_args(env):
+    """The chunker built for a YouTube channel must open the channel's
+    /live URL — kick's argv builder here would capture nothing."""
+    ws, db = env
+    chans = [ChannelSpec(platform="youtube", handle="@IShowSpeed", enabled=True)]
+    mon = make_monitor(ws, db, chans)
+    session = mon._build_chunker(chans[0])
+    assert "https://www.youtube.com/@IShowSpeed/live" in session.streamlink_args
+    assert "--hls-live-edge" in session.streamlink_args
+
+
+def test_youtube_channels_get_a_capture_thread(env):
+    """The pool is sized for broadcasts that hold a thread for hours; it
+    used to count only non-YouTube channels."""
+    import inspect
+
+    src = inspect.getsource(ChannelMonitor.run)
+    assert 'platform != "youtube"' not in src

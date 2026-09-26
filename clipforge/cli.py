@@ -17,8 +17,11 @@ from typer.models import ArgumentInfo, OptionInfo
 
 from clipforge.config import load_config
 from clipforge.dllpaths import ensure_nvidia_dll_dirs
+from clipforge import dedup, subdetect
 from clipforge.errors import ClipForgeError
+from clipforge.idle import idle_checkpoint
 from clipforge.log import setup_logging
+from clipforge import watchstatus
 from clipforge.paths import Workspace, discard_partials
 
 app = typer.Typer(name="bta", no_args_is_help=True,
@@ -48,16 +51,62 @@ def _cli_value(value: Any, fallback: Any) -> Any:
     return fallback if isinstance(value, (OptionInfo, ArgumentInfo)) else value
 
 
-def _pacing_enabled(jumpcut: Any, config_default: bool) -> bool:
+def _pacing_enabled(jumpcut: Any, config_default: bool,
+                    niche_default: bool | None = None) -> bool:
     """Whether jump-cut silence removal runs for this invocation.
 
     A function, not an inline expression, so the decision can be tested
     behaviourally. The inline form was pinned by a source-string
     assertion, which a mutant defeated by leaving the string in a
     comment — the ninth accidental pass in this project.
+
+    Precedence is explicit flag > niche > config, the same rule stated at
+    `enhance_speech`'s call site: a niche is a considered default, not an
+    override of what the operator typed on this specific run.
+
+    `niche_default` is new, and its absence was a hole of exactly the kind
+    this module keeps finding. `Niche.jumpcut` is documented on the
+    dataclass as "Jump-cut silence removal. Wrong for anything with
+    musical timing", and it reached nothing — this call read the config
+    and skipped the niche entirely. So selecting a niche applied its
+    captions, its grade and its speech cleanup while its PACING silently
+    stayed at whatever config said, which for `dark_mindset` means a
+    contemplative narration was one config flag away from having its
+    pauses cut out by the niche that exists to preserve them.
     """
     jumpcut = _cli_value(jumpcut, None)
-    return bool(config_default) if jumpcut is None else bool(jumpcut)
+    if jumpcut is not None:
+        return bool(jumpcut)
+    if niche_default is not None:
+        return bool(niche_default)
+    return bool(config_default)
+
+
+def _caption_margin_v(margin_v: Any, config_default: int,
+                      niche_default: int | None = None) -> int:
+    """Caption distance from the bottom edge, in pixels at the render height.
+
+    Precedence is the house rule: explicit flag > niche > config.
+
+    The niche half is not a nicety. `process` builds its caption params
+    from config and then updates them from the niche, so a selected niche
+    WINS over config by construction — correct, since a niche carries the
+    whole look, but it meant an operator who wanted a different caption
+    height had nowhere to say so. Editing config.toml did nothing while a
+    niche was selected, and the only remaining lever was editing the niche
+    in source, which changes it for every future render rather than for
+    this one.
+
+    The number matters more than most: it is the gap between the captions
+    and whatever the platform draws over the bottom of the frame, and on a
+    Shop video what sits there is the cart.
+    """
+    margin_v = _cli_value(margin_v, None)
+    if margin_v is not None:
+        return int(margin_v)
+    if niche_default is not None:
+        return int(niche_default)
+    return int(config_default)
 
 
 def _boot(config_path: Path, *, sweep_partials: bool = True) -> tuple:
@@ -189,16 +238,67 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
     # ingestion must never wait for the GPU: a live stream is not
     # replayable, and a four-minute render on the monitor's thread means
     # four minutes of stream lost for good.
-    def _clip_window(path: Path, abs_start_s: float) -> None:
-        # jumpcut=None explicitly: passing nothing would hand `process` a
-        # truthy Typer sentinel and force pacing on, overriding [pacing].
-        process(input_path=path, config=config_path,
-                abs_offset=abs_start_s, clips=cfg.orchestration.clips_per_window,
-                jumpcut=None)
+    def _clip_window(path: Path, abs_start_s: float,
+                     key: tuple | None = None) -> None:
+        # One broadcast = one dedup scope, so a highlight in the overlap
+        # between two windows is clipped once. A manual `bta process` sets
+        # no scope and is unaffected.
+        scope = None
+        if key is not None and key[0] == "segment":
+            scope = dedup.Scope(key=f"session:{key[1]}", db=db)
+        elif key is not None and key[0] == "video":
+            scope = dedup.Scope(key=f"video:{key[3]}", db=db)
+        token = dedup.set_scope(scope)
+        try:
+            # jumpcut=None explicitly: passing nothing would hand `process`
+            # a truthy Typer sentinel and force pacing on, overriding
+            # [pacing].
+            process(input_path=path, config=config_path,
+                    abs_offset=abs_start_s,
+                    clips=cfg.orchestration.clips_per_window,
+                    jumpcut=None)
+        finally:
+            dedup.reset_scope(token)
 
+    def _settled(key, outcome: str) -> None:
+        """Record in the DB that this source needs no more clipping.
+
+        The clip queue is memory. Holding windows until the machine is
+        idle is the whole design, and a four-hour gaming session leaves a
+        dozen waiting — so a reboot, a Ctrl+C or one of this box's
+        power-offs used to throw away every clip from that stream. The
+        queue is rebuilt from these rows at the next start.
+        """
+        try:
+            if key[0] == "segment":
+                db.set_segment_status(int(key[1]), int(key[2]), "processed")
+            elif key[0] == "video":
+                db.set_video_status(key[1], key[2], key[3], "processed")
+        except Exception as exc:  # noqa: BLE001 - bookkeeping never kills work
+            console.print(f"[yellow]could not record {key}: {exc}[/]")
+        if outcome != "processed":
+            console.print(f"  [yellow]{key[0]} settled as {outcome}[/]")
+
+    gate = preempt = None
+    if cfg.watch.clip_only_when_idle:
+        from clipforge.idle import IdleGate, PreemptCheck
+
+        gate = IdleGate(idle_after_s=cfg.watch.idle_after_s,
+                        gpu_busy_pct=cfg.watch.gpu_busy_pct,
+                        min_free_vram_gb=cfg.watch.min_free_vram_gb,
+                        cpu_busy_pct=cfg.watch.cpu_busy_pct,
+                        min_free_ram_gb=cfg.watch.min_free_ram_gb).reason_busy
+        # Starting needs a quiet machine; STOPPING needs only that the
+        # operator is back. Asymmetric on purpose: a job pauses the moment
+        # they touch the keyboard, and resumes only once they have been
+        # gone for idle_after_s again.
+        preempt = PreemptCheck(within_s=cfg.watch.preempt_within_s).reason_busy
     dispatcher = ClipDispatcher(
         handler=_clip_window,
-        maxsize=cfg.orchestration.queue_maxsize).start()
+        maxsize=cfg.orchestration.queue_maxsize,
+        gate=gate, preempt=preempt, on_settled=_settled,
+        gate_poll_s=cfg.watch.idle_poll_s).start()
+    retry_stop = _start_telegram_retry(cfg, ws)
     monitor = ChannelMonitor(cfg=cfg, db=db, ws=ws, watchlist=wl,
                              on_media=dispatcher.submit)
 
@@ -221,6 +321,66 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
     if stale:
         console.print(f"[yellow]{len(stale)} job(s) were left running by an "
                       "earlier crash; marked failed[/]")
+
+    # Windows that were recorded but never clipped — a reboot, a Ctrl+C,
+    # or a power-off while the queue waited for an idle machine — are
+    # still on disk and still 'ready' in the DB. Offer them again before
+    # the loop starts recording more.
+    import time as _time
+
+    requeued = 0
+    cutoff = _time.time() - cfg.disk.retention_hours * 3600
+    for row in db.segments_with_status("ready"):
+        seg_path = Path(row["path"])
+        try:
+            if not seg_path.is_file() or seg_path.stat().st_mtime < cutoff:
+                continue
+        except OSError:
+            continue
+        monitor.emit_recovered(seg_path, float(row["abs_start_s"] or 0.0),
+                               key=("segment", int(row["session_id"]),
+                                    int(row["seg_index"])))
+        requeued += 1
+    if requeued:
+        console.print(f"[yellow]re-queued {requeued} recorded window(s) that "
+                      "were never clipped[/]")
+
+    def _start_heartbeat(monitor_ref, dispatcher_ref) -> "threading.Event":
+        """Publish what the watcher is doing, every 15 s.
+
+        Unattended is the point of this command, so "is it recording?",
+        "why has nothing been clipped?" and "is it even alive?" must be
+        answerable without reading a JSONL log.
+        """
+        import threading
+
+        stop_hb = threading.Event()
+
+        def _loop() -> None:
+            while not stop_hb.is_set():
+                live = [h for (p, h), ev in monitor_ref._live_now.items()
+                        if ev.is_set()]
+                owed = 0
+                try:
+                    owed = len(list((Path(ws.root) / "outbox" / "telegram")
+                                    .glob("*.json")))
+                except OSError:
+                    pass
+                watchstatus.write(
+                    Path(ws.root),
+                    channels=len(wl.enabled_sorted()),
+                    live=live,
+                    queue_pending=dispatcher_ref.pending,
+                    gate=(gate() if gate is not None else None),
+                    telegram_outbox=owed,
+                    stats=dispatcher_ref.stats.snapshot())
+                stop_hb.wait(15.0)
+
+        threading.Thread(target=_loop, name="watch-heartbeat",
+                         daemon=True).start()
+        return stop_hb
+
+    heartbeat_stop = _start_heartbeat(monitor, dispatcher)
 
     async def _serve() -> None:
         # Install the handler INSIDE the loop: waiting for asyncio.run() to
@@ -258,6 +418,12 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
 
     console.print(f"[green]watching {len(wl.enabled_sorted())} channel(s); "
                   "Ctrl+C to stop (chunker finalizes tails on exit)[/]")
+    if gate is not None:
+        console.print(f"  clipping waits until the PC has been idle "
+                      f"{cfg.watch.idle_after_s:.0f}s, and pauses mid-job "
+                      f"when you come back; recording never waits")
+    if cfg.notify.telegram:
+        console.print("  accepted clips are sent to Telegram")
     try:
         asyncio.run(_serve())
     except KeyboardInterrupt:  # backstop if a signal slipped past the handler
@@ -267,6 +433,9 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
         # return the terminal, and every queued window is still a file on
         # disk that `bta process` can pick up.
         dispatcher.stop()
+        retry_stop.set()
+        heartbeat_stop.set()
+        watchstatus.clear(Path(ws.root))
         stats = dispatcher.stats.snapshot()
         if stats["submitted"] or stats["dropped"]:
             console.print(
@@ -275,6 +444,344 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
                 f"queued/abandoned[/]")
         console.print("[yellow]stopped - tails finalized, sessions closed[/]")
         db.close()
+
+
+def _start_telegram_retry(cfg, ws) -> "threading.Event":
+    """Retry queued Telegram deliveries on a timer for as long as watch runs.
+
+    Returns the event that stops it. A no-op thread-free event when
+    delivery is off, so the caller has one shape either way.
+    """
+    import threading
+
+    stop = threading.Event()
+    if not cfg.notify.telegram:
+        return stop
+
+    def _loop() -> None:
+        from clipforge import notify
+
+        while not stop.wait(cfg.notify.retry_interval_s):
+            try:
+                notify.flush_outbox(target=notify.target_from_config(cfg),
+                                    ws_root=Path(ws.root))
+            except Exception as exc:  # noqa: BLE001 - retry loop never dies
+                console.print(f"[yellow]telegram retry failed: {exc}[/]")
+
+    threading.Thread(target=_loop, name="telegram-retry", daemon=True).start()
+    return stop
+
+
+@app.command()
+def status(config: Path = CONFIG_OPT) -> None:
+    """Is `bta watch` running, and what is it doing?
+
+    Reads the heartbeat the watcher writes, so this answers honestly even
+    when the watcher is dead — the case where every other signal (no new
+    clips, a quiet phone) looks exactly like a slow day.
+    """
+    cfg, ws = _boot(config, sweep_partials=False)
+    state = watchstatus.read(Path(ws.root))
+    line = watchstatus.summarize(state)
+    console.print(f"[green]{line}[/]" if state.get("running")
+                  else f"[yellow]{line}[/]")
+    if state.get("running"):
+        stats = state.get("stats") or {}
+        if stats:
+            console.print(f"  clips: {stats.get('processed', 0)} rendered, "
+                          f"{stats.get('failed', 0)} failed, "
+                          f"{stats.get('dropped', 0)} not queued")
+    raise typer.Exit(0 if state.get("running") else 1)
+
+
+@app.command()
+def bot(config: Path = CONFIG_OPT,
+        once: bool = typer.Option(
+            False, "--once", help="Handle whatever is waiting, then exit")) -> None:
+    """Take orders from your own Telegram chat: /clip <url>, /status, /retry.
+
+    The same bot that delivers clips, listening. Only the chat clips are
+    delivered to is obeyed — a bot token is a password, and anyone who
+    finds one can message the bot.
+
+    Long-polling, so there is no port to open and nothing to expose.
+    """
+    from clipforge import botctl, notify, watchstatus
+
+    cfg, ws = _boot(config, sweep_partials=False)
+    target = notify.target_from_config(cfg)
+    if target is None:
+        console.print("[red]no Telegram credentials[/] - see `bta telegram`")
+        raise typer.Exit(1)
+    try:
+        who = notify.check(target)
+    except ValueError as exc:
+        console.print(f"[red]telegram not usable: {exc}[/]")
+        raise typer.Exit(1)
+
+    def _status() -> str:
+        return watchstatus.summarize(watchstatus.read(Path(ws.root)))
+
+    def _retry() -> str:
+        counts = notify.flush_outbox(target=target, ws_root=Path(ws.root))
+        return f"queue: {counts}" if counts else "nothing was waiting"
+
+    control = botctl.BotControl(
+        token=target.token, chat_id=target.chat_id, ws_root=Path(ws.root),
+        run_clip=lambda url: botctl.clip_a_url(url, config=config),
+        run_status=_status, run_retry=_retry)
+
+    console.print(f"[green]{who} is listening[/] for /clip, /status, /retry "
+                  f"from your chat only. Ctrl+C to stop.")
+    if once:
+        res = control._call("getUpdates", timeout=0, offset=0)
+        for update in (res.get("result") or []):
+            control.handle(update)
+        return
+    try:
+        control.run()
+    except KeyboardInterrupt:
+        control.stop()
+        console.print("[yellow]stopped listening[/]")
+
+
+@app.command()
+def brand(clip: str = typer.Argument(..., help="A clip in clips/ (name or path)"),
+          handle: str = typer.Option(
+              None, "--handle",
+              help="Your own handle, stamped in the corner of every frame"),
+          hook: str = typer.Option(
+              None, "--hook",
+              help="Opening card text. Default: the hook the editor wrote"),
+          hook_seconds: float = typer.Option(
+              2.0, "--hook-seconds", min=0.4, max=8.0),
+          hook_y: float = typer.Option(
+              0.11, "--hook-y", min=0.0, max=0.9,
+              help="Where the card's top sits, as a fraction of the frame. "
+                   "Raise it when the footage has its own text up there"),
+          config: Path = CONFIG_OPT,
+          send: bool = typer.Option(
+              False, "--send", help="Deliver the branded cut to Telegram")) -> None:
+    """Stamp a hook card and your handle onto a finished clip.
+
+    The post layer (`clipforge/socialpost.py`) was written for the
+    generation half, which is gone; it rasterises with Pillow rather than
+    ffmpeg's drawtext because drawtext renders colour emoji as monochrome
+    tofu and eats the punctuation in any text taken from a script. None of
+    that stopped being true for clips, and nothing called it.
+
+    Writes `<clip>.branded.mp4` beside the clip. The original is never
+    touched: QA measured THAT file, and a burned-in overlay is a taste
+    decision an operator should be able to undo by deleting one file.
+    """
+    from clipforge.socialpost import PostError, PostSpec, apply_post
+
+    cfg, ws = _boot(config, sweep_partials=False)
+    path = Path(clip)
+    if not path.is_file():
+        name, rejected = _resolve_clip_name(ws, path)
+        path = Path(ws.clips) / ("rejected" if rejected else "") / name
+
+    # The hook the editor already wrote for this clip, unless told another.
+    text = hook
+    if text is None:
+        try:
+            pack = _json_module().loads(
+                path.with_suffix(".export.json").read_text(encoding="utf-8"))
+            text = str(pack.get("hook") or pack.get("title") or "")
+        except (OSError, ValueError):
+            text = ""
+    if not (text or handle):
+        console.print("[red]nothing to stamp[/]: pass --handle, pass --hook, "
+                      "or run this on a clip whose export pack has one")
+        raise typer.Exit(2)
+
+    spec = PostSpec(hook=text or "", hook_seconds=hook_seconds,
+                    hook_y=hook_y, watermark=handle or "")
+    dest = path.with_suffix(".branded.mp4")
+    console.print(f"[green]stamping[/] {path.name}"
+                  + (f" · hook: {text[:60]!r}" if text else "")
+                  + (f" · handle: {handle}" if handle else ""))
+    try:
+        apply_post(path, dest, spec, work_dir=Path(ws.tmp) / "post")
+    except PostError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1)
+    console.print(f"[green]wrote[/] {dest}")
+
+    if send:
+        from clipforge import notify
+
+        outcome = notify.send_clip(dest, target=notify.target_from_config(cfg),
+                                   ws_root=Path(ws.root),
+                                   caption=notify.caption_for(path))
+        console.print(f"  telegram: {outcome}")
+
+
+def _json_module():
+    import json
+
+    return json
+
+
+@app.command()
+def telegram(clip: str = typer.Argument(
+                 None, help="A clip in clips/ to send now (name or path)"),
+             config: Path = CONFIG_OPT,
+             retry: bool = typer.Option(
+                 False, "--retry", help="Resend every queued delivery"),
+             again: bool = typer.Option(
+                 False, "--again", help="Send even if already delivered")) -> None:
+    """Check Telegram delivery, send a clip to the phone, or retry the queue.
+
+    With no arguments, only validates the bot token and chat id (getMe) and
+    sends nothing.
+    """
+    from clipforge import notify
+
+    # No partial sweep: `bta watch` may be running and own those files.
+    cfg, ws = _boot(config, sweep_partials=False)
+    target = notify.target_from_config(cfg)
+    try:
+        bot = notify.check(target)
+    except ValueError as exc:
+        console.print(f"[red]telegram not usable: {exc}[/]")
+        raise typer.Exit(1)
+    console.print(f"[green]bot {bot} ok[/] (credentials from {target.source}); "
+                  f"delivery is {'ON' if cfg.notify.telegram else 'OFF'} in "
+                  r"config \[notify]")
+    if retry:
+        counts = notify.flush_outbox(target=target, ws_root=Path(ws.root))
+        console.print(f"queue: {counts or 'empty'}")
+    if clip:
+        path = Path(clip)
+        if not path.is_file():
+            # A bare clip name is what the help text advertises, and
+            # _resolve_clip_name reads `.name` off what it is given.
+            name, rejected = _resolve_clip_name(ws, path)
+            path = Path(ws.clips) / ("rejected" if rejected else "") / name
+        outcome = notify.send_clip(path, target=target, ws_root=Path(ws.root),
+                                   again=again)
+        console.print(f"{path.name}: {outcome}")
+        if outcome not in ("sent", "already_sent"):
+            raise typer.Exit(1)
+
+
+@app.command()
+def autostart(action: str = typer.Argument(
+                  "status", help="install | remove | status"),
+              config: Path = CONFIG_OPT) -> None:
+    """Start `bta watch` automatically when you log in.
+
+    Without this, watching only happens while a terminal someone opened
+    stays up: after a reboot, a logoff or one of this machine's crashes,
+    the next broadcast is neither recorded nor clipped and nothing says so.
+
+    The task is deliberately "run only when you are logged on". A task
+    that runs whether or not you are logged on lives in session 0, where
+    the idle check reads a desktop nobody uses — it would report the
+    machine free while you were typing, and clip straight through your
+    games.
+    """
+    import subprocess
+
+    if sys.platform != "win32":
+        console.print("[red]autostart is Windows-only[/]")
+        raise typer.Exit(2)
+
+    name = "BTA clip watcher"
+    root = Path(__file__).resolve().parent.parent
+    runner = root / "tools" / "watch_forever.ps1"
+
+    def _ps(script: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=120)
+
+    if action == "status":
+        out = _ps(f"$t = Get-ScheduledTask -TaskName '{name}' "
+                  "-ErrorAction SilentlyContinue; if ($t) { "
+                  "$i = $t | Get-ScheduledTaskInfo; "
+                  "Write-Output \"$($t.State)|$($i.LastRunTime)|"
+                  "$($i.LastTaskResult)\" } else { Write-Output 'absent' }")
+        text = (out.stdout or "").strip()
+        if not text or text == "absent":
+            console.print("[yellow]not installed[/] - run `bta autostart "
+                          "install` to watch from every logon")
+            raise typer.Exit(1)
+        state, last_run, last_result = (text.split("|") + ["", ""])[:3]
+        console.print(f"[green]installed[/]: state={state}, "
+                      f"last run {last_run}, last result {last_result}")
+        return
+
+    if action == "remove":
+        _ps(f"Unregister-ScheduledTask -TaskName '{name}' -Confirm:$false")
+        console.print(f"[yellow]removed '{name}'[/]")
+        return
+
+    if action != "install":
+        console.print("[red]action must be install, remove or status[/]")
+        raise typer.Exit(2)
+
+    runner.parent.mkdir(parents=True, exist_ok=True)
+    runner.write_text(_WATCH_RUNNER.replace("__ROOT__", str(root)),
+                      encoding="utf-8")
+
+    script = f"""
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' \
+  -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{runner}"' \
+  -WorkingDirectory '{root}'
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries \
+  -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -ExecutionTimeLimit ([TimeSpan]::Zero) \
+  -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
+Register-ScheduledTask -TaskName '{name}' -Action $action -Trigger $trigger \
+  -Principal $principal -Settings $settings -Force | Out-Null
+Write-Output 'registered'
+"""
+    out = _ps(script)
+    if "registered" not in (out.stdout or ""):
+        console.print(f"[red]could not register the task[/]: "
+                      f"{(out.stderr or out.stdout or '').strip()[:400]}")
+        raise typer.Exit(1)
+    console.print(f"[green]installed '{name}'[/] - `bta watch` starts at "
+                  f"every logon and restarts if it exits")
+    console.print(f"  wrapper: {runner}")
+    console.print("  stop it now with: bta autostart remove")
+
+
+#: The wrapper the task actually runs. A loop, because the point is that
+#: watching survives: `bta watch` exiting (a crash, a bad config, another
+#: instance holding the workspace lock) must not end the watching for the
+#: rest of the day. The pause keeps a permanently-failing start from
+#: spinning, and the transcript is where to look when nothing arrives.
+_WATCH_RUNNER = """# Generated by `bta autostart install`. Safe to delete.
+Set-Location '__ROOT__'
+$bta = '__ROOT__\\.venv\\Scripts\\bta.exe'
+$log = Join-Path '__ROOT__' 'workspace\\logs\\watch_autostart.log'
+$botlog = Join-Path '__ROOT__' 'workspace\\logs\\bot_autostart.log'
+
+function Ensure-Bot {
+    # The phone's way in: /clip, /status, /retry. Its own process, so a
+    # crash in one is not a crash in the other, and restarted from here
+    # rather than by a second scheduled task nobody would remember.
+    $running = Get-CimInstance Win32_Process -Filter "Name='bta.exe'" |
+        Where-Object { $_.CommandLine -like '* bot*' }
+    if (-not $running) {
+        "$(Get-Date -Format s) starting bta bot" | Out-File -Append -Encoding utf8 $botlog
+        Start-Process -FilePath $bta -ArgumentList 'bot' -WindowStyle Hidden -WorkingDirectory '__ROOT__' -RedirectStandardOutput $botlog -RedirectStandardError "$botlog.err"
+    }
+}
+
+while ($true) {
+    Ensure-Bot
+    "$(Get-Date -Format s) starting bta watch" | Out-File -Append -Encoding utf8 $log
+    & $bta watch *>> $log
+    "$(Get-Date -Format s) bta watch exited with $LASTEXITCODE" | Out-File -Append -Encoding utf8 $log
+    Start-Sleep -Seconds 60
+}
+"""
 
 
 @app.command()
@@ -298,6 +805,13 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                 None, "--niche",
                 help="Apply a niche's caption style, pacing and grade "
                      "(see: bta niches)"),
+            margin_v: int = typer.Option(
+                None, "--margin-v", min=0,
+                help="Caption distance from the bottom edge in pixels, "
+                     "overriding the niche and the config for this run. "
+                     "At 1080x1920: 260 is the house band, 520 clears "
+                     "TikTok's product anchor, 540 adds the 20px cushion "
+                     "the manual-overlay safe box uses"),
             campath_file: Path = typer.Option(
                 None, "--campath-file",
                 help="Operator-authored camera keyframes (JSON). Overrides "
@@ -408,6 +922,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                       "(first run downloads models)[/]")
         s1 = S1Transcribe(
             db=db, artifacts_dir=ws.artifacts,
+            vram_budget_gb=cfg.s1.vram_budget_gb,
             hf_token=Secrets().hf_token or os.environ.get("HF_TOKEN"))
         s1_params = {
             "model": cfg.s1.model, "compute_type": cfg.s1.compute_type,
@@ -429,6 +944,12 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             s1_params["subtitles"] = _subs.to_params(_cues)
             console.print(f"  subtitles: {len(_cues)} caption(s) from "
                           f"{_sub_path.name} — skipping speech recognition")
+        # Stage boundaries double as pause points: in `bta watch` the
+        # operator coming back mid-job stops the pipeline here, where the
+        # previous stage has already unloaded (so pausing hands back the
+        # VRAM, not just the compute). Outside watch no checkpoint is
+        # installed and these are no-ops.
+        idle_checkpoint("s1_transcribe")
         transcript = s1.run(input_digest=source_digest, job_id=job_id,
                             params=s1_params, media_path=input_path)
         n_words = sum(len(s.words) for s in transcript.segments)
@@ -462,6 +983,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             s2_params["chat_curve"] = _curve.to_params()
             console.print(f"  chat signal: {len(_curve.bins)} active second(s), "
                           f"busiest {_curve.peak:.0f} msg/s")
+        idle_checkpoint("s2_candidates")
         cands = s2.run(input_digest=transcript.cache_key, job_id=job_id,
                        params=s2_params,
                        transcript=transcript)
@@ -470,7 +992,8 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
         from clipforge.stages.s3_5_editor import S3_5_EditorAgent
         from clipforge.stages.s4_tracking import S4Tracking
 
-        s3 = S3SemanticRanker(db, ws.artifacts)
+        s3 = S3SemanticRanker(db, ws.artifacts,
+                              vram_budget_gb=cfg.s3.vram_budget_gb)
         s3_params = {
             "use_cloud": cfg.s3.use_cloud,
             "cloud_model": cfg.s3.cloud_model,
@@ -483,9 +1006,15 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             "max_pixels": cfg.s3.max_pixels,
             "seed": cfg.s3.seed,
         }
+        idle_checkpoint("s3_semantic")
+        # abs_offset rides along as an INPUT, not a param: candidate times
+        # are absolute stream seconds and this file starts at 0. It is not
+        # in the cache key because it does not need to be — the key already
+        # depends on the S1 transcript, whose own params carry the offset.
         ranked = s3.run(input_digest=cands.cache_key, job_id=job_id,
                         params=s3_params,
-                        candidates_artifact=cands, video_path=input_path)
+                        candidates_artifact=cands, video_path=input_path,
+                        abs_offset_s=abs_offset)
         console.print(f"  {len(ranked.items)} candidates ranked (source={ranked.ranking_source})")
 
         from clipforge.stages.s5_subtitles import S5Subtitles
@@ -493,7 +1022,8 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
         from clipforge.stages.s7_qa import S7QualityGate
 
         s3_5 = S3_5_EditorAgent(db, ws.artifacts)
-        s4 = S4Tracking(db, ws.artifacts)
+        s4 = S4Tracking(db, ws.artifacts,
+                        vram_budget_gb=cfg.s4.vram_budget_gb)
         s5 = S5Subtitles(db, ws.artifacts)
         s6 = S6Render(db, ws.artifacts)
         s7 = S7QualityGate(db, ws.artifacts)
@@ -548,6 +1078,19 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             console.print(f"[green]niche:[/] {active_niche.label} — "
                           f"{active_niche.caption.animation} captions"
                           + (", graded" if active_niche.grade else ""))
+
+        # After the niche update, deliberately: the flag is the last word.
+        # Stated as an assignment rather than left to dict-update ordering,
+        # because "which of these two lines runs second" is not a place to
+        # keep a precedence rule.
+        s5_params["margin_v"] = _caption_margin_v(
+            margin_v, cfg.s5.margin_v,
+            niche_default=(active_niche.caption.margin_v
+                           if active_niche else None))
+        if _cli_value(margin_v, None) is not None:
+            console.print(f"[green]caption margin_v:[/] "
+                          f"{s5_params['margin_v']}px (overrides "
+                          f"{'niche' if active_niche else 'config'})")
         s6_params = {
             "width": cfg.s6.width, "height": cfg.s6.height,
             "encoder": cfg.s6.encoder, "nvenc_preset": cfg.s6.nvenc_preset,
@@ -611,6 +1154,17 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             snapped = min(candidates, key=lambda c: abs(c - t))
             return max(t - radius, min(t + radius, snapped))
 
+        # Does this footage already carry words? Asked once per source,
+        # before any clip is cut: the answer is a property of the footage,
+        # and the VL model is not cheap enough to ask per candidate.
+        idle_checkpoint("subtitle_check")
+        existing_subs = subdetect.detect(
+            input_path, duration_s=float(source_info.duration_s), cfg=cfg)
+        if existing_subs:
+            console.print(f"  [yellow]this footage is already captioned[/] "
+                          f"({existing_subs.detail}) - no captions of ours "
+                          "will be added")
+
         rendered = 0
         #: Paths of clips that PASSED QA. Automation reads these from the
         #: manifest instead of regexing them out of console output — rich
@@ -622,6 +1176,14 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             if not (0 <= idx < len(cands.candidates)):
                 continue
             cand = cands.candidates[idx]
+            # Adjacent windows share `overlap_s` of stream on purpose, so a
+            # highlight in that seam is a candidate in BOTH. Take the
+            # next-ranked one instead of shipping the same moment twice.
+            duplicate = dedup.already_shipped(cand.start, cand.end)
+            if duplicate is not None:
+                console.print(f"  [yellow]skipping a moment already clipped[/] "
+                              f"({Path(duplicate).name})")
+                continue
             win_start = _snap_edge(cand.start - abs_offset)
             win_end = _snap_edge(cand.end - abs_offset)
             cand_id = f"cand_{idx:03d}"
@@ -695,7 +1257,9 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                                   f"{cut_s:.1f}s of silence removed")
                 return out
 
-            pacing_on = _pacing_enabled(jumpcut, cfg.pacing.enabled)
+            niche_jumpcut = active_niche.jumpcut if active_niche else None
+            pacing_on = _pacing_enabled(jumpcut, cfg.pacing.enabled,
+                                        niche_default=niche_jumpcut)
             keeps = _keeps_for(win_start, win_end, pacing_on)
             console.print(f"[green]clip {pos}: window "
                           f"{win_start:.1f}-{win_end:.1f}s ({cand_id})[/]")
@@ -783,15 +1347,19 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                 # the output bytes, so it must be in the cache key);
                 # Case comes from [s5], which was measured off
                 # a competitor's shipped output, not from a profile.
-                subs = s5.run(input_digest=campath.cache_key, job_id=job_id,
-                              params={**s5_params,
-                                      "hook_text": editor_art.hook_text,
-                                      "keep_intervals": w_keeps,
-                                      "uppercase": cfg.s5.uppercase},
-                              transcript_artifact=transcript,
-                              campath_artifact=campath)
-                console.print(f"  {subs.line_count} subtitle events, "
-                              f"{subs.word_count} words")
+                subs = s5.run(
+                    input_digest=campath.cache_key, job_id=job_id,
+                    params=subdetect.caption_params(
+                        s5_params, existing=bool(existing_subs),
+                        hook_text=editor_art.hook_text,
+                        keep_intervals=w_keeps, uppercase=cfg.s5.uppercase),
+                    transcript_artifact=transcript,
+                    campath_artifact=campath)
+                if existing_subs:
+                    console.print("  captions skipped (already in the picture)")
+                else:
+                    console.print(f"  {subs.line_count} subtitle events, "
+                                  f"{subs.word_count} words")
 
                 clip = s6.run(input_digest=subs.cache_key, job_id=job_id,
                               params={**s6_params, **overrides,
@@ -828,6 +1396,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             attempt = 0
             repairs: list[str] = []
             while True:
+                idle_checkpoint("render" if not attempt else "repair")
                 clip, qa, editor_art = _attempt(cur_start, cur_end,
                                                 cur_keeps, overrides)
                 if qa.passed:
@@ -860,6 +1429,10 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             if qa.passed:
                 rendered += 1
                 shipped_clips.append(str(Path(clip.clip_path).resolve()))
+                # Absolute stream seconds: the next window's candidates are
+                # on the same timeline, and this file's own times are not.
+                dedup.record(cur_start + abs_offset, cur_end + abs_offset,
+                             str(Path(clip.clip_path).resolve()))
                 # Everything needed to post, written beside the clip. This
                 # is what exists INSTEAD of auto-publishing: the payload is
                 # assembled here where the transcript and title are still
@@ -880,12 +1453,34 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                                   if cur_start + abs_offset <= float(s.start or 0)
                                   < cur_end + abs_offset],
                         niche_keywords=(list(active_niche.keywords)
-                                        if active_niche else None))
+                                        if active_niche else None),
+                        # Already-captioned footage gets the plain thing:
+                        # a hook and a caption, no hashtag wall and no
+                        # chapter list to paste around.
+                        plain=bool(existing_subs),
+                        max_hashtags=cfg.editor.max_hashtags)
                     console.print("  export pack written "
                                   "(caption, tags, thumbnail, chapters)")
                 except Exception as exc:  # noqa: BLE001
                     console.print(f"  [yellow]export pack skipped: "
                                   f"{type(exc).__name__}: {exc}[/]")
+
+                if existing_subs and editor_art.hook_text:
+                    # The hook is the one thing the footage does NOT
+                    # already have. It goes on as an overlay beside the
+                    # clip, so the file S7 measured stays untouched.
+                    try:
+                        from clipforge.socialpost import PostSpec, apply_post
+
+                        branded = Path(clip.clip_path).with_suffix(".branded.mp4")
+                        apply_post(Path(clip.clip_path), branded,
+                                   PostSpec(hook=editor_art.hook_text,
+                                            hook_y=cfg.s5.hook_y),
+                                   work_dir=Path(ws.tmp) / "post")
+                        console.print(f"  hook card burned in: {branded.name}")
+                    except Exception as exc:  # noqa: BLE001
+                        console.print(f"  [yellow]hook overlay skipped: "
+                                      f"{type(exc).__name__}: {exc}[/]")
 
                 note = (f", {qa.warned_count} warning(s) recorded"
                         if qa.warned_count else "")
@@ -893,6 +1488,17 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                          f"{', '.join(repairs)}" if repairs else "")
                 console.print(f"  QA: [green]PASSED[/] "
                               f"({len(qa.checks)} checks{note}){fixed}")
+                if cfg.notify.telegram:
+                    # After the export pack, so the phone gets its title
+                    # and hashtags. send_clip never raises: delivery
+                    # failing is queued for retry, never a failed clip.
+                    from clipforge import notify
+
+                    outcome = notify.send_clip(
+                        Path(clip.clip_path),
+                        target=notify.target_from_config(cfg),
+                        ws_root=Path(ws.root))
+                    console.print(f"  telegram: {outcome}")
             else:
                 rejected_dir = ws.clips / "rejected"
                 rejected_dir.mkdir(parents=True, exist_ok=True)
@@ -1161,7 +1767,6 @@ def _js_runtime() -> str | None:
     return None
 
 
-@app.command()
 def _grab_ytdlp_cmd(url: str, dest_dir: "Path", runtime: str | None) -> list[str]:
     """The yt-dlp invocation `grab` runs. Extracted so its flags are
     testable without a network download.
@@ -1180,12 +1785,17 @@ def _grab_ytdlp_cmd(url: str, dest_dir: "Path", runtime: str | None) -> list[str
            "--write-subs", "--sub-langs", "live_chat",
            "-o", str(dest_dir / "%(title).60s.%(ext)s"),
            "--print", "after_move:filepath"]
+    # Exported cookies, if present, for sign-in-gated videos (ported from main).
+    cookie_jar = Path(__file__).resolve().parent.parent / "cookies.txt"
+    if cookie_jar.is_file():
+        cmd.extend(["--cookies", str(cookie_jar)])
     if runtime:
         cmd.extend(["--js-runtimes", runtime])
     cmd.append(url)
     return cmd
 
 
+@app.command()
 def grab(url: str = typer.Argument(..., help="Video URL (yt-dlp supported)"),
          config: Path = CONFIG_OPT,
          clips: int = typer.Option(3, "--clips", "-n", min=1)) -> None:
@@ -1507,6 +2117,26 @@ def post(
     auth_dir = ws.root / "auth"
     headless = not headed if headed else cfg.posting.headless
 
+    # [posting] carried six pins of the draft-only amendment that NOTHING
+    # read: a law enforced only by a field validator is a law about the
+    # config file, not about what the program does. They are consulted
+    # here, at the one place a post leaves this machine.
+    if cfg.posting.smart_scheduling:
+        console.print("[red]posting.smart_scheduling is on[/]: unattended "
+                      "scheduled publishing is what the human gate exists "
+                      "to prevent (VERIFICATION.md, 2026-07-27)")
+        raise typer.Exit(2)
+    if platform not in cfg.posting.enabled_platforms:
+        console.print(f"[red]{platform} is not in posting.enabled_platforms[/] "
+                      f"({', '.join(cfg.posting.enabled_platforms)})")
+        raise typer.Exit(2)
+    if yes and cfg.posting.require_approval:
+        console.print("[red]--yes cannot skip approval[/]: every clip is "
+                      "approved individually while posting.require_approval "
+                      "is true. Answer the prompt, or turn the pin off and "
+                      "write down why in VERIFICATION.md.")
+        raise typer.Exit(2)
+
     job = PostJob(
         job_id=f"job_{int(time.time())}",
         clip_path=str(clip_path),
@@ -1514,6 +2144,7 @@ def post(
         title=title,
         caption=caption,
         hashtags=["#Shorts", "#Viral", "#ClipForge"],
+        publish_mode=cfg.posting.publish_mode,
     )
 
     # Per-clip human approval — the third pin of the amendment. Approval is
@@ -1531,8 +2162,10 @@ def post(
         raise typer.Exit(1)
 
     console.print(f"[green]Preparing draft {job.job_id} for {platform}...[/]")
-    res = execute_post_job(job, auth_dir=auth_dir, headless=headless,
-                           approved=approved)
+    res = execute_post_job(
+        job, auth_dir=auth_dir, headless=headless,
+        timezone_offset_hours=cfg.posting.target_timezone_offset_hours,
+        approved=approved)
 
     if res.status == "draft_saved":
         console.print(f"[green]Draft saved on {platform}. Open the platform "

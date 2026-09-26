@@ -2,7 +2,12 @@
 
 Turns long video into render-ready 9:16 shorts, and turns text briefs into
 video, **entirely on your own machine**. No credits, no watermark, no
-uploads. Every model is open-source and runs locally.
+publishing. Every model is open-source and runs locally.
+
+One thing does leave the machine, and only if you turn it on: with
+`[notify] telegram = true`, each clip that passes QA is sent to **your own
+Telegram chat** so it is on your phone when you want to post it. Nothing is
+posted anywhere, and with the setting off (the default) nothing is sent.
 
 Built and verified on Windows 11 / RTX 3090 (24 GB).
 

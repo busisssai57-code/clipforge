@@ -238,18 +238,22 @@ class S1Transcribe(Stage[TranscriptArtifact]):
 
     name = "s1_transcribe"
     version = "1"
-    vram_budget_gb = 8.0
     wall_budget_s = 1800.0
     artifact_type = TranscriptArtifact
 
     db: Any = None
     artifacts_dir: Path = Path(".")
+    #: A FIELD, not a class attribute, so `[s1] vram_budget_gb` in
+    #: config.toml can reach it. It was documented as tunable while this
+    #: stage read its own hardcoded 8.0.
+    vram_budget_gb: float = 8.0
     engine_factory: Callable[[], S1Engine] = WhisperXEngine
     hf_token: str | None = None
     _last_unload_order: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        Stage.__init__(self, self.db, self.artifacts_dir)
+        Stage.__init__(self, self.db, self.artifacts_dir,
+                       vram_budget_gb=self.vram_budget_gb)
 
     # ------------------------------------------------------------------ run
 

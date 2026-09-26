@@ -58,6 +58,7 @@ _BANNER_RE = re.compile(r"\bS(\d)(?:\.\d)?:\s*(.+?)\s*$")
 #: Downloading is not a stage and can dominate a run, so it is tracked as
 #: its own phase rather than being folded into "before S1".
 _DOWNLOAD_RE = re.compile(r"\[download\]\s+(\d{1,3}(?:\.\d)?)%")
+_CANDIDATE_RE = re.compile(r"\bcandidate\s+(\d+)\s*/\s*(\d+)", re.I)
 
 
 @dataclass
@@ -107,6 +108,12 @@ class RunProgress:
         if shot:
             self.shot, self.shots_total = int(shot.group(1)), int(shot.group(2))
             self.label = f"Generating shot {self.shot} of {self.shots_total}"
+            return
+
+        cand = _CANDIDATE_RE.search(line)
+        if cand:
+            c_idx, c_total = int(cand.group(1)), int(cand.group(2))
+            self.label = f"Ranking candidate {c_idx} of {c_total} (multimodal VL)"
             return
 
         for pattern in (_STAGE_DONE_RE, _STAGE_HIT_RE):

@@ -605,6 +605,21 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.get("/api/watch/status")
+def watch_status() -> dict[str, Any]:
+    """What the unattended watcher is doing, for the phone dashboard.
+
+    Served from the heartbeat file rather than from this process, because
+    `bta web` and `bta watch` are separate programs: the API can be up
+    while the watcher is down, and saying so is the point.
+    """
+    from clipforge import watchstatus
+
+    state = watchstatus.read(Path(_workspace().root))
+    state["summary"] = watchstatus.summarize(state)
+    return state
+
+
 @app.get("/api/jobs")
 def list_jobs(limit: int = Query(20, ge=1, le=200)) -> list[dict[str, Any]]:
     """Recent pipeline jobs, newest first."""

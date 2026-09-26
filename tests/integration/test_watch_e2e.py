@@ -60,7 +60,7 @@ async def test_watch_produces_windows_end_to_end(tmp_path: Path):
 
     mon = ChannelMonitor(cfg=cfg, db=db, ws=ws,
                          watchlist=Watchlist(channels=chans),
-                         on_media=lambda p, t: media.append((p, t)),
+                         on_media=lambda p, t, key=None: media.append((p, t)),
                          twitch_is_live=lambda h, **kw: True,
                          make_chunker=make_chunker)
     try:

@@ -70,6 +70,69 @@ def test_an_explicit_flag_beats_the_config_in_both_directions():
     assert cli._pacing_enabled(None, config_default=False) is False
 
 
+def test_a_niche_sets_the_pacing_the_config_would_have_set():
+    """`Niche.jumpcut` is documented on the dataclass and reached nothing.
+
+    Selecting a niche applied its captions, its grade and its speech
+    cleanup while its PACING stayed at whatever config said — so
+    dark_mindset, whose whole point is that the pauses are the piece, was
+    one config flag away from having them cut out.
+    """
+    assert cli._pacing_enabled(None, False, niche_default=True) is True
+    assert cli._pacing_enabled(None, True, niche_default=False) is False
+
+
+def test_an_explicit_flag_still_beats_the_niche():
+    """Precedence is flag > niche > config: a niche is a considered
+    default, not an override of what the operator typed on this run."""
+    assert cli._pacing_enabled(True, False, niche_default=False) is True
+    assert cli._pacing_enabled(False, True, niche_default=True) is False
+
+
+def test_without_a_niche_the_config_still_decides():
+    sentinel = inspect.signature(cli.process).parameters["jumpcut"].default
+    assert cli._pacing_enabled(sentinel, True, niche_default=None) is True
+    assert cli._pacing_enabled(sentinel, False, niche_default=None) is False
+
+
+def test_process_passes_the_selected_niche_into_the_pacing_decision():
+    """The fix is only real if the call site actually hands the niche over."""
+    src = inspect.getsource(cli.process)
+    assert "niche_default=niche_jumpcut" in src
+    assert "active_niche.jumpcut" in src
+
+
+def test_caption_margin_follows_flag_then_niche_then_config():
+    """A selected niche wins over config by construction — s5_params is
+    built from config and then updated from the niche — so before the flag
+    existed there was no way to move the captions for one run. Editing
+    config.toml did nothing while a niche was selected."""
+    assert cli._caption_margin_v(540, 260, niche_default=520) == 540
+    assert cli._caption_margin_v(None, 260, niche_default=520) == 520
+    assert cli._caption_margin_v(None, 260, niche_default=None) == 260
+
+
+def test_a_leaked_sentinel_never_reads_as_a_caption_height():
+    """`grab` and `agent` call `process` as a function, so the omitted
+    option arrives as a truthy OptionInfo. int() on that would raise; the
+    old ternary shape would have taken it as a deliberate choice."""
+    sentinel = inspect.signature(cli.process).parameters["margin_v"].default
+    assert cli._caption_margin_v(sentinel, 260, niche_default=520) == 520
+    assert cli._caption_margin_v(sentinel, 260) == 260
+
+
+def test_zero_is_a_real_margin_not_an_absent_one():
+    """0 pins captions to the bottom edge. It is falsy, so any truthiness
+    check here would silently substitute the niche's value instead."""
+    assert cli._caption_margin_v(0, 260, niche_default=520) == 0
+
+
+def test_process_exposes_the_caption_margin_flag():
+    param = inspect.signature(cli.process).parameters["margin_v"]
+    assert "--margin-v" in param.default.param_decls
+    assert param.default.min == 0, "a negative margin pushes text off-frame"
+
+
 def test_process_uses_the_shared_pacing_decision():
     """Guard against the decision being re-inlined somewhere else."""
     src = inspect.getsource(cli.process)

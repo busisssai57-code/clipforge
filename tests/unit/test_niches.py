@@ -60,6 +60,67 @@ def test_dark_mindset_forbids_the_things_that_break_it():
         assert banned in avoid, f"{banned!r} must be in the negative prompt"
 
 
+# ------------------------------------------------------- tiktok shop ugc
+
+def test_shop_captions_clear_the_product_anchor():
+    """The one element of a shop video that must never be covered is the
+    cart, and the house 260 band lands captions on top of it.
+
+    At 1080x1920 the platform's furniture — handle, caption, music ticker,
+    and on a Shop video the orange cart pill — owns everything below
+    y=1400. margin_v is measured up from the bottom, so clearing it means
+    at least 1920-1400."""
+    c = get_niche("tiktok_shop_ugc").caption
+    assert c.alignment == 2, "shop captions sit in the bottom third"
+    assert c.margin_v >= 520, (
+        f"margin_v {c.margin_v} puts captions under the product anchor")
+    assert c.margin_v > get_niche("viral_clips").caption.margin_v, (
+        "the whole point is that the house band is too low for Shop")
+
+
+def test_shop_captions_are_three_word_karaoke_in_tiktok_yellow():
+    c = get_niche("tiktok_shop_ugc").caption
+    assert c.animation == "pop" and c.uppercase is True
+    assert c.max_words == 3, "three words, competing with the cart for space"
+    assert c.primary == "&H0000E8FF", "the active word pops in TikTok yellow"
+    assert c.secondary == "&H00FFFFFF", "the rest of the line stays white"
+    assert c.shadow > 0 and c.outline > 0, (
+        "text over a bright bathroom needs both to stay legible")
+
+
+def test_shop_pacing_cuts_silence_unlike_the_contemplative_niches():
+    """Fast cuts are the e-commerce retention lever, and here the dead air
+    between sentences is a scroll. The opposite of dark_mindset, where the
+    pauses are the piece."""
+    n = get_niche("tiktok_shop_ugc")
+    assert n.jumpcut is True
+    assert get_niche("dark_mindset").jumpcut is False
+    assert n.shot_seconds < get_niche("cinematic_doc").shot_seconds
+    assert n.shot_seconds > get_niche("geel_sketch").shot_seconds, (
+        "2.5s lets a physical demo complete; 1.9s is comic timing")
+
+
+def test_shop_niche_protects_the_label_and_the_face():
+    """The two things a shop video cannot afford to get wrong."""
+    n = get_niche("tiktok_shop_ugc")
+    for banned in ("warped label text", "deformed hands", "plastic skin",
+                   "identity drift"):
+        assert banned in n.gen_avoid, f"{banned!r} must be in the negative"
+    assert "photorealistic" in n.gen_style, (
+        "README routes photoreal human-subject work to Wan on this word")
+    assert n.continuity is True, "unchained shots return a different creator"
+    assert n.stickers is False, "emoji on a product claim reads as parody"
+
+
+def test_the_shop_grade_is_gentler_than_the_loud_niches():
+    """ARI_GOAT's note records what a saturated grade does to a face that
+    fills the frame. This niche is a face at arm's length for 27 of its 30
+    seconds."""
+    n = get_niche("tiktok_shop_ugc")
+    assert "saturation=1.06" in n.grade
+    assert "unsharp" in n.grade, "the label has to survive the transcode"
+
+
 def test_the_house_style_is_still_available_and_distinct():
     """Adding a niche must not quietly redefine the existing look."""
     viral = get_niche("viral_clips").caption
@@ -114,6 +175,42 @@ def test_s5_params_carry_the_caption_identity(name):
     assert p["uppercase"] == n.caption.uppercase
     assert p["font_size"] == n.caption.size
     assert p["alignment"] == n.caption.alignment
+
+
+@pytest.mark.parametrize("name", sorted(NICHES))
+def test_line_length_reaches_the_key_s5_actually_reads(name):
+    """S5 reads `max_words_per_line`; this emitted `max_words`.
+
+    `process` builds s5_params from config and then `.update()`s this dict
+    over the top, so the niche's line length was not merely dropped — it
+    was shadowed by cfg.s5.max_words_per_line for every render ever made.
+    dark_mindset's 7-word lines and geel_sketch's 5 never reached libass.
+    A niche that silently captions at the house line length still produces
+    a valid video, which is why nothing caught it."""
+    n = get_niche(name)
+    p = niche_s5_params(n)
+    assert p["max_words_per_line"] == n.caption.max_words
+
+
+def test_a_two_colour_niche_keeps_its_base_colour():
+    """S5 takes highlight_color and base_color separately; this fed
+    `primary` to both, so a niche could only ever be monochrome. The
+    karaoke look this platform uses is a white line with the active word
+    popping in colour."""
+    p = niche_s5_params(get_niche("tiktok_shop_ugc"))
+    assert p["highlight_color"] == "&H0000E8FF"
+    assert p["base_color"] == "&H00FFFFFF"
+    assert p["highlight_color"] != p["base_color"]
+
+
+@pytest.mark.parametrize("name", sorted(NICHES))
+def test_a_single_colour_niche_is_unchanged_by_the_base_colour_field(name):
+    """Adding `secondary` must not restyle the niches written before it."""
+    n = get_niche(name)
+    if n.caption.secondary is not None:
+        pytest.skip("two-colour niche")
+    p = niche_s5_params(n)
+    assert p["base_color"] == n.caption.primary
 
 
 def test_caption_colours_are_ass_bgr_literals():

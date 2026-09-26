@@ -49,6 +49,11 @@ class IngestConfig(_StrictModel):
     twitch_disable_ads: bool = True
     kick_enabled: bool = Field(False, description="T4: Kick is best-effort, off by default")
     quality: str = Field("best", description="streamlink stream quality selector")
+    #: The VOD backlog is a different product from live capture: it clips
+    #: uploads the operator may never have asked for, and on a watched
+    #: channel it is usually the live broadcast that matters.
+    youtube_vods: bool = Field(
+        True, description="Also clip a YouTube channel's published VODs")
 
 
 class DiskConfig(_StrictModel):
@@ -137,6 +142,19 @@ class PacingConfig(_StrictModel):
 
 
 class S5Config(_StrictModel):
+    #: Footage that already carries words gets none of ours on top: two
+    #: sets of captions fighting over one frame is what a shipped clip of
+    #: this project looked like. Off turns the check off, not the
+    #: captions.
+    detect_existing: bool = Field(
+        True, description="Skip our captions when the footage already has "
+                          "words burned in (asks the local VL model)")
+    #: Where the burned-in hook card's top sits, as a fraction of the
+    #: frame. Measured: at 0.11 it landed on a real clip's own caption.
+    hook_y: float = Field(
+        0.30, ge=0.0, le=0.9,
+        description="Hook card position when the footage is already "
+                    "captioned (fraction of frame height)")
     font: str = "Arial Black"
     font_size: int = Field(72, gt=0)
     highlight_color: str = Field("&H0000FFFF", description="ASS BGR — yellow active word")
@@ -206,7 +224,6 @@ class S7Config(_StrictModel):
 
 class EditorConfig(_StrictModel):
     style_profile: str = Field("viral_fast", description="Editor agent profile: viral_fast, educational, conversational")
-    min_hook_score: float = Field(0.5, ge=0.0, le=1.0, description="Minimum hook confidence threshold")
     max_hashtags: int = Field(5, ge=1, le=20, description="Max hashtags per post")
 
 
@@ -246,8 +263,11 @@ class PostingConfig(_StrictModel):
                           "before any browser automation runs.")
     target_timezone_offset_hours: float = Field(-5.0, description="Target audience timezone offset (e.g. -5.0 for EST)")
     headless: bool = Field(True, description="Run browser automation headless")
-    delay_min_s: float = Field(1.0, ge=0.1)
-    delay_max_s: float = Field(3.0, ge=0.2)
+    # delay_min_s / delay_max_s were here and were read by nothing: each
+    # automator picks its own pacing per action (`human_delay(2.0, 4.0)`
+    # while a page settles, `(1.0, 1.5)` between keystrokes), which a
+    # single global pair cannot express. A knob that cannot change the
+    # behaviour it names is worse than no knob.
 
     @field_validator("smart_scheduling")
     @classmethod
@@ -275,7 +295,9 @@ class PostingConfig(_StrictModel):
 class OrchestrationConfig(_StrictModel):
     ingest_concurrency: int = Field(4, ge=1)
     gpu_concurrency: int = Field(1, ge=1, le=1, description="LAW: exactly 1 (spec §6)")
-    render_concurrency: int = Field(2, ge=1, le=3, description="NVENC session cap on consumer drivers")
+    # render_concurrency was here, unread: renders are serialised behind
+    # the one-GPU-stage law, so a second one never starts. It said the
+    # opposite.
     #: Bounded ⇒ backpressure. Read by the watch→DAG dispatcher: when it is
     #: full, the window is dropped from the CLIP queue (loudly) and
     #: ingestion continues. The media is still on disk; unrecorded stream
@@ -287,6 +309,58 @@ class OrchestrationConfig(_StrictModel):
     clips_per_window: int = Field(
         1, ge=1, le=10,
         description="Clips per ingested window in watch mode")
+
+
+class WatchConfig(_StrictModel):
+    """`bta watch`: when the GPU half of the loop is allowed to run.
+
+    Recording is never gated — a live stream cannot be replayed. Clipping
+    is, because it saturates the one GPU the operator is also using.
+    """
+
+    clip_only_when_idle: bool = Field(
+        True, description="Hold rendered-clip work until the machine is idle")
+    idle_after_s: float = Field(
+        300.0, ge=0, description="Keyboard/mouse quiet this long = idle")
+    gpu_busy_pct: int = Field(
+        40, ge=1, le=100,
+        description="Another process using this much GPU = not idle")
+    idle_poll_s: float = Field(
+        30.0, gt=0, description="Re-check cadence while waiting for idle")
+    #: Asymmetric with idle_after_s on purpose: a running job yields as
+    #: soon as the operator touches anything, and only resumes once they
+    #: have been away for the full idle window again.
+    preempt_within_s: float = Field(
+        60.0, gt=0,
+        description="Input this recent pauses a job already running")
+    min_free_vram_gb: float = Field(
+        8.0, ge=0,
+        description="Another process holding the GPU's memory = not idle")
+    cpu_busy_pct: float = Field(
+        35.0, gt=0, le=100,
+        description="CPU used by OTHER programs (AI jobs, compiles, a "
+                    "game's simulation) that counts as busy")
+    min_free_ram_gb: float = Field(
+        4.0, ge=0, description="Below this much free RAM, wait")
+
+
+class NotifyConfig(_StrictModel):
+    """Private delivery of each accepted clip to the operator's own phone.
+
+    This is NOT publishing: the clip goes to one Telegram chat, the
+    operator's, and nothing is posted anywhere. The credential lives in
+    ``.env`` (CLIPFORGE_TELEGRAM_BOT_TOKEN / CLIPFORGE_TELEGRAM_CHAT_ID) or,
+    when those are absent, is READ from the OpenClaw gateway's config
+    rather than copied, so a rotated bot token is picked up here too.
+    """
+
+    telegram: bool = Field(
+        False, description="Send every clip that passes QA to Telegram")
+    openclaw_config: Path = Field(
+        Path("~/.openclaw/openclaw.json"),
+        description="Fallback source for the bot token and chat id")
+    retry_interval_s: float = Field(
+        600.0, gt=0, description="`bta watch` retries failed sends this often")
 
 
 class AppConfig(_StrictModel):
@@ -306,6 +380,8 @@ class AppConfig(_StrictModel):
     pacing: PacingConfig = PacingConfig()
     posting: PostingConfig = PostingConfig()
     orchestration: OrchestrationConfig = OrchestrationConfig()
+    watch: WatchConfig = WatchConfig()
+    notify: NotifyConfig = NotifyConfig()
 
 
     @field_validator("s2")
@@ -336,6 +412,12 @@ class Secrets(BaseSettings):
         None, description="Anthropic key for the primary VL judge")
     openai_api_key: str | None = Field(
         None, description="OpenAI key for the second VL judge")
+    #: Private clip delivery (see NotifyConfig). Both optional: when absent,
+    #: clipforge.notify reads them from the OpenClaw gateway config.
+    telegram_bot_token: str | None = Field(
+        None, description="Telegram bot token for clip delivery")
+    telegram_chat_id: str | None = Field(
+        None, description="The operator's Telegram chat id")
 
 
 # --------------------------------------------------------------------------

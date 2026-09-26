@@ -64,6 +64,7 @@ def _with_token(monkeypatch):
 def test_hf_token_missing_fails_with_both_urls(monkeypatch):
     monkeypatch.delenv("CLIPFORGE_HF_TOKEN", raising=False)
     monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr(preflight, "Secrets", lambda: type("Secrets", (), {"hf_token": None})())
     r = preflight.check_hf_token(probe=lambda repo, token: True)
     assert not r.ok
     for repo in preflight.PYANNOTE_GATED_REPOS:

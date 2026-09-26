@@ -4059,3 +4059,268 @@ prompt change, and it wants its own round.
 
 **clipforge: pytest 1397 passed, 5 skipped; `bta verify all` exit 0.**
 **ari_channel: 93 passed.**
+
+---
+
+## Amendment — clips may be delivered to the operator's own phone (2026-09-22)
+
+§3.5 and §10 say this pipeline produces files and stops. That still holds
+for PUBLISHING: nothing here posts to a platform, and the draft-only gate
+(`PostingConfig`) is untouched. This amendment allows ONE outbound path,
+off by default and pointed at a single chat:
+
+* `[notify] telegram = true` sends each clip that passes S7 to the
+  operator's own Telegram chat — private delivery, so the clip is on the
+  phone they will post it from.
+* The credential is read, not copied: `CLIPFORGE_TELEGRAM_BOT_TOKEN` /
+  `CLIPFORGE_TELEGRAM_CHAT_ID` from `.env`, else the OpenClaw gateway's
+  own config. A rotated bot token is picked up here with no second edit.
+* The chat id is resolved from the gateway's DM allow-list only when it
+  names exactly one person; two candidates is an error, not a guess.
+* A failed send is queued under `workspace/outbox/telegram/` and retried;
+  a delivered clip is marked by a `<clip>.telegram.json` sidecar so the
+  same clip never arrives twice.
+
+Measured on 2026-09-17: a 26 MB clip uploads in 57 s, and a blocked bot is
+detected in 2 s by a chat-action probe before any upload starts.
+
+## Watcher round (2026-09-22)
+
+**What `bta watch` did before this round:** recorded YouTube channels only
+after a broadcast had become a VOD, clipped whenever a window arrived
+regardless of who was using the machine, and lost the queue on restart.
+
+**Fixed, each with tests that fail against the old behaviour:**
+
+* **S3 ranked the wrong frames (blocker).** Candidate times are absolute
+  stream seconds; a window file starts at 0. Every window after the first
+  failed with "no frames could be read", so a broadcast could only produce
+  clips from its first 15 minutes. S3 now converts to window-relative
+  time (`_local`), on both the local and the cloud ranking paths.
+* **YouTube live is captured live.** The monitor probes `is_live` and
+  runs a ChunkerSession, instead of waiting for the VOD.
+* **The VOD backlog no longer blocks the live probe.** It runs as its own
+  task, stands aside while the channel is live, and stops an in-flight
+  download when a broadcast starts.
+* **Clipping waits for an idle machine, and yields when the operator
+  returns.** The gate was only a starting condition, and a window is 6-33
+  minutes of GPU (measured from `stage_runs`). Stage boundaries are now
+  pause points, taken where the previous stage has unloaded, so a pause
+  hands back the VRAM and not just the compute.
+* **The idle check stopped lying.** Fullscreen video and presentation
+  mode, GPU decoder load, free VRAM, and a session check — a task running
+  in session 0 reads a desktop nobody uses and would have reported the
+  machine free while the operator typed. That case now fails closed.
+* **The backlog survives a restart.** Windows settle as `processed` in
+  the DB and unclipped `ready` segments are re-queued at the next start.
+* **Delivery is crash-safe.** The outbox entry is written before the
+  upload, and each clip is claimed with an OS lock so `bta telegram
+  --retry` and the watch timer cannot both upload it.
+* **`bta autostart install`** registers a logon task (interactive session,
+  no time limit, restarts if it exits) so watching survives a reboot.
+
+**Gate:** pytest and `clipforge verify all`, both recorded below.
+
+
+## Watcher round 2 — finishing it (2026-09-26)
+
+Built on the same audit. Everything here is proven by a mutant: the
+behaviour was broken on purpose and the named test failed (14/14 killed,
+0 survivors).
+
+* **One moment, one clip.** Windows overlap by `overlap_s` on purpose
+  (T1), so a highlight in the seam was a candidate in two windows and
+  reached the phone twice with two different names. Accepted clips now
+  record their absolute span against the broadcast (`shipped_spans`), and
+  the next window takes its next-ranked candidate instead. Scoped per
+  broadcast, and `bta process` on a local file sets no scope at all.
+* **What lands on the phone.** width/height/duration so a 9:16 clip is
+  not letterboxed, the clip's own thumbnail (S6 already writes it), and
+  the title instead of a 64-character content hash.
+* **Private delivery, enforced.** A negative chat id is a group or a
+  channel — an audience — and is refused where it is resolved, not left
+  to a config review.
+* **The watcher can be seen.** It publishes a heartbeat every 15 s;
+  `bta status` and `GET /api/watch/status` read it, and the dashboard's
+  home pane carries a tile. A dead watcher and a quiet day used to look
+  identical from outside. `bta status` exits non-zero when it is not
+  running, so a scheduled check can notice.
+
+**Gate:** pytest 1335 passed / 5 skipped; `clipforge verify all` PASSED.
+Verified live, not just in tests: the heartbeat was read off a running
+`bta watch` ("watching 1 channel(s) | none live | clipping held: operator
+active | 4 clip(s) owed to the phone"), and the dashboard tile was
+rendered in a browser against the real API.
+
+**Open:** the operator has blocked @myopenclaw2026_bot, so 4 clips sit in
+the outbox; they deliver themselves once it is unblocked. `bta autostart
+install` is written and tested but NOT installed — that is the operator's
+call.
+
+
+## The post layer, wired (2026-09-26)
+
+A caller audit over all 79 package modules (import graph, package
+imports only, tests excluded) found exactly one orphan that was not an
+entry point: `socialpost.py` — 18 KB, tested, imported by four test files
+and by nothing in the product. It was written for the generation half and
+outlived it. The fifth finished-but-uncalled module this ledger has
+recorded.
+
+Wired rather than deleted, because what it does is not specific to
+generated shots: a hook card on the opening, the operator's own handle in
+the corner, colour emoji stamped with Pillow (ffmpeg's drawtext renders
+CBDT/COLR glyphs as monochrome tofu and eats the punctuation in any text
+taken from a script).
+
+`bta brand <clip> [--handle @you] [--hook "..."] [--hook-y 0.30] [--send]`
+writes `<clip>.branded.mp4` beside the clip. The original is never
+touched: S7 measured THAT file, and burned-in text is a taste decision
+the operator should undo by deleting one file.
+
+**Found by looking at the output, not the code:** on a real clip the hook
+card landed exactly on the footage's own burned-in caption and both
+became unreadable. The 0.11 default was chosen against generated
+sequences, which carry nothing else in frame. `hook_y` is now a field on
+PostSpec and a flag on the command; the default is unchanged, so nothing
+that relied on it moved.
+
+**Gate:** pytest 1344 passed / 5 skipped; `clipforge verify all` PASSED.
+**Teeth:** 17 mutants across this round and the two before it — including
+the hook knob being ignored, branding overwriting the original, and
+`--send` delivering the unbranded cut — 17 killed, 0 survivors.
+
+
+## Dead knobs (2026-09-26)
+
+A sweep over every field in every `[section]` of config.toml, asking one
+question: does anything read it? Sixteen looked dead; ten were real.
+
+**Wired, because they mean something:**
+
+* `[s1] [s3] [s4] vram_budget_gb` — documented in config.example.toml as
+  tunable while each stage read its own hardcoded number (8.0, 10.0,
+  3.0). The same shape as `quantize` and the hardcoded x264 preset this
+  ledger already records. Now an explicit override reaching GPULock;
+  omit it and the measured default stands.
+* `[editor] max_hashtags` — the pack always built up to eight.
+* `[posting] enabled_platforms, require_approval, smart_scheduling,
+  publish_mode, target_timezone_offset_hours` — six pins of the
+  2026-07-27 draft-only amendment, enforced by two field validators and
+  read by `bta post` NOWHERE. A law enforced only by a validator is a law
+  about the config file, not about the program. `--yes` could skip the
+  per-clip approval the amendment's third pin requires; it now cannot
+  while `require_approval` is true.
+
+**Deleted, because they promised control they did not have:**
+
+* `[posting] delay_min_s / delay_max_s` — every automator picks its own
+  pacing per action (2-4 s while a page settles, 1-1.5 s between
+  keystrokes), which one global pair cannot express.
+* `[editor] min_hook_score` — no threshold to apply it to.
+* `[orchestration] render_concurrency` — renders serialise behind the
+  one-GPU-stage law, so a second never starts. The knob said otherwise.
+
+The sweep is now a test (`test_no_knob_in_the_config_reaches_nothing`),
+with an allow-list of the five knobs read indirectly through the §2
+chokepoint, each naming its reader. A mutant that adds an unread knob to
+the model fails it.
+
+**Gate:** pytest 1356 passed / 5 skipped; `clipforge verify all` PASSED.
+**Teeth:** 9 further mutants (the budget override, process passing it,
+the hashtag cap, `--yes`, the platform list, scheduled publishing, the
+timezone, and the sweep going blind) — all killed.
+
+
+## Heavy work that is not the operator (2026-09-26)
+
+The gate watched for the operator and for the GPU. It was blind to a
+training run on the CPU, a compile, a local model loading, or a game's
+simulation thread — anything heavy that does not move the mouse.
+
+* `system_load()` reports CPU used by everything EXCEPT this process
+  tree, and free RAM. The subtraction matters: a checkpoint runs while
+  the previous stage is still winding down, and a gate that counted our
+  own tail would never open again.
+* Per-process VRAM cannot be attributed on Windows (nvidia-smi reports
+  "[N/A]" under WDDM), so total free VRAM stands in for "someone else is
+  holding the card" — in the gate at 8 GB, and in the mid-job check at
+  4 GB, where GPU *utilisation* is deliberately ignored because the card
+  may still be settling from our own last stage.
+* A job already running now yields to heavy work too, not only to the
+  operator returning: a game launched by remote play, or a scheduled
+  training run, takes the machine the same way.
+
+Knobs: `[watch] cpu_busy_pct = 35`, `min_free_ram_gb = 4`.
+
+**Measured, not assumed:** eight external CPU burners read as 80.6% with
+our own tree excluded and the gate closed ("something else is using the
+CPU (77%)"); they exited and it opened.
+
+**The full suite caught a flaw in my own tests:** two idle tests built a
+gate without injecting a load probe, so they read the real machine and
+failed as soon as `bta watch` was installed and running. Every probe is
+injected now.
+
+**Gate:** pytest 1368 passed / 5 skipped; `clipforge verify all` PASSED.
+**Teeth:** 9 mutants on this change (each threshold ignored, our own load
+counted as someone else's, the clamp removed, watch dropping each knob) —
+all killed, after two survived a first pass and the tests were fixed.
+
+
+## Captioned footage, and the phone as a remote (2026-09-26)
+
+**Two sets of words stop fighting.** A great deal of short-form video
+arrives with its captions already burned in — a shipped clip of this
+project showed exactly what that costs: the source's own caption at the
+top of frame, our hook card landing on it, neither readable.
+`clipforge/subdetect.py` asks the cheapest question first (a subtitle
+TRACK, via ffprobe, in milliseconds) and then the only one that can see
+burned-in words: the local Qwen VL weights S3 already ranks with, three
+frames, one question, under the same one-VL lease. Unsure means NO, on
+purpose — a clip that needed captions and got none is silent for a viewer
+on mute, which is worse than a captioned clip keeping its own.
+
+When the footage is already captioned the clip gets: no karaoke, a hook
+card burned on as an overlay beside the QA'd file, and a plain export
+pack — caption and title, no hashtag wall, no chapters. Knobs:
+`[s5] detect_existing`, `[s5] hook_y` (0.30, because 0.11 was measured
+landing on a real clip's own text).
+
+**The phone can drive it.** `bta bot` is the listening half of the
+delivery bot: `/clip <url>`, `/status`, `/retry`, `/help`. The
+authorisation IS the feature — a bot token is a password, and this
+process spends GPU hours and reaches the network:
+
+* one chat, the operator's own, resolved exactly as delivery resolves it;
+  any other chat id is logged and dropped with no reply at all;
+* a fixed verb list, each mapped to one function, nothing interpolated
+  into a command line, no verb that runs an arbitrary subcommand;
+* one job at a time — a queue on a phone is a way to start six hours of
+  work by tapping six times;
+* the token is redacted out of anything the bot says back.
+
+The autostart wrapper now keeps both alive: `bta watch` in its loop and
+`bta bot` beside it, restarted if it dies.
+
+**Verified live, not only in tests:** a real `/status` answered onto the
+operator's phone, and a stranger's chat id produced no message at all.
+
+**Two of my own defects, found the hard way and recorded because the
+pattern repeats:**
+
+1. The S5 early-return built a `SubtitleArtifact` with fields the schema
+   does not have. Every test passed, because no test ran that path — the
+   branch was only string-matched. The decision is a function now
+   (`subdetect.caption_params`), the path has a test that runs S5 and
+   reads the file, and the mutants that survived are dead.
+2. The empty script was a zero-byte file; libass logs a parse error on
+   every render for one of those. It is a complete ASS script with no
+   events.
+
+**Gate:** pytest 1404 passed / 5 skipped; `clipforge verify all` PASSED.
+**Teeth:** 14 mutants on this round — the stranger obeyed, two jobs at
+once, any argument as a link, the token leaking, captions over existing
+ones, hashtags returning, unsure read as yes, the track shortcut skipped,
+S5 ignoring the marker, the zero-byte script — all killed, after two
+survived a first pass and the tests were strengthened.
