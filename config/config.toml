@@ -122,6 +122,8 @@ gpu_busy_pct = 40             # another program using this much GPU = busy
 idle_poll_s = 30
 preempt_within_s = 60         # input this recent pauses a running job
 min_free_vram_gb = 8          # VRAM held by another program = not idle
+cpu_busy_pct = 35             # AI work, compiles, a game's sim thread
+min_free_ram_gb = 4
 
 [notify]
 # Send every clip that passes QA to the operator's own Telegram chat. Private

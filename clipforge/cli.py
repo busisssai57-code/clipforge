@@ -285,7 +285,9 @@ def _watch_locked(cfg, ws, wl, channels_path: Path,
 
         gate = IdleGate(idle_after_s=cfg.watch.idle_after_s,
                         gpu_busy_pct=cfg.watch.gpu_busy_pct,
-                        min_free_vram_gb=cfg.watch.min_free_vram_gb).reason_busy
+                        min_free_vram_gb=cfg.watch.min_free_vram_gb,
+                        cpu_busy_pct=cfg.watch.cpu_busy_pct,
+                        min_free_ram_gb=cfg.watch.min_free_ram_gb).reason_busy
         # Starting needs a quiet machine; STOPPING needs only that the
         # operator is back. Asymmetric on purpose: a job pauses the moment
         # they touch the keyboard, and resumes only once they have been

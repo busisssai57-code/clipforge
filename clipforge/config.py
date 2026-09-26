@@ -323,6 +323,12 @@ class WatchConfig(_StrictModel):
     min_free_vram_gb: float = Field(
         8.0, ge=0,
         description="Another process holding the GPU's memory = not idle")
+    cpu_busy_pct: float = Field(
+        35.0, gt=0, le=100,
+        description="CPU used by OTHER programs (AI jobs, compiles, a "
+                    "game's simulation) that counts as busy")
+    min_free_ram_gb: float = Field(
+        4.0, ge=0, description="Below this much free RAM, wait")
 
 
 class NotifyConfig(_StrictModel):

@@ -26,6 +26,10 @@ lies:
 * **free VRAM.** A game sitting at 0% in a menu, or a local LLM someone
   left loaded, still holds the memory this pipeline needs. Starting a
   window that will die in the VRAM guard helps nobody.
+* **CPU load that is not ours, and free RAM.** Heavy work is not always
+  on the GPU: a training run, a local model on the CPU, a compile, a
+  game's simulation thread. Our own process tree is subtracted, because
+  a checkpoint runs while the previous stage is still winding down.
 
 Everything is injected so the gate is testable without a desktop session
 or a GPU.
@@ -38,7 +42,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from clipforge.log import get_logger
 
@@ -151,6 +155,49 @@ def gpu_state() -> dict[str, float] | None:
     return best
 
 
+def system_load(interval_s: float = 0.6, ps: Any = None) -> dict[str, float] | None:
+    """CPU load that is NOT ours, and free RAM.
+
+    The GPU signals miss a whole class of heavy work: a training run or a
+    local LLM on the CPU, a compile, a game's simulation thread. They also
+    cannot be attributed per process on Windows — nvidia-smi reports
+    "[N/A]" for per-process VRAM under WDDM — so total free VRAM stands in
+    for "someone else is holding the card", and this stands in for
+    "someone else is holding the machine".
+
+    Our own process tree is subtracted. A checkpoint runs between stages
+    with the previous stage still winding down, and a gate that counted
+    our own tail as the operator's load would never open again.
+    """
+    if ps is None:
+        try:
+            import psutil as ps
+        except ImportError:
+            return None
+    psutil = ps
+    try:
+        me = psutil.Process()
+        tree = [me, *me.children(recursive=True)]
+        for proc in tree:
+            try:
+                proc.cpu_percent(None)       # prime the per-process counter
+            except psutil.Error:
+                pass
+        total = psutil.cpu_percent(interval=interval_s)
+        cores = psutil.cpu_count() or 1
+        ours = 0.0
+        for proc in tree:
+            try:
+                ours += proc.cpu_percent(None) / cores
+            except psutil.Error:
+                pass
+        mem = psutil.virtual_memory()
+        return {"cpu_pct": max(0.0, total - ours),
+                "free_ram_gb": mem.available / 1024 ** 3}
+    except Exception:  # noqa: BLE001 - a probe never breaks the gate
+        return None
+
+
 def notification_state() -> int | None:
     """SHQueryUserNotificationState, or None where it cannot be read."""
     if sys.platform != "win32":
@@ -184,6 +231,10 @@ class IdleGate:
     decoder_busy_pct: int = 10
     #: A window needs this much VRAM to survive the stage guards.
     min_free_vram_gb: float = 8.0
+    #: Someone else using this much of the CPU is doing something.
+    cpu_busy_pct: float = 35.0
+    #: Headroom this pipeline needs, and a proxy for a big job in memory.
+    min_free_ram_gb: float = 4.0
     #: Consecutive clear readings before the gate opens. One sample catches
     #: a game on a loading screen or between frames; two, a poll apart, do
     #: not.
@@ -191,6 +242,7 @@ class IdleGate:
     input_idle: Callable[[], float | str | None] = seconds_since_input
     gpu: Callable[[], dict[str, float] | None] = gpu_state
     notification: Callable[[], int | None] = notification_state
+    load: Callable[[], dict[str, float] | None] = system_load
     _warned: set = field(default_factory=set, init=False)
     _clear_streak: int = field(default=0, init=False)
 
@@ -235,6 +287,17 @@ class IdleGate:
         if gpu["free_vram_gb"] < self.min_free_vram_gb:
             return (f"only {gpu['free_vram_gb']:.1f} GB VRAM free, "
                     f"need {self.min_free_vram_gb:.1f}")
+
+        load = self.load()
+        if load is None:
+            self._warn_once("load", "CPU/RAM load unreadable; not gating on it")
+            return None
+        if load["cpu_pct"] >= self.cpu_busy_pct:
+            return (f"something else is using the CPU "
+                    f"({load['cpu_pct']:.0f}%)")
+        if load["free_ram_gb"] < self.min_free_ram_gb:
+            return (f"only {load['free_ram_gb']:.1f} GB RAM free, "
+                    f"need {self.min_free_ram_gb:.1f}")
         return None
 
     def is_idle(self) -> bool:
@@ -259,8 +322,15 @@ class PreemptCheck:
 
     #: Input within this many seconds means the operator is back.
     within_s: float = 60.0
+    #: A job in flight also yields when someone else starts something
+    #: heavy — a game launched from another machine's remote play, a
+    #: training run kicked off by a scheduled task, an LLM loading.
+    cpu_busy_pct: float = 55.0
+    min_free_vram_gb: float = 4.0
     input_idle: Callable[[], float | str | None] = seconds_since_input
     notification: Callable[[], int | None] = notification_state
+    load: Callable[[], dict[str, float] | None] = system_load
+    gpu: Callable[[], dict[str, float] | None] = gpu_state
 
     def reason_busy(self) -> str | None:
         idle = self.input_idle()
@@ -271,6 +341,16 @@ class PreemptCheck:
         state = self.notification()
         if state in _BUSY_NOTIFICATION_STATES:
             return f"{_BUSY_NOTIFICATION_STATES[state]} is on screen"
+        load = self.load()
+        if load is not None and load["cpu_pct"] >= self.cpu_busy_pct:
+            return f"another program wants the CPU ({load['cpu_pct']:.0f}%)"
+        gpu = self.gpu()
+        # Deliberately NOT utilisation: between our stages the card may
+        # still be settling from OUR last one. Memory someone else is
+        # holding is theirs, and it is what stops a game from starting.
+        if gpu is not None and gpu["free_vram_gb"] < self.min_free_vram_gb:
+            return (f"another program is holding the GPU's memory "
+                    f"({gpu['free_vram_gb']:.1f} GB free)")
         return None
 
 

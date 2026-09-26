@@ -10,14 +10,16 @@ from clipforge.idle import (BLIND, IdleGate, PreemptCheck, seconds_since_input,
                             wait_until_idle)
 
 FREE = {"util_pct": 2.0, "decoder_pct": 0.0, "free_vram_gb": 22.0}
+QUIET = {"cpu_pct": 4.0, "free_ram_gb": 20.0}
 
 
-def gate(idle=1e6, gpu=None, state=None, **kw) -> IdleGate:
+def gate(idle=1e6, gpu=None, state=None, load=None, **kw) -> IdleGate:
     kw.setdefault("quiet_checks", 1)
     return IdleGate(idle_after_s=300, gpu_busy_pct=40,
                     input_idle=lambda: idle,
                     gpu=lambda: FREE if gpu is None else gpu,
-                    notification=lambda: state, **kw)
+                    notification=lambda: state,
+                    load=lambda: QUIET if load is None else load, **kw)
 
 
 def test_recent_input_means_busy():
@@ -72,8 +74,12 @@ def test_thresholds_are_inclusive_the_right_way():
 def test_one_quiet_sample_is_not_enough_by_default():
     """A game on a loading screen reads 0% for a moment. The gate opens
     only after quiet_checks consecutive clear readings."""
+    # Every probe injected: this is about the streak rule, and a gate
+    # left reading the real machine fails whenever something else on the
+    # box is busy — which, with `bta watch` installed, is often.
     g = IdleGate(idle_after_s=300, input_idle=lambda: 1e6,
-                 gpu=lambda: FREE, notification=lambda: None)
+                 gpu=lambda: FREE, notification=lambda: None,
+                 load=lambda: QUIET)
     first = g.reason_busy()
     assert first and "quiet reading" in first
     assert g.is_idle(), "the second consecutive clear reading must open it"
@@ -82,7 +88,8 @@ def test_one_quiet_sample_is_not_enough_by_default():
 def test_a_busy_reading_restarts_the_streak():
     readings = iter([1e6, 10.0, 1e6, 1e6])
     g = IdleGate(idle_after_s=300, input_idle=lambda: next(readings),
-                 gpu=lambda: FREE, notification=lambda: None)
+                 gpu=lambda: FREE, notification=lambda: None,
+                 load=lambda: QUIET)
     assert g.reason_busy() is not None          # first clear: streak 1/2
     assert g.reason_busy() is not None          # input! streak reset
     assert g.reason_busy() is not None          # clear again: streak 1/2
@@ -151,3 +158,141 @@ def test_preempt_is_blind_safe():
 def test_the_real_input_probe_returns_a_sane_number():
     value = seconds_since_input()
     assert value is None or value == BLIND or 0.0 <= float(value) < 60 * 60 * 24
+
+
+# ------------------------------------------------- heavy work that is not ours
+#
+# The GPU signals miss a training run on the CPU, a compile, or a game's
+# simulation thread — and on Windows nvidia-smi cannot attribute VRAM per
+# process, so "someone else is holding the card" has to come from the
+# total. Measured 2026-09-26: eight external burners read as 80% and the
+# gate closed; they exited and it opened.
+
+def test_someone_elses_cpu_work_keeps_the_gate_shut():
+    reason = gate(load={"cpu_pct": 78.0, "free_ram_gb": 20.0}).reason_busy()
+    assert reason and "using the CPU" in reason
+
+
+def test_a_machine_low_on_memory_waits():
+    """A big model loading is RAM before it is anything else, and this
+    pipeline needs headroom of its own."""
+    reason = gate(load={"cpu_pct": 3.0, "free_ram_gb": 1.5}).reason_busy()
+    assert reason and "RAM free" in reason
+
+
+def test_our_own_load_does_not_close_the_gate_on_us():
+    """system_load subtracts this process tree; the gate must trust that
+    rather than adding a second, private idea of who is busy."""
+    assert gate(load={"cpu_pct": 6.0, "free_ram_gb": 12.0}).is_idle()
+
+
+def test_an_unreadable_load_probe_does_not_park_the_queue():
+    assert gate(load=False or None).is_idle()
+
+
+def test_the_cpu_threshold_is_configurable():
+    busy = {"cpu_pct": 40.0, "free_ram_gb": 20.0}
+    assert gate(load=busy, cpu_busy_pct=60.0).is_idle()
+    assert not gate(load=busy, cpu_busy_pct=30.0).is_idle()
+
+
+def test_a_running_job_yields_when_something_heavy_starts():
+    """The operator does not have to touch the keyboard: a game launched
+    by remote play, or a scheduled training run, takes the machine too."""
+    hot = PreemptCheck(within_s=60, input_idle=lambda: 1e6,
+                       notification=lambda: None,
+                       load=lambda: {"cpu_pct": 90.0, "free_ram_gb": 20.0},
+                       gpu=lambda: FREE)
+    assert hot.reason_busy() and "CPU" in hot.reason_busy()
+
+    grabbed = PreemptCheck(within_s=60, input_idle=lambda: 1e6,
+                           notification=lambda: None,
+                           load=lambda: QUIET,
+                           gpu=lambda: {**FREE, "free_vram_gb": 1.0})
+    assert grabbed.reason_busy() and "GPU's memory" in grabbed.reason_busy()
+
+
+def test_a_quiet_machine_does_not_pause_a_running_job():
+    calm = PreemptCheck(within_s=60, input_idle=lambda: 1e6,
+                        notification=lambda: None, load=lambda: QUIET,
+                        gpu=lambda: FREE)
+    assert calm.reason_busy() is None
+
+
+def test_the_mid_job_check_ignores_gpu_utilisation():
+    """Between our stages the card may still be settling from OUR last
+    one, so utilisation there is not evidence about anyone else."""
+    ours_settling = PreemptCheck(within_s=60, input_idle=lambda: 1e6,
+                                 notification=lambda: None, load=lambda: QUIET,
+                                 gpu=lambda: {**FREE, "util_pct": 99.0})
+    assert ours_settling.reason_busy() is None
+
+
+def test_the_real_load_probe_answers_on_this_machine():
+    from clipforge.idle import system_load
+
+    load = system_load(interval_s=0.2)
+    assert load is None or (0.0 <= load["cpu_pct"] <= 100.0
+                            and load["free_ram_gb"] > 0)
+
+
+def test_our_own_cpu_is_subtracted_before_anyone_is_called_busy():
+    """The pipeline must not read its own tail as the operator's load: a
+    checkpoint runs while the previous stage is still winding down, and a
+    gate that counted us would never open again."""
+    from clipforge.idle import system_load
+
+    class FakeProc:
+        def __init__(self, pct): self._pct = pct
+        def cpu_percent(self, _=None): return self._pct
+        def children(self, recursive=False): return [FakeProc(240.0)]
+
+    class FakePsutil:
+        Error = RuntimeError
+        @staticmethod
+        def Process(): return FakeProc(120.0)
+        @staticmethod
+        def cpu_percent(interval=None): return 90.0    # whole machine
+        @staticmethod
+        def cpu_count(): return 12
+        @staticmethod
+        def virtual_memory():
+            class M: available = 16 * 1024 ** 3
+            return M()
+
+    load = system_load(interval_s=0.0, ps=FakePsutil)
+    # 90% total, ours is (120 + 240) / 12 cores = 30 points of it.
+    assert load["cpu_pct"] == pytest.approx(60.0), load
+    assert load["free_ram_gb"] == pytest.approx(16.0)
+
+
+def test_subtraction_never_goes_negative():
+    from clipforge.idle import system_load
+
+    class FakeProc:
+        def cpu_percent(self, _=None): return 1200.0
+        def children(self, recursive=False): return []
+
+    class FakePsutil:
+        Error = RuntimeError
+        Process = staticmethod(lambda: FakeProc())
+        cpu_percent = staticmethod(lambda interval=None: 30.0)
+        cpu_count = staticmethod(lambda: 12)
+        @staticmethod
+        def virtual_memory():
+            class M: available = 8 * 1024 ** 3
+            return M()
+
+    assert system_load(interval_s=0.0, ps=FakePsutil)["cpu_pct"] == 0.0
+
+
+def test_watch_gives_the_gate_every_configured_threshold():
+    import inspect
+
+    from clipforge import cli
+
+    src = inspect.getsource(cli._watch_locked)
+    for knob in ("idle_after_s", "gpu_busy_pct", "min_free_vram_gb",
+                 "cpu_busy_pct", "min_free_ram_gb"):
+        assert f"{knob}=cfg.watch.{knob}" in src, (
+            f"watch no longer passes [watch] {knob} to the gate")

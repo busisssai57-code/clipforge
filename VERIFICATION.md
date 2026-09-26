@@ -4230,3 +4230,39 @@ the model fails it.
 **Teeth:** 9 further mutants (the budget override, process passing it,
 the hashtag cap, `--yes`, the platform list, scheduled publishing, the
 timezone, and the sweep going blind) — all killed.
+
+
+## Heavy work that is not the operator (2026-09-26)
+
+The gate watched for the operator and for the GPU. It was blind to a
+training run on the CPU, a compile, a local model loading, or a game's
+simulation thread — anything heavy that does not move the mouse.
+
+* `system_load()` reports CPU used by everything EXCEPT this process
+  tree, and free RAM. The subtraction matters: a checkpoint runs while
+  the previous stage is still winding down, and a gate that counted our
+  own tail would never open again.
+* Per-process VRAM cannot be attributed on Windows (nvidia-smi reports
+  "[N/A]" under WDDM), so total free VRAM stands in for "someone else is
+  holding the card" — in the gate at 8 GB, and in the mid-job check at
+  4 GB, where GPU *utilisation* is deliberately ignored because the card
+  may still be settling from our own last stage.
+* A job already running now yields to heavy work too, not only to the
+  operator returning: a game launched by remote play, or a scheduled
+  training run, takes the machine the same way.
+
+Knobs: `[watch] cpu_busy_pct = 35`, `min_free_ram_gb = 4`.
+
+**Measured, not assumed:** eight external CPU burners read as 80.6% with
+our own tree excluded and the gate closed ("something else is using the
+CPU (77%)"); they exited and it opened.
+
+**The full suite caught a flaw in my own tests:** two idle tests built a
+gate without injecting a load probe, so they read the real machine and
+failed as soon as `bta watch` was installed and running. Every probe is
+injected now.
+
+**Gate:** pytest 1368 passed / 5 skipped; `clipforge verify all` PASSED.
+**Teeth:** 9 mutants on this change (each threshold ignored, our own load
+counted as someone else's, the clamp removed, watch dropping each knob) —
+all killed, after two survived a first pass and the tests were fixed.
