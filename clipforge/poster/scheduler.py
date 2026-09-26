@@ -66,7 +66,8 @@ def get_poster(platform: str) -> BaseSocialPoster:
 
 def execute_post_job(job: PostJob, auth_dir: Path, headless: bool = True,
                      timezone_offset_hours: float = -5.0, *,
-                     approved: bool = False) -> PostResult:
+                     approved: bool = False,
+                     delay_range_s: "tuple[float, float] | None" = None) -> PostResult:
     """Dispatch ONE approved PostJob to its platform automator.
 
     Two gates, both enforced here because this is the single choke point

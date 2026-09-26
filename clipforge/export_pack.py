@@ -235,7 +235,7 @@ def grab_thumbnail(clip: Path, dest: Path, *, at_s: float = 1.0) -> Path:
 def build_pack(clip: Path, *, title: str = "", transcript_text: str = "",
                segments=None, niche_keywords: list[str] | None = None,
                hook: str = "", thumbnail_at_s: float = 1.0,
-               write: bool = True) -> ExportPack:
+               write: bool = True, max_hashtags: int = 8) -> ExportPack:
     """Assemble the full posting payload beside ``clip``."""
     clip = Path(clip)
     if not clip.is_file():
@@ -244,7 +244,10 @@ def build_pack(clip: Path, *, title: str = "", transcript_text: str = "",
     body = (hook or "").strip()
     if transcript_text and len(body) < 40:
         body = (body + " " + transcript_text.strip()).strip()
-    tags = build_hashtags(transcript_text or title, niche_keywords)
+    # [editor] max_hashtags reaches this and only this: it was in
+    # config.toml, documented, and read by nothing.
+    tags = build_hashtags(transcript_text or title, niche_keywords,
+                          limit=max_hashtags)
 
     pack = ExportPack(clip=clip, title=title.strip(), caption=body,
                       hashtags=tags,

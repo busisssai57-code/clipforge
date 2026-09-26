@@ -92,6 +92,9 @@ def download_vod(video_id: str, dest_dir: Path, *,
     if not _VIDEO_ID_RE.fullmatch(video_id):
         raise IngestError(f"refusing malformed video id {video_id!r}")
     dest_dir.mkdir(parents=True, exist_ok=True)
+    # Use exported cookies if available (for sign-in-gated videos).
+    _cookie_jar = Path(__file__).resolve().parent.parent / "cookies.txt"
+    _cookie_args = ["--cookies", str(_cookie_jar)] if _cookie_jar.is_file() else []
     proc = run("yt-dlp", [
         "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
         "--merge-output-format", "mp4",
@@ -99,6 +102,7 @@ def download_vod(video_id: str, dest_dir: Path, *,
         "--no-progress", "--no-warnings",
         "--print", "after_move:filepath",
         "--no-simulate",
+        *_cookie_args,
         f"https://www.youtube.com/watch?v={video_id}",
     ], timeout_s=3600.0, stop=stop)
     lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]

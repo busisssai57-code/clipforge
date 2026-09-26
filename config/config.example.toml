@@ -85,7 +85,6 @@ loudness_lra = 11.0
 
 [editor]
 style_profile = "viral_fast"
-min_hook_score = 0.5
 max_hashtags = 5
 
 [posting]
@@ -97,13 +96,10 @@ smart_scheduling = false          # must stay false: no unattended scheduled pos
 require_approval = true           # must stay true: each clip is approved individually
 target_timezone_offset_hours = -5.0 # target audience timezone (e.g. -5.0 for EST)
 headless = true
-delay_min_s = 1.0
-delay_max_s = 3.0
 
 [orchestration]
 ingest_concurrency = 4
 gpu_concurrency = 1           # LAW — exactly one GPU stage at a time
-render_concurrency = 2        # NVENC consumer session cap
 queue_maxsize = 32            # bounded queues => backpressure, not OOM
 
 

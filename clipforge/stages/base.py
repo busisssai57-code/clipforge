@@ -134,9 +134,18 @@ class Stage(ABC, Generic[ArtifactT]):
     #: The artifact model this stage produces.
     artifact_type: type[ArtifactT]
 
-    def __init__(self, db: StateDB, artifacts_dir: Path) -> None:
+    def __init__(self, db: StateDB, artifacts_dir: Path, *,
+                 vram_budget_gb: float | None = None) -> None:
         self.db = db
         self.artifacts_dir = Path(artifacts_dir)
+        # The class attribute is this stage's MEASURED need; the config
+        # knob of the same name existed in config.toml (and in the
+        # example, documented as tunable) while every stage read its own
+        # hardcoded number — the same shape of lie as the `quantize` knob
+        # and the hardcoded x264 preset this project has found before.
+        # An explicit override wins; None leaves the measured default.
+        if vram_budget_gb is not None:
+            self.vram_budget_gb = float(vram_budget_gb)
 
     # ------------------------------------------------------------------ keys
 

@@ -211,7 +211,6 @@ class S7Config(_StrictModel):
 
 class EditorConfig(_StrictModel):
     style_profile: str = Field("viral_fast", description="Editor agent profile: viral_fast, educational, conversational")
-    min_hook_score: float = Field(0.5, ge=0.0, le=1.0, description="Minimum hook confidence threshold")
     max_hashtags: int = Field(5, ge=1, le=20, description="Max hashtags per post")
 
 
@@ -251,8 +250,11 @@ class PostingConfig(_StrictModel):
                           "before any browser automation runs.")
     target_timezone_offset_hours: float = Field(-5.0, description="Target audience timezone offset (e.g. -5.0 for EST)")
     headless: bool = Field(True, description="Run browser automation headless")
-    delay_min_s: float = Field(1.0, ge=0.1)
-    delay_max_s: float = Field(3.0, ge=0.2)
+    # delay_min_s / delay_max_s were here and were read by nothing: each
+    # automator picks its own pacing per action (`human_delay(2.0, 4.0)`
+    # while a page settles, `(1.0, 1.5)` between keystrokes), which a
+    # single global pair cannot express. A knob that cannot change the
+    # behaviour it names is worse than no knob.
 
     @field_validator("smart_scheduling")
     @classmethod
@@ -280,7 +282,9 @@ class PostingConfig(_StrictModel):
 class OrchestrationConfig(_StrictModel):
     ingest_concurrency: int = Field(4, ge=1)
     gpu_concurrency: int = Field(1, ge=1, le=1, description="LAW: exactly 1 (spec §6)")
-    render_concurrency: int = Field(2, ge=1, le=3, description="NVENC session cap on consumer drivers")
+    # render_concurrency was here, unread: renders are serialised behind
+    # the one-GPU-stage law, so a second one never starts. It said the
+    # opposite.
     #: Bounded ⇒ backpressure. Read by the watch→DAG dispatcher: when it is
     #: full, the window is dropped from the CLIP queue (loudly) and
     #: ingestion continues. The media is still on disk; unrecorded stream

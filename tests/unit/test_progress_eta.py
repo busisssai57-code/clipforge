@@ -90,6 +90,12 @@ def test_generation_counts_shots():
     assert (p.shot, p.shots_total) == (3, 6)
 
 
+def test_candidate_ranking_progress_is_surfaced():
+    p = RunProgress(kind="process", started_at=0.0)
+    p.feed("  candidate 3/10: scored (25.0s-45.0s)")
+    assert p.label == "Ranking candidate 3 of 10 (multimodal VL)"
+
+
 def test_garbage_never_raises():
     """This runs on the task's output thread. A parser that throws takes
     the whole log with it."""

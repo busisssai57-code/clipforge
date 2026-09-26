@@ -596,7 +596,7 @@ def telegram(clip: str = typer.Argument(
         raise typer.Exit(1)
     console.print(f"[green]bot {bot} ok[/] (credentials from {target.source}); "
                   f"delivery is {'ON' if cfg.notify.telegram else 'OFF'} in "
-                  "config \[notify]")
+                  r"config \[notify]")
     if retry:
         counts = notify.flush_outbox(target=target, ws_root=Path(ws.root))
         console.print(f"queue: {counts or 'empty'}")
@@ -845,6 +845,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                       "(first run downloads models)[/]")
         s1 = S1Transcribe(
             db=db, artifacts_dir=ws.artifacts,
+            vram_budget_gb=cfg.s1.vram_budget_gb,
             hf_token=Secrets().hf_token or os.environ.get("HF_TOKEN"))
         s1_params = {
             "model": cfg.s1.model, "compute_type": cfg.s1.compute_type,
@@ -899,7 +900,8 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
         from clipforge.stages.s3_5_editor import S3_5_EditorAgent
         from clipforge.stages.s4_tracking import S4Tracking
 
-        s3 = S3SemanticRanker(db, ws.artifacts)
+        s3 = S3SemanticRanker(db, ws.artifacts,
+                              vram_budget_gb=cfg.s3.vram_budget_gb)
         s3_params = {
             "use_cloud": cfg.s3.use_cloud,
             "cloud_model": cfg.s3.cloud_model,
@@ -928,7 +930,8 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
         from clipforge.stages.s7_qa import S7QualityGate
 
         s3_5 = S3_5_EditorAgent(db, ws.artifacts)
-        s4 = S4Tracking(db, ws.artifacts)
+        s4 = S4Tracking(db, ws.artifacts,
+                        vram_budget_gb=cfg.s4.vram_budget_gb)
         s5 = S5Subtitles(db, ws.artifacts)
         s6 = S6Render(db, ws.artifacts)
         s7 = S7QualityGate(db, ws.artifacts)
@@ -1343,7 +1346,8 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                                   if cur_start + abs_offset <= float(s.start or 0)
                                   < cur_end + abs_offset],
                         niche_keywords=(list(active_niche.keywords)
-                                        if active_niche else None))
+                                        if active_niche else None),
+                        max_hashtags=cfg.editor.max_hashtags)
                     console.print("  export pack written "
                                   "(caption, tags, thumbnail, chapters)")
                 except Exception as exc:  # noqa: BLE001
@@ -1967,6 +1971,26 @@ def post(
     auth_dir = ws.root / "auth"
     headless = not headed if headed else cfg.posting.headless
 
+    # [posting] carried six pins of the draft-only amendment that NOTHING
+    # read: a law enforced only by a field validator is a law about the
+    # config file, not about what the program does. They are consulted
+    # here, at the one place a post leaves this machine.
+    if cfg.posting.smart_scheduling:
+        console.print("[red]posting.smart_scheduling is on[/]: unattended "
+                      "scheduled publishing is what the human gate exists "
+                      "to prevent (VERIFICATION.md, 2026-07-27)")
+        raise typer.Exit(2)
+    if platform not in cfg.posting.enabled_platforms:
+        console.print(f"[red]{platform} is not in posting.enabled_platforms[/] "
+                      f"({', '.join(cfg.posting.enabled_platforms)})")
+        raise typer.Exit(2)
+    if yes and cfg.posting.require_approval:
+        console.print("[red]--yes cannot skip approval[/]: every clip is "
+                      "approved individually while posting.require_approval "
+                      "is true. Answer the prompt, or turn the pin off and "
+                      "write down why in VERIFICATION.md.")
+        raise typer.Exit(2)
+
     job = PostJob(
         job_id=f"job_{int(time.time())}",
         clip_path=str(clip_path),
@@ -1974,6 +1998,7 @@ def post(
         title=title,
         caption=caption,
         hashtags=["#Shorts", "#Viral", "#ClipForge"],
+        publish_mode=cfg.posting.publish_mode,
     )
 
     # Per-clip human approval — the third pin of the amendment. Approval is
@@ -1991,8 +2016,10 @@ def post(
         raise typer.Exit(1)
 
     console.print(f"[green]Preparing draft {job.job_id} for {platform}...[/]")
-    res = execute_post_job(job, auth_dir=auth_dir, headless=headless,
-                           approved=approved)
+    res = execute_post_job(
+        job, auth_dir=auth_dir, headless=headless,
+        timezone_offset_hours=cfg.posting.target_timezone_offset_hours,
+        approved=approved)
 
     if res.status == "draft_saved":
         console.print(f"[green]Draft saved on {platform}. Open the platform "

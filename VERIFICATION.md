@@ -4189,3 +4189,44 @@ that relied on it moved.
 **Teeth:** 17 mutants across this round and the two before it — including
 the hook knob being ignored, branding overwriting the original, and
 `--send` delivering the unbranded cut — 17 killed, 0 survivors.
+
+
+## Dead knobs (2026-09-26)
+
+A sweep over every field in every `[section]` of config.toml, asking one
+question: does anything read it? Sixteen looked dead; ten were real.
+
+**Wired, because they mean something:**
+
+* `[s1] [s3] [s4] vram_budget_gb` — documented in config.example.toml as
+  tunable while each stage read its own hardcoded number (8.0, 10.0,
+  3.0). The same shape as `quantize` and the hardcoded x264 preset this
+  ledger already records. Now an explicit override reaching GPULock;
+  omit it and the measured default stands.
+* `[editor] max_hashtags` — the pack always built up to eight.
+* `[posting] enabled_platforms, require_approval, smart_scheduling,
+  publish_mode, target_timezone_offset_hours` — six pins of the
+  2026-07-27 draft-only amendment, enforced by two field validators and
+  read by `bta post` NOWHERE. A law enforced only by a validator is a law
+  about the config file, not about the program. `--yes` could skip the
+  per-clip approval the amendment's third pin requires; it now cannot
+  while `require_approval` is true.
+
+**Deleted, because they promised control they did not have:**
+
+* `[posting] delay_min_s / delay_max_s` — every automator picks its own
+  pacing per action (2-4 s while a page settles, 1-1.5 s between
+  keystrokes), which one global pair cannot express.
+* `[editor] min_hook_score` — no threshold to apply it to.
+* `[orchestration] render_concurrency` — renders serialise behind the
+  one-GPU-stage law, so a second never starts. The knob said otherwise.
+
+The sweep is now a test (`test_no_knob_in_the_config_reaches_nothing`),
+with an allow-list of the five knobs read indirectly through the §2
+chokepoint, each naming its reader. A mutant that adds an unread knob to
+the model fails it.
+
+**Gate:** pytest 1356 passed / 5 skipped; `clipforge verify all` PASSED.
+**Teeth:** 9 further mutants (the budget override, process passing it,
+the hashtag cap, `--yes`, the platform list, scheduled publishing, the
+timezone, and the sweep going blind) — all killed.
