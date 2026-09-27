@@ -26,12 +26,21 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, TypeVar
 
 from clipforge.errors import StateError
+from clipforge.log import get_logger
 
 #: v2: seen_videos is keyed per CHANNEL, not per platform — a platform-wide
 #: pending query made every YouTube channel return the union of all channels'
 #: ids, so concurrent loops downloaded the same VOD into different folders.
 #: v2 also adds stream_sessions.timeline_estimated.
-SCHEMA_VERSION = 3
+#: v4: shipped_spans. It was added to _SCHEMA with no migration, and
+#: _migrate only runs the full schema for a BRAND NEW file — so every
+#: existing workspace (this one included, stamped v3) simply had no such
+#: table. dedup caught the error, logged a warning nobody reads, and
+#: returned "not a duplicate" every single time: the feature was dead in
+#: production while its tests, which build a fresh DB per run, all passed.
+log = get_logger(__name__)
+
+SCHEMA_VERSION = 4
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -191,7 +200,35 @@ class StateDB:
             "closed_by_reconcile INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE stream_sessions ADD COLUMN "
             "last_media_at REAL NOT NULL DEFAULT 0"],
+        3: ["""CREATE TABLE IF NOT EXISTS shipped_spans (
+                scope         TEXT NOT NULL,
+                abs_start_s   REAL NOT NULL,
+                abs_end_s     REAL NOT NULL,
+                clip_path     TEXT NOT NULL,
+                shipped_at    REAL NOT NULL
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_shipped_spans_scope "
+            "ON shipped_spans(scope)"],
     }
+
+    def _expected_tables(self) -> set[str]:
+        """Every table _SCHEMA declares, parsed from the schema itself."""
+        import re as _re
+
+        return set(_re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", _SCHEMA))
+
+    def missing_tables(self) -> set[str]:
+        """Tables the code expects that this database does not have.
+
+        A migration that is forgotten does not announce itself: the table
+        is simply absent, the feature that needs it fails, and whatever
+        catches that failure decides how loudly. Something has to be able
+        to ask.
+        """
+        with self._lock:
+            have = {r[0] for r in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        return self._expected_tables() - have
 
     def _migrate(self) -> None:
         with self._lock, self._conn:
@@ -218,6 +255,20 @@ class StateDB:
                     f"State DB schema v{ver} != code v{SCHEMA_VERSION}; "
                     "no migration path - move the DB aside or upgrade code."
                 )
+        # The version number says the migrations RAN; it does not say the
+        # schema is complete. A table added to _SCHEMA without a migration
+        # leaves an up-to-date-looking DB with a missing table, which is
+        # exactly how dedup shipped dead. Create what is missing rather
+        # than refusing to start: every statement in _SCHEMA is
+        # IF NOT EXISTS, and an empty new table is the correct state for a
+        # feature that has never run here.
+        missing = self.missing_tables()
+        if missing:
+            log.warning("state.schema_backfill", tables=sorted(missing),
+                        note="tables declared in code but absent from this "
+                             "database; creating them")
+            with self._lock, self._conn:
+                self._conn.executescript(_SCHEMA)
 
     def close(self) -> None:
         with self._lock:

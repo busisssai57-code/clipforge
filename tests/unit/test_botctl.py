@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from clipforge.botctl import HELP, BotControl
+from clipforge.botctl import HELP, MAX_CONFLICTS, BotControl, is_fetchable_url
 
 TOKEN = "123456:AAFAKE-token-for-tests-only"
 MINE = "7889536775"
@@ -80,10 +80,31 @@ def test_there_is_no_verb_that_runs_a_shell(bot):
         assert verb not in src
 
 
-def test_a_non_link_is_refused_before_anything_starts(bot):
-    bot.handle(msg("/clip file:///C:/Windows/System32"))
-    assert bot.ran == []
-    assert "does not look like a link" in bot.said[-1]
+@pytest.mark.parametrize("target", [
+    "file:///C:/Windows/System32",
+    "http://127.0.0.1:8765/api/jobs",     # this project's own control API
+    "http://localhost/x",
+    "http://[::1]/x",
+    "http://169.254.169.254/latest/meta-data/",   # cloud metadata
+    "http://192.168.1.1/x",               # the router
+    "not a url at all",
+])
+def test_a_link_that_points_inward_is_refused_before_anything_starts(bot, target):
+    """A scheme test alone let /clip aim yt-dlp's generic extractor at
+    anything reachable from this machine."""
+    bot.handle(msg(f"/clip {target}"))
+    assert bot.ran == [], f"{target} started a job"
+    assert bot.said, "nothing was said"
+
+
+def test_an_ordinary_link_still_works(bot):
+    """Control: the guard must not refuse everything."""
+    bot.handle(msg("/clip https://youtu.be/abc"))
+    import time as _t
+    deadline = _t.monotonic() + 5
+    while not bot.ran and _t.monotonic() < deadline:
+        _t.sleep(0.02)
+    assert bot.ran == [("clip", "https://youtu.be/abc")]
 
 
 # ------------------------------------------------------------- the verbs
@@ -157,25 +178,45 @@ def test_the_token_never_reaches_the_chat(bot):
 
 # --------------------------------------------------------------- the loop
 
-def test_another_poller_owning_the_bot_is_reported_not_spun_on(tmp_path):
-    """The OpenClaw gateway polls the same bot. Two pollers fight, and
-    Telegram says so; a hot retry loop would make it worse."""
-    calls: list[float] = []
+def test_a_conflicting_poller_is_announced_and_then_given_up_on(tmp_path):
+    """The OpenClaw gateway polls the same bot. Two pollers split the
+    operator's commands at random, which from the phone looks like the
+    bot ignoring them — so it has to SAY so, and then stand down rather
+    than retry into a log nobody reads.
+
+    The previous version of this test was theatre: its fake stopped the
+    loop on the second call, so the assertion held whether or not the
+    back-off existed. This one counts what was said and waits on a clock
+    it controls.
+    """
+    said: list[str] = []
+    polls = {"n": 0}
 
     def conflicted(url, params):
-        calls.append(time.monotonic())
-        if len(calls) >= 2:
-            control.stop()
-        return {"ok": False, "description": "Conflict: terminated by other getUpdates request"}
+        if url.endswith("sendMessage"):
+            said.append(params["text"])
+            return {"ok": True}
+        polls["n"] += 1
+        if polls["n"] > MAX_CONFLICTS + 3:
+            raise AssertionError(
+                f"it kept polling through {polls['n']} conflicts; the "
+                "bail-out is gone")
+        return {"ok": False,
+                "description": "Conflict: terminated by other getUpdates request"}
 
     control = BotControl(token=TOKEN, chat_id=MINE, ws_root=tmp_path,
                          get=conflicted)
-    started = time.monotonic()
-    thread = threading.Thread(target=control.run, daemon=True)
-    thread.start()
-    thread.join(timeout=2)
-    control.stop()
-    assert len(calls) <= 2, "it hammered Telegram through a conflict"
+    control._stop.wait = lambda _timeout=None: False    # no real sleeping
+    # A cap that is gone must FAIL this test, not hang it: without the
+    # bail-out the loop is infinite, and a hanging suite tells nobody
+    # anything.
+    control.run()                                        # returns on its own
+
+    assert polls["n"] <= MAX_CONFLICTS + 1, "it hammered Telegram"
+    assert any("polling this bot" in s for s in said), (
+        "the operator was never told why their commands vanish")
+    assert any("stopping" in s.lower() for s in said), (
+        "it retried for ever instead of standing down")
 
 
 def test_the_cli_wires_the_operators_own_chat():
@@ -188,3 +229,115 @@ def test_the_cli_wires_the_operators_own_chat():
         "the bot must obey the chat clips are delivered to, resolved the "
         "same way")
     assert "chat_id=target.chat_id" in src
+
+
+# --------------------------------------------------- what the audit found
+
+def test_a_blank_chat_id_is_refused_at_construction(tmp_path):
+    """With chat_id="" every comparison against a message with no chat
+    object succeeded: the authorisation failed OPEN."""
+    for bad in ("", "   ", "0", "-1001234567890", "abc"):
+        with pytest.raises(ValueError):
+            BotControl(token=TOKEN, chat_id=bad, ws_root=tmp_path)
+
+
+def test_a_message_with_no_chat_is_ignored(bot):
+    assert bot.handle({"update_id": 9, "message": {"text": "/clip https://x/y"}}) is None
+    assert bot.ran == [] and bot.said == []
+
+
+def test_an_empty_sender_never_matches_even_if_the_id_is_emptied(bot):
+    """Defence in depth. Construction refuses a blank chat id, so this
+    state is unreachable today — but the comparison itself must not be
+    what stands between a stranger and a job: an empty string equals an
+    empty string."""
+    bot.chat_id = ""
+    assert bot.handle({"update_id": 9, "message": {"text": "/clip https://x/y"}}) is None
+    assert bot.ran == []
+
+
+def test_stop_cancels_the_running_job(bot):
+    cancelled = []
+    bot._job = lambda: cancelled.append(True)
+    bot.handle(msg("/stop"))
+    assert cancelled == [True]
+    assert "Stopping" in bot.said[-1]
+
+
+def test_stop_with_nothing_running_says_so(bot):
+    bot.handle(msg("/stop"))
+    assert "Nothing is running" in bot.said[-1]
+
+
+def test_a_job_that_ends_always_frees_the_next_one(bot):
+    """A job that returns without releasing the lock refuses every later
+    /clip with "already working on one", while the supervisor sees a live
+    process and restarts nothing."""
+    def boom(url):
+        raise RuntimeError("killed")
+
+    bot.run_clip = boom
+    bot.handle(msg("/clip https://a.example/1"))
+    import time as _t
+    deadline = _t.monotonic() + 5
+    while bot._busy.locked() and _t.monotonic() < deadline:
+        _t.sleep(0.02)
+    assert not bot._busy.locked(), "the bot wedged after a failed job"
+    assert bot._job is None
+
+
+def test_a_restart_does_not_replay_the_command_it_died_on(tmp_path):
+    """Telegram keeps an unconfirmed update for 24 h. Without draining,
+    a restart re-runs the /clip that was in flight — a two-hour GPU job,
+    unasked."""
+    calls: list[dict] = []
+
+    def fake(url, params):
+        calls.append({"url": url, **params})
+        if url.endswith("getUpdates") and len([c for c in calls if "getUpdates" in c["url"]]) == 1:
+            return {"ok": True, "result": [
+                {"update_id": 41, "message": {"chat": {"id": int(MINE)},
+                                              "text": "/clip https://x/y"}}]}
+        return {"ok": True, "result": []}
+
+    control = BotControl(token=TOKEN, chat_id=MINE, ws_root=tmp_path,
+                         run_clip=lambda u: "never", get=fake)
+    offset = control.drain()
+    assert offset == 42
+    confirms = [c for c in calls if "getUpdates" in c["url"] and c.get("offset") == 42]
+    assert confirms, "the backlog was read but never confirmed"
+
+
+def test_run_drains_before_it_starts_listening(tmp_path):
+    """The whole point: run() must not hand the queued /clip to a job.
+    Calling drain() from a test proves nothing if run() never calls it."""
+    ran: list[str] = []
+    polls = {"n": 0}
+
+    def fake(url, params):
+        if url.endswith("sendMessage"):
+            return {"ok": True}
+        polls["n"] += 1
+        if polls["n"] == 1:      # the backlog, from before the crash
+            return {"ok": True, "result": [
+                {"update_id": 7, "message": {"chat": {"id": int(MINE)},
+                                             "text": "/clip https://x/y"}}]}
+        control.stop()
+        return {"ok": True, "result": []}
+
+    control = BotControl(token=TOKEN, chat_id=MINE, ws_root=tmp_path,
+                         run_clip=lambda u: ran.append(u) or "done", get=fake)
+    control.run()
+    assert ran == [], "a restart re-ran the command it died on"
+
+
+def test_the_flood_guard_keeps_one_line_per_sender_per_minute(bot):
+    for i in range(50):
+        bot.handle(msg("/status", chat=STRANGER, uid=i))
+    assert bot.said == []
+    assert len(bot._last_seen) == 1
+
+
+def test_url_guard_allows_a_hostname_and_refuses_a_bare_ip():
+    assert is_fetchable_url("https://youtube.com/watch?v=x")[0]
+    assert not is_fetchable_url("https://8.8.8.8/x")[0]

@@ -4438,3 +4438,84 @@ pipeline integration and test teeth were cut off by session limits
 before producing findings, and scorer findings 5 and 6 (the floor's
 comment, and having no way to show the ranking is BETTER rather than
 different) never reached a second verdict.
+
+
+## Audit round 2, parts 2 and 3 — the bot and the seams (2026-09-27)
+
+Two reviewers, run separately after the workflow kept hitting session
+limits. Between them they found a blocker and eleven other defects, all
+in code committed in the previous two days. The pattern in both reports
+is the same: each feature's tests build their own world and never meet
+the others, or the eight-month-old workspace they have to run against.
+
+### The seam between features
+
+* **BLOCKER: dedup has never once worked here.** `shipped_spans` was
+  added to `_SCHEMA` with no migration, and `_migrate` only runs the full
+  schema for a brand-new file. This workspace was stamped v3 and simply
+  had no such table; `dedup` caught the error, logged a warning nobody
+  reads, and answered "not a duplicate" every time. Proven by the
+  reviewer against the live DB, and confirmed by `grep dedup
+  workspace/logs/clipforge.jsonl` returning nothing. Fixed with a real
+  v3->v4 migration, a `missing_tables()` check that backfills anything a
+  forgotten migration left out, and a gate test that opens the LIVE
+  workspace and asserts every declared table exists.
+* **A duplicate produced no clip at all.** The top-N slice ran BEFORE the
+  duplicate check, and `clips_per_window` is 1: the best candidate is the
+  moment the previous window already shipped, it is skipped, and the
+  window yields nothing while the next-ranked candidate sits untouched —
+  the exact opposite of what dedup's own docstring promises. Filter
+  first, then take N, with a ceiling so a window of all-duplicates does
+  not render its way down the list.
+* **The hook was burned into a file nobody sent.** For already-captioned
+  footage the pipeline wrote `<clip>.branded.mp4` with the hook card and
+  then delivered the UNBRANDED clip — while `bta brand --send` has always
+  sent the branded cut, with a test named for it. Watch now sends the
+  branded cut, with the original's caption, and falls back to the
+  original if the overlay fails.
+* **The branded cut counted as a second clip.** `.branded` was missing
+  from `_SIDECAR_SUFFIXES`, so the gallery showed an untitled unscored
+  tile per clip and `holdout` reported `clips=2` for one clip — the one
+  number holdout exists to make comparable across runs.
+* **A job the operator interrupted was recorded as `failed`**, and the
+  window was **dropped**, not retried: an evening of interrupted windows
+  produced nothing however long the machine was idle afterwards. It is
+  `preempted` now, and re-queued (bounded, with a breath before the
+  retry so two disagreeing probes cannot spin it).
+
+### The Telegram control surface
+
+* **The chat the bot obeys moved with the working directory.** `.env` was
+  resolved relative to cwd, so from any directory but the repo the file
+  was not read and delivery fell back to the OpenClaw pairing list — a
+  DIFFERENT account on this machine. `.env` is now found by absolute
+  path.
+* **`/clip` accepted anything with an http scheme**, including
+  `127.0.0.1:8765` (this project's own API), the LAN router and
+  `169.254.169.254`. Public hosts only now, no IP literals.
+* **A timeout could wedge the bot for ever.** `subprocess.run(timeout=)`
+  kills the direct child, but yt-dlp is a grandchild holding the pipes,
+  so the call never returned, the busy lock was never released, every
+  later `/clip` was refused — and the supervisor saw a live process and
+  restarted nothing. Now a killable process tree, a `finally` that always
+  releases, and a `/stop` verb.
+* **A restart replayed the command it died on** — Telegram keeps an
+  unconfirmed update for 24 hours, so a crash during a two-hour job meant
+  that job ran again, unasked. The backlog is drained and confirmed.
+* **A conflicting poller was retried for ever, silently**; it now says so
+  once and stands down after five.
+* An empty chat id made the authorisation fail OPEN; the token could
+  reach a log through a dataclass repr or a percent-encoded URL; a
+  stranger's messages were logged without limit. All closed.
+
+**Gate:** pytest 1474 passed / 5 skipped; `clipforge verify all` PASSED.
+**Teeth:** 12 mutants on these fixes, all killed — three survived a first
+pass (an empty sender, a replayed backlog, the redaction forms) and the
+tests were strengthened until they bit. One mutant HUNG the suite rather
+than failing it, which is its own defect: the conflict test now bounds
+its own polling so a removed cap fails fast.
+
+**A note on my own work.** Every defect in this entry was mine, shipped
+in the two days before it. Two were invisible to the tests I wrote at the
+time because those tests only grep source text or build a fresh database;
+the audit found them by tracing one real run against the real workspace.

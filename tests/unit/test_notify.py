@@ -17,6 +17,8 @@ import pytest
 from clipforge import notify
 from clipforge.notify import TelegramTarget
 
+ROOT = Path(__file__).resolve().parents[2]
+
 TOKEN = "123456:AAFAKE-token-for-tests-only"
 TARGET = TelegramTarget(token=TOKEN, chat_id="42", source="env")
 JPEG_MAGIC = bytes([0xFF, 0xD8]) + b"jpeg"
@@ -367,3 +369,51 @@ def test_a_vanished_clip_leaves_nothing_behind(clip):
                         post=FakeTelegram())
     box = ws_root(clip) / "outbox" / "telegram"
     assert list(box.iterdir()) == []
+
+
+# ------------------------------------------- the token, and where it is read
+
+def test_redaction_covers_the_forms_the_token_actually_travels_in():
+    """It travels whole in a URL path, percent-encoded in a query, and as
+    the secret half alone in a half-copied log line."""
+    from urllib.parse import quote
+
+    target = TelegramTarget(token=TOKEN, chat_id="42", source="env")
+    secret = TOKEN.split(":", 1)[1]
+    for text in (f"POST /bot{TOKEN}/sendVideo",
+                 "url=" + quote(TOKEN, safe=""),
+                 "url=" + quote(TOKEN),
+                 f"leaked the secret half: {secret}"):
+        out = target.redact(text)
+        assert TOKEN not in out and secret not in out, out
+        assert "<token>" in out
+
+
+def test_a_target_never_prints_its_token():
+    """One stray log.error(target=...) or debugger frame would publish the
+    bot's password."""
+    target = TelegramTarget(token=TOKEN, chat_id="42", source="env")
+    assert TOKEN not in repr(target)
+    assert TOKEN not in str(target)
+    assert TOKEN not in f"{target}"
+
+
+def test_the_credentials_do_not_depend_on_the_working_directory(tmp_path, monkeypatch):
+    """MEASURED before the fix: started from D:\clipforge the bot obeyed
+    the operator's own chat; started from anywhere else the .env was not
+    read at all and delivery fell back to a DIFFERENT account paired in
+    OpenClaw. The chat a bot obeys must not depend on where it was
+    launched."""
+    import subprocess
+    import sys
+
+    code = ("from clipforge.config import Secrets;"
+            "print(Secrets().model_config['env_file'])")
+    here = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                          text=True, cwd=str(ROOT), timeout=120)
+    away = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                          text=True, cwd=str(tmp_path), timeout=120)
+    assert here.returncode == 0 and away.returncode == 0, (here.stderr, away.stderr)
+    assert here.stdout.strip() == away.stdout.strip(), (
+        "the .env location moved with the working directory")
+    assert Path(here.stdout.strip()).is_absolute()

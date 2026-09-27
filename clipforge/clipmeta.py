@@ -56,7 +56,11 @@ _WINDOW_TOLERANCE_S = 1.0
 #: the SAME artifact chain — the stem to look up is the part before the
 #: suffix, so a dub inherits its parent's transcript, score and QA rather
 #: than showing up as an unscored orphan.
-_SIDECAR_SUFFIXES = (".draft", ".upscaled", ".vo")
+#: ".branded" earns its place the hard way: without it the hook-card cut
+#: scanned as its OWN top-level clip — an untitled, unscored tile in the
+#: gallery, and `clips=2` from holdout for one clip, which is the single
+#: number holdout exists to make comparable across runs.
+_SIDECAR_SUFFIXES = (".draft", ".upscaled", ".vo", ".branded")
 
 
 def _language_suffixes() -> tuple[str, ...]:

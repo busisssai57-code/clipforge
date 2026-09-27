@@ -92,6 +92,10 @@ class ClipDispatcher:
     on_settled: Callable[[Any, str], None] | None = None
     #: Seconds between gate checks while the operator is busy.
     gate_poll_s: float = 30.0
+    #: How many times one window may be interrupted and re-queued before
+    #: it is given up on. A machine in use all evening should not spin a
+    #: window through the queue for ever.
+    max_preempts: int = 5
     stats: DispatchStats = field(default_factory=DispatchStats)
 
     _q: queue.Queue = field(init=False)
@@ -178,7 +182,7 @@ class ClipDispatcher:
     # -------------------------------------------------------------- submit
 
     def submit(self, path: Path, abs_start_s: float,
-               key: Any = None) -> bool:
+               key: Any = None, attempts: int = 0) -> bool:
         """Queue one window. Never blocks; returns False if it was dropped.
 
         ``key`` names the SOURCE this window came from (a recorded segment,
@@ -191,7 +195,7 @@ class ClipDispatcher:
                 gated_mark = self._gated_now()
                 queued_at = time.monotonic()
             self._q.put_nowait((Path(path), float(abs_start_s), queued_at,
-                                gated_mark, key))
+                                gated_mark, key, attempts))
         except queue.Full:
             with self._lock:
                 self.stats.dropped += 1
@@ -213,7 +217,7 @@ class ClipDispatcher:
             item = self._q.get()
             if item is _STOP:
                 return
-            path, abs_start_s, queued_at, gated_mark, key = item
+            path, abs_start_s, queued_at, gated_mark, key, attempts = item
             if not self._wait_for_gate(path):
                 with self._lock:
                     self.stats.dropped += 1
@@ -246,12 +250,30 @@ class ClipDispatcher:
                     self.handler(path, abs_start_s)
             except JobPreempted as exc:
                 # Not a failure: the job yielded the GPU to the operator
-                # mid-flight. Its finished stages are in the cache, so the
-                # retry after this one starts where it left off.
-                with self._lock:
-                    self.stats.dropped += 1
+                # mid-flight. Its finished stages are in the cache, so
+                # picking it up again is cheap — but nothing used to pick
+                # it up. The window was dropped and only came back if
+                # `bta watch` was restarted, so an evening of interrupted
+                # windows produced nothing however long the machine was
+                # idle afterwards.
+                # A breath before putting it back. In production the
+                # gate is shut whenever preempt fires (any input inside
+                # 60 s means less than the 300 s the gate wants), so the
+                # requeued window waits there — but if the two probes
+                # ever disagree, an instant requeue would burn every
+                # attempt in milliseconds.
+                self._halt.wait(min(5.0, self.gate_poll_s))
+                requeued = (attempts < self.max_preempts
+                            and not self._halt.is_set()
+                            and self.submit(path, abs_start_s, key,
+                                            attempts=attempts + 1))
+                if not requeued:
+                    with self._lock:
+                        self.stats.dropped += 1
+                    self._settle(key, "preempted")
                 log.info("dispatch.clip_preempted", path=str(path),
-                         reason=str(exc)[:200],
+                         reason=str(exc)[:200], requeued=bool(requeued),
+                         attempt=attempts + 1,
                          elapsed_s=round(time.monotonic() - started, 1))
                 continue
             except BaseException as exc:  # noqa: BLE001

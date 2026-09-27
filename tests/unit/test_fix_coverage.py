@@ -413,7 +413,12 @@ def test_existing_db_migrates_instead_of_becoming_unopenable(tmp_path: Path):
     raw.executescript(_SCHEMA)
     raw.execute("INSERT INTO stream_sessions(platform, handle, started_at) "
                 "VALUES('twitch','t',1.0)")
-    raw.execute(f"PRAGMA user_version={SCHEMA_VERSION - 1}")
+    # v2 explicitly: this function builds the v2 SHAPE (stream_sessions
+    # without closed_by_reconcile/last_media_at), and "SCHEMA_VERSION - 1"
+    # silently stopped describing it the moment the schema moved to v4.
+    # The point of the test is that history survives a bump, which is
+    # strongest when the DB is genuinely old.
+    raw.execute("PRAGMA user_version=2")
     raw.commit()
     raw.close()
 
@@ -423,6 +428,9 @@ def test_existing_db_migrates_instead_of_becoming_unopenable(tmp_path: Path):
         assert sessions, "an operator's session history was discarded"
         assert sessions[0]["closed_by_reconcile"] == 0
         assert sessions[0]["last_media_at"] == 0
+        # ... and every later bump's tables are there too, whatever
+        # version this old file started at.
+        assert db2.missing_tables() == set()
     finally:
         db2.close()
 

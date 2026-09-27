@@ -395,8 +395,17 @@ class AppConfig(_StrictModel):
 class Secrets(BaseSettings):
     """Environment-sourced secrets. Never stored in TOML, never logged."""
 
-    model_config = SettingsConfigDict(env_prefix="CLIPFORGE_", env_file=".env",
-                                      env_file_encoding="utf-8", extra="ignore")
+    #: The .env is found by an ABSOLUTE path, not by cwd. Measured: with
+    #: cwd=D:\clipforge the Telegram chat resolved to the operator's own
+    #: account, and from any other directory the file was simply not read
+    #: and delivery fell back to the OpenClaw pairing list — a DIFFERENT
+    #: account on this machine. A credential whose value depends on where
+    #: the program was started is not a credential, and `bta bot` obeys
+    #: whichever chat that resolves to.
+    model_config = SettingsConfigDict(
+        env_prefix="CLIPFORGE_",
+        env_file=Path(__file__).resolve().parent.parent / ".env",
+        env_file_encoding="utf-8", extra="ignore")
 
     hf_token: str | None = Field(None, description="Hugging Face token for gated pyannote models (T5)")
     #: Google AI Studio key for Veo. Absent = the cloud provider reports

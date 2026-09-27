@@ -29,7 +29,7 @@ import os
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -50,13 +50,33 @@ _SEND_LOCK = threading.Lock()
 
 @dataclass(frozen=True)
 class TelegramTarget:
-    token: str
-    chat_id: str
+    #: repr=False because a dataclass prints its fields: one stray
+    #: log.error(target=...) or debugger frame would publish the bot's
+    #: password. Nothing stringifies a target today; this keeps it that
+    #: way by construction rather than by everyone remembering.
+    token: str = field(repr=False)
+    chat_id: str = ""
     #: Where the credential came from, for logs: "env" or "openclaw".
-    source: str
+    source: str = ""
 
     def redact(self, text: str) -> str:
-        return text.replace(self.token, "<token>") if self.token else text
+        """Scrub the token from text bound for a log, a file or the chat.
+
+        Three forms, because the token travels three ways: whole, URL
+        percent-encoded (the colon becomes %3A), and the secret half on
+        its own.
+        """
+        if not self.token:
+            return text
+        from urllib.parse import quote
+
+        out = text.replace(self.token, "<token>")
+        out = out.replace(quote(self.token, safe=""), "<token>")
+        out = out.replace(quote(self.token), "<token>")
+        secret = self.token.split(":", 1)[-1]
+        if len(secret) >= 8:
+            out = out.replace(secret, "<token>")
+        return out
 
 
 # ------------------------------------------------------------- credentials
@@ -119,6 +139,12 @@ def resolve_target(openclaw_config: Path, *,
             source = "openclaw" if source == "openclaw" else "env+openclaw"
     if not (token and chat_id):
         return None
+    # Canonical form: is_private_chat accepts " 123 " and "+123" (int()
+    # strips both), and the raw string was then stored and compared
+    # literally, so the bot would refuse the operator's own messages
+    # while printing that it was listening.
+    chat_id = str(chat_id).strip().lstrip("+")
+    token = str(token).strip()
     if not is_private_chat(chat_id):
         log.error("notify.not_a_private_chat", chat_id=str(chat_id)[:24],
                   note="clips go to the operator's own chat only; a group "

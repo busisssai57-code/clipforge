@@ -19,7 +19,7 @@ from clipforge.config import load_config
 from clipforge.dllpaths import ensure_nvidia_dll_dirs
 from clipforge import dedup, subdetect
 from clipforge.errors import ClipForgeError
-from clipforge.idle import idle_checkpoint
+from clipforge.idle import JobPreempted, idle_checkpoint
 from clipforge.log import setup_logging
 from clipforge import watchstatus
 from clipforge.paths import Workspace, discard_partials
@@ -528,15 +528,23 @@ def bot(config: Path = CONFIG_OPT,
 
     control = botctl.BotControl(
         token=target.token, chat_id=target.chat_id, ws_root=Path(ws.root),
-        run_clip=lambda url: botctl.clip_a_url(url, config=config),
+        run_clip=lambda url: botctl.clip_a_url(
+            url, config=config,
+            register=lambda cancel: setattr(control, "_job", cancel)),
         run_status=_status, run_retry=_retry)
 
     console.print(f"[green]{who} is listening[/] for /clip, /status, /retry "
                   f"from your chat only. Ctrl+C to stop.")
     if once:
         res = control._call("getUpdates", timeout=0, offset=0)
-        for update in (res.get("result") or []):
+        updates = res.get("result") or []
+        for update in updates:
             control.handle(update)
+        if updates:
+            # Confirm them, or Telegram hands the same commands back for
+            # 24 hours and every --once run re-executes that /clip.
+            control._call("getUpdates", timeout=0,
+                          offset=int(updates[-1]["update_id"]) + 1)
         return
     try:
         control.run()
@@ -1148,7 +1156,20 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
         #: wraps long paths at 80 columns when stdout is piped, which
         #: silently defeated the scrape the swarm relied on.
         shipped_clips: list[str] = []
-        for pos, item in enumerate(ranked.items[:max(1, clips)], start=1):
+        wanted = max(1, clips)
+        #: A ceiling on how far down the ranking a window will dig for a
+        #: non-duplicate. Without one, a window whose every candidate was
+        #: already shipped would render its way through the whole list.
+        attempts_left = wanted + 4
+        # The slice used to happen HERE, before the duplicate check. With
+        # clips_per_window=1 (the default) that meant: top candidate is the
+        # same moment the previous window already shipped -> skipped -> the
+        # window produces nothing, while the next-ranked candidate sits
+        # untouched. Filtering first is the difference between "no
+        # duplicate" and "no clip".
+        for pos, item in enumerate(ranked.items, start=1):
+            if rendered >= wanted or attempts_left <= 0:
+                break
             idx = item.candidate_index
             if not (0 <= idx < len(cands.candidates)):
                 continue
@@ -1161,6 +1182,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                 console.print(f"  [yellow]skipping a moment already clipped[/] "
                               f"({Path(duplicate).name})")
                 continue
+            attempts_left -= 1
             win_start = _snap_edge(cand.start - abs_offset)
             win_end = _snap_edge(cand.end - abs_offset)
             cand_id = f"cand_{idx:03d}"
@@ -1442,6 +1464,7 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                     console.print(f"  [yellow]export pack skipped: "
                                   f"{type(exc).__name__}: {exc}[/]")
 
+                deliver = Path(clip.clip_path)
                 if existing_subs and editor_art.hook_text:
                     # The hook is the one thing the footage does NOT
                     # already have. It goes on as an overlay beside the
@@ -1454,8 +1477,15 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                                    PostSpec(hook=editor_art.hook_text,
                                             hook_y=cfg.s5.hook_y),
                                    work_dir=Path(ws.tmp) / "post")
+                        # The branded cut is what goes to the phone: the
+                        # hook is the one thing this footage does NOT
+                        # already have, and sending the unbranded file
+                        # threw it away. `bta brand --send` has always sent
+                        # the branded cut; watch used to do the opposite.
+                        deliver = branded
                         console.print(f"  hook card burned in: {branded.name}")
                     except Exception as exc:  # noqa: BLE001
+                        # Degrade to the QA'd original rather than nothing.
                         console.print(f"  [yellow]hook overlay skipped: "
                                       f"{type(exc).__name__}: {exc}[/]")
 
@@ -1472,9 +1502,14 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
                     from clipforge import notify
 
                     outcome = notify.send_clip(
-                        Path(clip.clip_path),
+                        deliver,
                         target=notify.target_from_config(cfg),
-                        ws_root=Path(ws.root))
+                        ws_root=Path(ws.root),
+                        # The caption comes from the ORIGINAL's export
+                        # pack: the branded cut has no pack of its own,
+                        # and caption_for would fall back to a 64-char
+                        # content hash.
+                        caption=notify.caption_for(Path(clip.clip_path)))
                     console.print(f"  telegram: {outcome}")
             else:
                 rejected_dir = ws.clips / "rejected"
@@ -1507,6 +1542,16 @@ def process(input_path: Path = typer.Argument(..., help="A local video file to c
             console.print(f"[green]mission control: {dest}[/]")
         except Exception as exc:  # dashboard is reporting, never a gate
             console.print(f"[yellow]dashboard generation failed: {exc}[/]")
+    except JobPreempted:
+        # Not a failure: the operator came back and the job yielded the
+        # machine. Recording it as failed put a red row in the control API
+        # for something the pipeline did on purpose, and left it there for
+        # ever if watch was never restarted.
+        try:
+            db.set_job_status(job_id, "preempted")
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     except BaseException:
         # A crashed run must not be left reading "running" forever — that
         # is indistinguishable from a live job in the control API. Catches
