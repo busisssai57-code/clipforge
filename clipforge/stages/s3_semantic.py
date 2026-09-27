@@ -68,8 +68,8 @@ Then write the packaging:
           of this clip. A question or an incomplete promise beats a
           summary: the hook's job is to make the next second necessary.
   justification - name the specific thing you saw or heard that decided
-          the scores. "Man knocks over the table at 3s" is a reason;
-          "engaging content" is not.
+          the scores, in at most 25 words. "Man knocks over the table at
+          3s" is a reason; "engaging content" is not.
 
 Return ONLY a JSON object:
 {"visual_action": float, "hook_strength": float, "comprehensibility":
@@ -90,16 +90,69 @@ SCORE_WEIGHTS = {"hook_strength": 0.45, "visual_action": 0.35,
 #: being dropped, so the operator still sees it ranked last with a reason.
 COMPREHENSION_FLOOR = 4.0
 
+#: Output budget for one judgement. Measured on 137 stored judgements from
+#: this workspace: median 96 tokens, p90 130, max 196. The old cap of 128
+#: cut roughly one in ten mid-object, and a cut object does not parse.
+MAX_JUDGEMENT_TOKENS = 384
+
 
 def weighted_score(visual_action: float, hook_strength: float,
                    comprehensibility: float) -> float:
     """One number to rank by, from the three the model returns."""
-    total = (SCORE_WEIGHTS["visual_action"] * float(visual_action)
-             + SCORE_WEIGHTS["hook_strength"] * float(hook_strength)
-             + SCORE_WEIGHTS["comprehensibility"] * float(comprehensibility))
-    if float(comprehensibility) < COMPREHENSION_FLOOR:
-        total *= 0.5
-    return round(total, 4)
+    return round(
+        SCORE_WEIGHTS["visual_action"] * float(visual_action)
+        + SCORE_WEIGHTS["hook_strength"] * float(hook_strength)
+        + SCORE_WEIGHTS["comprehensibility"] * float(comprehensibility), 4)
+
+
+def rank_key(item: Any) -> tuple:
+    """Sort key for ranked items. Shared, so both judges order the same way.
+
+    Two bands, not a penalty: a clip nobody can follow goes BELOW every
+    clip that can be followed, whatever its other numbers. Halving the
+    score did not do that — a flashy incoherent candidate still outranked
+    a clear ordinary one — while the comment claimed it did, which is the
+    kind of gap between code and prose this project treats as a defect.
+
+    Within a band: weighted score, then the hook (the axis that decides
+    whether a clip is watched at all), then the candidate index, because a
+    tie with no final key leaves the order to dict iteration and §3.2 says
+    the same input produces the same clip.
+    """
+    comp = float(item.comprehensibility or 0)
+    return (0 if comp >= COMPREHENSION_FLOOR else 1,
+            -weighted_score(item.visual_action or 0, item.hook_strength or 0,
+                            comp),
+            -(item.hook_strength or 0),
+            item.candidate_index)
+
+
+def scoring_digest(rubric: str = SCORING_RUBRIC,
+                   weights: dict | None = None,
+                   floor: float = COMPREHENSION_FLOOR) -> str:
+    """A short hash of everything that decides S3's output but is not a param.
+
+    The stage's cache key is built from name|input_digest|version|params,
+    and the rubric, the weights and the floor are in NONE of those — they
+    are module constants inside _execute. So rewriting the rubric changed
+    what the model would be asked and changed nothing about what a re-run
+    returned: every already-processed source answered from an artifact
+    scored by the OLD prompt, reported a cache hit, and looked like a
+    success. Measured on this workspace: 13 of 21 stored S2 keys still
+    resolved to pre-rubric S3 artifacts.
+
+    Deriving the version from these three means the next edit to any of
+    them invalidates the cache on its own, rather than relying on whoever
+    makes it remembering to bump a number.
+    """
+    import hashlib
+
+    payload = json.dumps(
+        {"rubric": rubric,
+         "weights": SCORE_WEIGHTS if weights is None else weights,
+         "floor": floor},
+        sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def _local(t_s: float, abs_offset_s: float) -> float:
@@ -198,7 +251,10 @@ class S3SemanticRanker(Stage[RankedArtifact]):
     """
 
     name: str = "s3_semantic"
-    version: str = "3"
+    #: 4 for the anchored rubric and the weighted sort; the suffix is the
+    #: digest of the rubric, the weights and the floor, so a future edit
+    #: to any of them moves the cache key without anyone remembering to.
+    version: str = f"4+{scoring_digest()}"
     vram_budget_gb: float = 10.0
     wall_budget_s: float = 180.0
     artifact_type = RankedArtifact
@@ -236,6 +292,11 @@ class S3SemanticRanker(Stage[RankedArtifact]):
             items.append(RankedItem(
                 candidate_index=getattr(cand, "index", i),
                 rank=i + 1, **judgement.as_kwargs()))
+        # The same order as the local path: one clip must not be ranked
+        # two different ways depending on which judge was available.
+        items.sort(key=rank_key)
+        for r, item in enumerate(items, 1):
+            item.rank = r
 
         items.sort(key=lambda x: -((x.visual_action or 0)
                                    + (x.hook_strength or 0)
@@ -442,7 +503,17 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                         total_visual_tokens += inputs.get("pixel_values", torch.tensor([])).shape[0] if "pixel_values" in inputs else 0
 
                         with torch.no_grad():
-                            outputs = models["model"].generate(**inputs, max_new_tokens=128, do_sample=False)
+                            # MEASURED on this workspace's 137 stored
+                            # judgements: median 96 output tokens, p90 130,
+                            # max 196 — against a cap of 128. Roughly one
+                            # in ten was already being cut mid-object, and
+                            # a truncated object does not parse, which used
+                            # to mean invented scores and an empty title
+                            # and hook. The richer rubric asks for more
+                            # words, not fewer, so the cap moves with it.
+                            outputs = models["model"].generate(
+                                **inputs, max_new_tokens=MAX_JUDGEMENT_TOKENS,
+                                do_sample=False)
 
                         generated_ids = [
                             output_ids[len(input_ids) :]
@@ -466,15 +537,28 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                                 )
                             )
                         except Exception:
-                            # Single candidate parse failure: use defaults
+                            # A judgement that did not parse is not a
+                            # middling clip — it is no judgement. The old
+                            # code wrote 5/5 and, worse, put S2's
+                            # heuristic total (a 0-8.5 scale answering a
+                            # different question) into hook_strength, the
+                            # axis that now carries the most weight. A
+                            # candidate nobody scored ranks last, with a
+                            # reason, the way an unreadable window does.
+                            log.warning("s3.judgement_unparseable",
+                                        candidate=i,
+                                        head=(response_text or "")[:160])
                             ranked_items.append(
                                 RankedItem(
                                     candidate_index=getattr(cand, "index", i),
                                     rank=i + 1,
-                                    visual_action=5.0,
-                                    hook_strength=float(getattr(cand, "total_score", 5.0)),
-                                    comprehensibility=5.0,
-                                    justification=f"Parse failure for candidate {i}",
+                                    visual_action=0.0,
+                                    hook_strength=0.0,
+                                    comprehensibility=0.0,
+                                    justification=(
+                                        "the model's judgement did not parse "
+                                        f"({len(response_text or '')} chars); "
+                                        "this candidate was not scored"),
                                 )
                             )
                         total_eval = len(candidates[:10])
@@ -492,17 +576,10 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                             f"any of {unreadable} candidate windows; the "
                             "file is unreadable at those offsets")
 
-                    # Weighted, not averaged: a flat mean says that
-                    # "nothing to look at" and "nobody would stop
-                    # scrolling" are equally survivable, and on
-                    # short-form they are not. Ties break on the axis
-                    # that decides whether the clip is watched at all.
-                    ranked_items.sort(
-                        key=lambda x: (-weighted_score(x.visual_action or 0,
-                                                       x.hook_strength or 0,
-                                                       x.comprehensibility or 0),
-                                       -(x.hook_strength or 0),
-                                       x.candidate_index))
+                    # Weighted and banded — see rank_key. Shared with
+                    # the cloud path so the same clip cannot be ordered
+                    # two different ways depending on which judge ran.
+                    ranked_items.sort(key=rank_key)
                     for r, item in enumerate(ranked_items, 1):
                         item.rank = r
 

@@ -28,13 +28,45 @@ def _content_words(text: str) -> list[str]:
             if len(w) > 1 and w not in _HOOK_STOPWORDS]
 
 
+def _is_title_or_caps(hook: str) -> bool:
+    """Is this hook written in Title Case or ALL CAPS?
+
+    In that style a capital says nothing about whether a word is a name,
+    so capitalisation cannot be used as evidence of one.
+    """
+    words = [w for w in re.findall(r"[A-Za-z][\w']*", hook) if len(w) > 1]
+    if len(words) < 2:
+        return False
+    capped = sum(1 for w in words if w[:1].isupper())
+    return capped >= max(2, int(len(words) * 0.7))
+
+
 def _named_things(hook: str) -> list[str]:
     """Everything the hook asserts by NAME: quoted spans and proper nouns.
 
-    The first word is skipped — a capital there is just a sentence opening.
+    A quoted span is always a claim: "UNSEEN MOMENTS FROM 'THE BIG BANG
+    THEORY'" was burned onto a clip about a creator's business, naming a
+    show nobody in the footage mentioned. That is the case this guard
+    exists for, and it stays caught.
+
+    Capitalisation is weaker evidence than it looks. MEASURED on this
+    workspace's 131 stored VL hooks: 84 were rejected, and 49 of those
+    failed only because an ordinary word carried a capital in a Title
+    Case line — "Luxury Meets Espionage" was rejected for "Meets" and
+    "Espionage", "Static Test Pattern" for "Test" and "Pattern". The hook
+    then fell back to the raw first four seconds of speech, which is
+    exactly the flat on-screen text the operator called weak. So a
+    capital counts as a name only when the hook is NOT written in Title
+    Case or caps — that is, when capitalising a word mid-sentence was a
+    deliberate choice.
+
+    The first word is skipped either way: a capital there is a sentence
+    opening.
     """
     named = [q.strip() for q in re.findall(r"['\"‘“]([^'\"’”]{2,})"
                                         r"['\"’”]", hook)]
+    if _is_title_or_caps(hook):
+        return named
     tokens = re.findall(r"[A-Za-z][\w']*", hook)
     named += [t for t in tokens[1:] if t[:1].isupper() and t.lower() != "i"]
     return named

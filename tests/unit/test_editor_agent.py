@@ -105,3 +105,77 @@ def test_an_honest_paraphrase_still_wins():
 def test_an_empty_hook_is_never_grounded():
     assert not _hook_is_grounded("", _SAID)
     assert not _hook_is_grounded("   ", _SAID)
+
+
+# ------------------------------------- capitalisation is not evidence of a name
+#
+# The guard treated every capitalised word as a proper noun that had to be
+# spoken in the clip. MEASURED on 131 stored VL hooks from this workspace:
+# 84 rejected, and 49 of those failed ONLY on Title Case — "Luxury Meets
+# Espionage" rejected for "Meets" and "Espionage". Each rejection falls
+# back to the raw first four seconds of speech, which is the flat
+# on-screen text the operator called weak.
+
+
+def test_a_title_case_hook_is_not_rejected_for_ordinary_words():
+    """The hook talks about the same thing (3 of its 4 words are spoken),
+    and only "Surprise" carries a capital it did not earn. That used to
+    be a rejection."""
+    from clipforge.stages.s3_5_editor import _hook_is_grounded
+
+    said = "so we drove out to the old hotel and the whole floor was marble"
+    assert _hook_is_grounded("Marble Floor Hotel Surprise", said)
+
+
+def test_an_all_caps_hook_is_judged_on_its_words_not_its_case():
+    from clipforge.stages.s3_5_editor import _hook_is_grounded
+
+    said = "the whole floor was marble and the hotel was empty"
+    assert _hook_is_grounded("EMPTY HOTEL, MARBLE FLOOR", said)
+
+
+def test_the_invented_show_is_still_caught():
+    """The case this guard exists for: a real run burned UNSEEN MOMENTS
+    FROM 'THE BIG BANG THEORY' onto a clip about a creator's business."""
+    from clipforge.stages.s3_5_editor import _hook_is_grounded
+
+    said = "so I started this business in my garage and the first year was rough"
+    assert not _hook_is_grounded("UNSEEN MOMENTS FROM 'THE BIG BANG THEORY'", said)
+
+
+def test_a_name_invented_mid_sentence_is_still_caught():
+    from clipforge.stages.s3_5_editor import _hook_is_grounded
+
+    said = "so I started this business in my garage and the first year was rough"
+    assert not _hook_is_grounded("he says Elon Musk called him", said)
+
+
+def test_a_hook_about_something_else_entirely_is_still_caught():
+    """The vocabulary floor is the other half of the guard, and it stays:
+    35 of the 84 rejections were this, and they were right."""
+    from clipforge.stages.s3_5_editor import _hook_is_grounded
+
+    said = "the whole floor was marble and the hotel was empty"
+    assert not _hook_is_grounded("Effortlessly manage your reel dashboard", said)
+
+
+def test_title_case_detection_needs_more_than_one_word():
+    from clipforge.stages.s3_5_editor import _is_title_or_caps
+
+    assert not _is_title_or_caps("Wait")
+    assert not _is_title_or_caps("he said Marble was cheap")
+    assert _is_title_or_caps("Luxury Meets Espionage")
+    assert _is_title_or_caps("EMPTY HOTEL MARBLE FLOOR")
+
+
+def test_a_quoted_span_is_a_hard_claim_even_in_a_grounded_hook():
+    """A quote is a claim about words that were SAID. This hook is about
+    the right subject and shares most of its vocabulary, so the overlap
+    floor lets it through — only the quote is wrong, and that is enough."""
+    from clipforge.stages.s3_5_editor import _hook_is_grounded
+
+    said = "i started this business in my garage and the first year was rough"
+    grounded = "Started This Business In A Garage"
+    assert _hook_is_grounded(grounded, said)
+    assert not _hook_is_grounded(grounded + ' After "Shark Tank"', said), (
+        "a quoted span nobody said was burned onto the clip")

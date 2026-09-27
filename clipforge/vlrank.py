@@ -129,24 +129,18 @@ def _encode_frame(image: Any) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+#: The cloud judge is asked the SAME question as the local one. It used
+#: to carry its own copy — no 0/5/10 anchors, no "judge the first frame
+#: hardest", no 7-word hook limit — so the same clip was scored by two
+#: different questions depending on which judge was available, and the
+#: numbers were not comparable. Imported rather than duplicated, so the
+#: next edit to the rubric reaches both.
+from clipforge.stages.s3_semantic import SCORING_RUBRIC as _RUBRIC  # noqa: E402
+
 _PROMPT = (
-    "You are a short-form video editor picking and packaging clips for "
-    "TikTok, Reels and Shorts. You are shown frames sampled evenly across "
-    "one candidate clip, plus its transcript.\n\n"
-    "Judge the clip on three axes, each 0-10:\n"
-    "  visual_action     - how much visibly happens on screen\n"
-    "  hook_strength     - how strongly the opening earns the next three "
-    "seconds\n"
-    "  comprehensibility - whether it stands alone without the surrounding "
-    "video\n\n"
-    "Then write the packaging. The title must describe what actually "
-    "happens in these frames: specific and concrete, never generic, at "
-    "most 8 words, no hashtags. The hook is the single line to put on "
-    "screen in the first seconds.\n\n"
+    f"{_RUBRIC}\n\n"
     "Score honestly. Most clips are not exceptional, and a run where "
-    "everything scores 8+ is useless for ranking.\n\n"
-    "Return ONLY a JSON object with exactly these keys: visual_action, "
-    "hook_strength, comprehensibility, justification, title, hook."
+    "everything scores 8+ is useless for ranking."
 )
 
 #: Ask for JSON and mean it, so the response does not arrive wrapped in

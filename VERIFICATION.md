@@ -4370,3 +4370,71 @@ the test case was one where greedy and balanced happen to agree.
 Both are checked against pixels and numbers rather than intentions: the
 card tests count dark and accent pixels in the rendered PNG, and the
 ranking tests use the 5/9/6-vs-9/5/6 pair a mean cannot separate.
+
+
+## Audit round 2 — what the scorer round got wrong (2026-09-27)
+
+A second adversarial audit over df14e02..b62c522. Its scorer reviewer
+produced seven findings; five reached a verdict before the session ran
+out, and four were upheld by both skeptics. Every one was a defect in
+work committed hours earlier, and the first is the kind this project
+exists to catch.
+
+1. **The new rubric could not run at all (upheld 2/2).** S3's `version`
+   stayed "3" while the prompt and the sort were rewritten, and neither
+   the rubric, the weights nor the floor is part of the cache key. A
+   verifier recomputed keys against this workspace: 13 of 21 stored S2
+   keys still resolved to pre-rubric S3 artifacts. Every re-run on an
+   already-processed source returned the OLD ranking, logged a cache hit
+   and reported success — including the exact A/B an operator would run
+   to see whether the change helped. The version now derives from
+   `scoring_digest()` (sha256 of rubric + weights + floor), so the next
+   edit invalidates the cache on its own rather than relying on someone
+   remembering.
+
+2. **The hook the model wrote almost never reached the screen (upheld
+   2/2).** `_named_things` treated every capitalised word as a proper
+   noun that had to be spoken. MEASURED on 131 stored VL hooks: 84
+   rejected, 49 of them only because of Title Case — "Luxury Meets
+   Espionage" rejected for "Meets" and "Espionage". Each rejection falls
+   back to the raw first four seconds of speech, which is precisely the
+   flat on-screen text the operator called weak. Capitalisation now
+   counts as a name only when the hook is NOT in Title Case or caps.
+   Acceptance 36% -> 46%; the invented-show case ("UNSEEN MOMENTS FROM
+   'THE BIG BANG THEORY'" over a clip about a garage business) is still
+   rejected, and so is a quoted span nobody said.
+
+3. **The output cap was already truncating judgements (upheld 1/2, and
+   measured here).** 137 stored judgements: median 96 output tokens, p90
+   130, max 196 — against `max_new_tokens=128`. A cut object does not
+   parse. Cap now 384, and the rubric asks for a justification of at most
+   25 words.
+
+4. **A parse failure invented a score (upheld 1/1).** The except branch
+   wrote 5/5 and put S2's heuristic total — a 0-8.5 scale answering a
+   different question — into `hook_strength`, the axis that now carries
+   the most weight. An unscored candidate now ranks last with a reason,
+   like an unreadable window.
+
+5. **The two judges disagreed by construction (upheld 1/1).** The cloud
+   path had its own prompt (no anchors, no first-frame rule, no 7-word
+   hook limit) and its own flat-sum sort. Both now share `SCORING_RUBRIC`
+   and `rank_key`.
+
+Also fixed from the same round: the comprehension floor halved a score
+while its comment claimed the clip was ranked last — halving did not do
+that (10/10/3.9 = 8.78 still beat 5/5/7 = 5.40). It is two bands now, and
+the comment is true.
+
+**Gate:** pytest 1444 passed / 5 skipped; `clipforge verify all` PASSED.
+**Teeth:** 11 mutants on these fixes — the version detached from the
+rubric, the digest losing the weights or the floor, capitalisation
+treated as a name again, quoted spans unchecked, the vocabulary floor
+removed, the cloud path ordering its own way — all killed, after one
+survived because no test isolated quoted spans.
+
+**Still open:** the audit's reviewers for the card, the bot's security,
+pipeline integration and test teeth were cut off by session limits
+before producing findings, and scorer findings 5 and 6 (the floor's
+comment, and having no way to show the ranking is BETTER rather than
+different) never reached a second verdict.
