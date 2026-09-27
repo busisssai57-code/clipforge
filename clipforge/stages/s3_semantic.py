@@ -20,6 +20,88 @@ from clipforge.stages.base import Stage
 log = get_logger(__name__)
 
 
+#: The scoring rubric, in one place because it is the thing that decides
+#: which moment ships. It is a module constant so a test can read it, a
+#: change to it is visible in review, and the same words go to the local
+#: model and to a cloud judge.
+#:
+#: What changed, and why: the first version asked for three numbers with
+#: no definition of what any number MEANT. A model asked to "score 0-10"
+#: with no anchors returns 7 for almost everything — the spread collapses
+#: and the ranking is then decided by noise. Each axis now has anchors at
+#: 0, 5 and 10, and each is a question about evidence in the frames or
+#: the words, not a vibe.
+SCORING_RUBRIC = """\
+You are choosing which seconds of a long video become a short-form clip.
+Judge ONLY what is in these frames and this transcript. Never assume what
+happened before or after.
+
+Score three axes, each 0-10. Use the WHOLE range: a 5 is ordinary, an 8 is
+rare, a 10 should be almost unheard of. If two candidates feel the same,
+find the difference and let the numbers show it.
+
+visual_action - is there something to WATCH?
+  0  a static talking head, a slide, a logo, an empty room
+  5  a person gesturing, a normal cut, something changing slowly
+  10 a physical event you could describe to someone who did not see it:
+     a reaction, a reveal, an accident, a sudden change of state
+
+hook_strength - would a thumb stop here in the FIRST SECOND?
+  Judge the first frame hardest: that is all a scrolling viewer sees.
+  0  the clip opens mid-sentence on nothing; a title card; dead air
+  5  a clear face saying something ordinary
+  10 the opening frame itself raises a question, or the first words are a
+     claim, a number, a confession or a challenge that demands the answer
+
+comprehensibility - does it STAND ALONE?
+  0  needs the previous ten minutes; opens on "and that's why..."
+  5  understandable but references something unseen
+  10 a stranger with no context gets the whole thing, and it RESOLVES
+     inside the clip rather than stopping mid-thought
+
+Then write the packaging:
+  title - what actually happens in these frames, concrete and specific,
+          at most 8 words, no hashtags, no clickbait about things the
+          frames do not show
+  hook  - the one line to burn on screen in the first seconds. Short
+          enough to read at a glance (at most 7 words). It must be true
+          of this clip. A question or an incomplete promise beats a
+          summary: the hook's job is to make the next second necessary.
+  justification - name the specific thing you saw or heard that decided
+          the scores. "Man knocks over the table at 3s" is a reason;
+          "engaging content" is not.
+
+Return ONLY a JSON object:
+{"visual_action": float, "hook_strength": float, "comprehensibility":
+ float, "justification": str, "title": str, "hook": str}"""
+
+
+#: How the three axes combine into the order clips ship in. Not a flat
+#: mean: a plain average treats "nothing to look at" and "nobody would
+#: stop scrolling" as equally survivable, and on short-form they are not.
+#: A clip nobody stops for is never watched at all, so the hook leads;
+#: comprehensibility is a floor rather than a prize, which is why it
+#: carries the least weight but is the axis the penalty below reads.
+SCORE_WEIGHTS = {"hook_strength": 0.45, "visual_action": 0.35,
+                 "comprehensibility": 0.20}
+
+#: A clip nobody can follow is not a good clip with a flaw; it is not a
+#: clip. Below this, the weighted score is halved rather than the item
+#: being dropped, so the operator still sees it ranked last with a reason.
+COMPREHENSION_FLOOR = 4.0
+
+
+def weighted_score(visual_action: float, hook_strength: float,
+                   comprehensibility: float) -> float:
+    """One number to rank by, from the three the model returns."""
+    total = (SCORE_WEIGHTS["visual_action"] * float(visual_action)
+             + SCORE_WEIGHTS["hook_strength"] * float(hook_strength)
+             + SCORE_WEIGHTS["comprehensibility"] * float(comprehensibility))
+    if float(comprehensibility) < COMPREHENSION_FLOOR:
+        total *= 0.5
+    return round(total, 4)
+
+
 def _local(t_s: float, abs_offset_s: float) -> float:
     """Candidate time (ABSOLUTE stream seconds) as an offset into the file.
 
@@ -333,20 +415,11 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                             continue
 
                         prompt_text = (
-                            "You are a short-form video editor picking and "
-                            "packaging clips for TikTok/Reels/Shorts.\n"
-                            f"Clip candidate ({cand.start:.1f}s-{cand.end:.1f}s).\n"
-                            f"Transcript: {cand.text}\n\n"
-                            "Score it 0-10 and write the packaging. The title "
-                            "must describe what actually happens in these "
-                            "frames - be specific and concrete, never a "
-                            "generic phrase, no more than 8 words, no "
-                            "hashtags. The hook is the single line to put "
-                            "on screen in the first seconds.\n"
-                            "Return ONLY a JSON object:\n"
-                            '{"visual_action": float, "hook_strength": float,'
-                            ' "comprehensibility": float, "justification":'
-                            ' str, "title": str, "hook": str}'
+                            f"{SCORING_RUBRIC}\n\n"
+                            f"Candidate ({cand.start:.1f}s-{cand.end:.1f}s), "
+                            f"{len(frames)} frames in order, first frame "
+                            "first.\n"
+                            f"Transcript: {cand.text}"
                         )
 
                         # Generate structured JSON score
@@ -419,12 +492,17 @@ class S3SemanticRanker(Stage[RankedArtifact]):
                             f"any of {unreadable} candidate windows; the "
                             "file is unreadable at those offsets")
 
-                    # Sort items by average multimodal score
+                    # Weighted, not averaged: a flat mean says that
+                    # "nothing to look at" and "nobody would stop
+                    # scrolling" are equally survivable, and on
+                    # short-form they are not. Ties break on the axis
+                    # that decides whether the clip is watched at all.
                     ranked_items.sort(
-                        key=lambda x: -(
-                            (x.visual_action or 0) + (x.hook_strength or 0) + (x.comprehensibility or 0)
-                        )
-                    )
+                        key=lambda x: (-weighted_score(x.visual_action or 0,
+                                                       x.hook_strength or 0,
+                                                       x.comprehensibility or 0),
+                                       -(x.hook_strength or 0),
+                                       x.candidate_index))
                     for r, item in enumerate(ranked_items, 1):
                         item.rank = r
 

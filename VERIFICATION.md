@@ -4324,3 +4324,49 @@ once, any argument as a link, the token leaking, captions over existing
 ones, hashtags returning, unsure read as yes, the track shortcut skipped,
 S5 ignoring the marker, the zero-byte script — all killed, after two
 survived a first pass and the tests were strengthened.
+
+
+## The scorer and the card (2026-09-26)
+
+**Scoring.** The prompt asked for three numbers and defined none of them.
+A model asked to "score 0-10" with no anchors answers 7 to almost
+everything: the spread collapses and the ranking is decided by noise
+rather than by the clips. `SCORING_RUBRIC` now anchors each axis at 0, 5
+and 10, judges the FIRST frame hardest (that is all a scrolling viewer
+sees), demands a justification that names the moment ("man knocks over
+the table at 3s" is a reason, "engaging content" is not), caps the hook
+at seven words, and forbids assuming anything outside the frames.
+
+The order is weighted, not averaged: hook 0.45, visual 0.35,
+comprehensibility 0.20, with a halving penalty below a comprehension
+floor of 4. A flat mean called `5/9/6` and `9/5/6` equal — one of those is
+a clip nobody opens. Ties break on the hook and then on candidate index,
+because a tie with no final key leaves the order to dict iteration, which
+would break §3.2.
+
+**The card.** The operator's verdict on the old one was "weak and not
+attention grabbing". It was white caps with a thin outline at 6.2% of
+frame height, straight on the picture: an outline survives a dark
+background and vanishes into a bright one, and the words were too small
+to register in the half-second a thumb gives them. Now: a rounded plate
+per line (contrast that does not depend on the footage), 8.5% height,
+1.06 line spacing so caps read as one block, the last line in a single
+accent colour where a hook's payoff sits, and the outline kept underneath
+for letters that overhang.
+
+Wrapping is balanced rather than greedy, and auto-shrinks to at most
+three lines. Greedy left `SHE / TRIED IT / FOR 6 / WEEKS` on a real clip —
+four separate thoughts. It now reads `SHE TRIED / IT FOR 6 / WEEKS`, with
+WEEKS in the accent. Balancing never adds a line; it only moves words
+between the lines greedy already needed.
+
+**Gate:** pytest 1429 passed / 5 skipped; `clipforge verify all` PASSED.
+**Teeth:** 12 mutants — the floor removed, the weights flattened, the
+rubric swapped for "score it 0-10", ties left to dict order, the plate
+gone, the accent gone, the size back to 6.2%, greedy wrapping restored,
+auto-shrink removed — all killed, after one survived a first pass because
+the test case was one where greedy and balanced happen to agree.
+
+Both are checked against pixels and numbers rather than intentions: the
+card tests count dark and accent pixels in the rendered PNG, and the
+ranking tests use the 5/9/6-vs-9/5/6 pair a mean cannot separate.

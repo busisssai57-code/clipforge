@@ -48,6 +48,10 @@ _TEXT_FONTS = ("arialbd.ttf", "seguibl.ttf", "segoeuib.ttf", "arial.ttf",
 #: what Linux boxes carry. A machine with none of them gets no stickers,
 #: said out loud rather than silently dropped.
 _EMOJI_FONTS = ("seguiemj.ttf", "NotoColorEmoji.ttf", "AppleColorEmoji.ttc")
+#: The one colour on the card. Chosen to survive a phone at low
+#: brightness against both dark and bright footage, which a mid-tone
+#: does not.
+ACCENT = (255, 214, 10)
 _FONT_DIRS = (Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts",
               Path("/usr/share/fonts/truetype/dejavu"),
               Path("/usr/share/fonts/truetype/noto"),
@@ -115,8 +119,12 @@ class PostSpec:
     #: shipping a silent clip of a baby.
     subtitles: tuple[Subtitle, ...] = field(default_factory=tuple)
     #: Fractions of the frame, so one spec renders at any size.
-    hook_size: float = 0.062
-    watermark_size: float = 0.030
+    #: 0.062 was measured against generated shots seen on a monitor. On a
+    #: phone, mid-scroll, it is too small to register in the half-second a
+    #: thumb gives it; 0.085 is about a third bigger per line and still
+    #: wraps inside the safe area at 1080x1920.
+    hook_size: float = 0.085
+    watermark_size: float = 0.034
     sticker_size: float = 0.155
     #: Smaller than the hook: the hook is an ask read once, a subtitle is
     #: read while the picture is doing the work.
@@ -212,14 +220,93 @@ def render_emoji(emoji: str, px: int, dest: Path) -> Path | None:
     return dest
 
 
-def render_card(text: str, *, width: int, size_px: int, dest: Path,
-                uppercase: bool = True) -> Path:
-    """Rasterise a hook card: white caps, heavy black outline, wrapped.
+def _greedy_wrap(words: list[str], measure, usable: float) -> list[str]:
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        trial = f"{current} {word}".strip()
+        if measure(trial) <= usable or not current:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
 
-    The outline rather than a box because the reference's card sits
-    directly on the picture, and a solid plate reads as a slide. Wrapping
-    is measured against the real font, not estimated from character
-    counts — a Somali hook is long and a mis-estimate pushes it off frame.
+
+def balanced_wrap(text: str, measure, usable: float,
+                  max_lines: int = 3) -> list[str]:
+    """Wrap so the lines are close to equal width.
+
+    Greedy wrapping fills each line to the margin and leaves the
+    remainder alone on the last one: five words became SHE / TRIED IT /
+    FOR 6 / WEEKS on a real clip, which reads as four separate thoughts.
+    Even lines read as one block, which is one fixation instead of four.
+
+    Only the line COUNT that greedy already needs is considered — this
+    never makes the card taller, it only moves words between the lines it
+    was going to use.
+    """
+    words = [w for w in (text or "").split() if w]
+    if not words:
+        return []
+    greedy = _greedy_wrap(words, measure, usable)
+    n = min(len(greedy), max_lines, len(words))
+    if n <= 1:
+        return greedy
+
+    best: tuple[float, list[str]] | None = None
+    # Every way to cut the words into n lines, scored by how uneven the
+    # widths are. Word counts here are small (a hook is <= 7 words), so
+    # the exhaustive search is cheaper than being clever.
+    def split(index: int, remaining: int, acc: list[str]) -> None:
+        nonlocal best
+        if remaining == 1:
+            tail = " ".join(words[index:])
+            lines = [*acc, tail]
+            widths = [measure(ln) for ln in lines]
+            if max(widths) > usable:
+                return
+            spread = max(widths) - min(widths)
+            if best is None or spread < best[0]:
+                best = (spread, lines)
+            return
+        for cut in range(index + 1, len(words) - remaining + 2):
+            head = " ".join(words[index:cut])
+            if measure(head) > usable:
+                break
+            split(cut, remaining - 1, [*acc, head])
+
+    split(0, n, [])
+    return best[1] if best else greedy
+
+
+def render_card(text: str, *, width: int, size_px: int, dest: Path,
+                uppercase: bool = True, plate: bool = True,
+                accent: tuple[int, int, int] = ACCENT) -> Path:
+    """Rasterise a hook card built to be read at a glance, while scrolling.
+
+    The first version was white caps with a thin outline, sitting on the
+    picture. On real footage that is weak: an outline survives a dark
+    background and disappears into a bright one, and at 6.2% of frame
+    height the words are too small to register in the half-second a thumb
+    gives them.
+
+    What this draws instead, and why each part:
+
+    * **A plate behind the words.** Contrast that does not depend on what
+      the footage happens to be doing. Drawn per LINE and tight to the
+      text, not as one rectangle across the frame, so it reads as a
+      caption rather than a slide.
+    * **Bigger and tighter.** Line spacing of 1.06 rather than 1.18:
+      caps set tight read as one block, which is one fixation instead of
+      three.
+    * **An accent on the last line.** The eye lands where the colour is,
+      and the last line is where a hook's payoff sits ("...and then THIS
+      happened").
+    * **The outline stays**, under the plate, so a letter that overhangs
+      its plate on a bright frame is still legible.
     """
     Image, ImageDraw, ImageFont = _pillow()
     face = find_font(_TEXT_FONTS)
@@ -235,26 +322,38 @@ def render_card(text: str, *, width: int, size_px: int, dest: Path,
     margin = int(width * 0.06)
     usable = width - 2 * margin
 
-    lines: list[str] = []
-    current = ""
-    for word in body.split():
-        trial = f"{current} {word}".strip()
-        if probe.textlength(trial, font=font) <= usable or not current:
-            current = trial
-        else:
-            lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
+    # Auto-fit: shrink until the hook lands in at most three lines. A
+    # seven-word hook at 8.5% of frame height wraps to four on a phone,
+    # and four lines of caps is a paragraph, not a hook.
+    lines = balanced_wrap(body, lambda s: probe.textlength(s, font=font),
+                          usable)
+    tries = 0
+    while len(lines) > 3 and tries < 6:
+        size_px = int(size_px * 0.9)
+        font = ImageFont.truetype(str(face), size_px)
+        lines = balanced_wrap(body, lambda s: probe.textlength(s, font=font),
+                              usable)
+        tries += 1
 
-    stroke = max(2, size_px // 9)
-    line_h = int(size_px * 1.18)
-    height = line_h * len(lines) + 2 * stroke + int(size_px * 0.3)
+    stroke = max(2, size_px // 10)
+    line_h = int(size_px * 1.06)
+    pad_x, pad_y = int(size_px * 0.28), int(size_px * 0.14)
+    height = line_h * len(lines) + 2 * (stroke + pad_y) + int(size_px * 0.2)
     canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
+
+    top0 = int(size_px * 0.1) + stroke + pad_y
     for i, line in enumerate(lines):
-        draw.text((width // 2, int(size_px * 0.15) + stroke + i * line_h),
-                  line, font=font, anchor="ma", fill=(255, 255, 255, 255),
+        top = top0 + i * line_h
+        if plate:
+            w = probe.textlength(line, font=font)
+            box = (int((width - w) / 2) - pad_x, top - pad_y,
+                   int((width + w) / 2) + pad_x, top + line_h - int(pad_y * 0.4))
+            draw.rounded_rectangle(box, radius=int(size_px * 0.16),
+                                   fill=(0, 0, 0, 216))
+        fill = (*accent, 255) if (plate and i == len(lines) - 1
+                                  and len(lines) > 1) else (255, 255, 255, 255)
+        draw.text((width // 2, top), line, font=font, anchor="ma", fill=fill,
                   stroke_width=stroke, stroke_fill=(0, 0, 0, 255))
     dest.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(dest, "PNG")
